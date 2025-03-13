@@ -3,7 +3,9 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{anyhow, Error, Result};
 use async_trait::async_trait;
+use aws_config::SdkConfig;
 use aws_credential_types::Credentials;
+use aws_credential_types::provider::ProvideCredentials;
 use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings};
 use aws_sigv4::sign::v4::SigningParams;
 use aws_smithy_runtime_api::client::identity::Identity;
@@ -231,9 +233,14 @@ pub trait KmsEndpointProvider {
     fn endpoint(&self, region: &str) -> String;
 }
 
+pub enum CredentialsGetter {
+    Credentials(Credentials),
+    SdkConfig(SdkConfig)
+}
+
 pub struct KmsProxyConfig {
     pub client: Box<dyn HttpClient + Send + Sync>,
-    pub credentials: Credentials,
+    pub credentials_get: CredentialsGetter,
     pub keypair: Arc<KeyPair>,
     pub attester: Box<dyn AttestationProvider + Send + Sync>,
     pub endpoints: Arc<dyn KmsEndpointProvider + Send + Sync>,
@@ -243,6 +250,18 @@ impl KmsProxyConfig {
     pub fn get_authority(&self, region: &str) -> Authority {
         let endpoint = self.endpoints.endpoint(region);
         Authority::from_maybe_shared(endpoint).unwrap()
+    }
+    pub async fn credentials(&self) -> Result<Credentials> {
+        match &self.credentials_get {
+            CredentialsGetter::Credentials(c) => Ok(c.clone()),
+            CredentialsGetter::SdkConfig(sdk_config) => {
+                Ok(sdk_config
+                .credentials_provider()
+                .ok_or(anyhow!("credentials provider is missing"))?
+                .provide_credentials()
+                .await?)
+            },
+        }
     }
 }
 
@@ -339,7 +358,7 @@ impl KmsProxyHandler {
     }
 
     async fn send(&self, req: KmsRequestOutgoing, region: &str) -> Result<Response<Full<Bytes>>> {
-        let signed = req.sign(self.config.credentials.clone(), region)?;
+        let signed = req.sign(&self.config.credentials().await?, region)?;
 
         debug!("Sending Request: {:?}", signed);
         let resp = self.config.client.request(signed).await?;
@@ -551,7 +570,7 @@ mod tests {
 
         let config = KmsProxyConfig {
             client: Box::new(Mock),
-            credentials: Credentials::from_keys("TESTKEY", "TESTSECRET", None),
+            credentials_get: CredentialsGetter::Credentials(Credentials::from_keys("TESTKEY", "TESTSECRET", None)),
             keypair: Arc::new(KeyPair::from_private(priv_key)),
             attester: Box::new(StaticAttestationProvider::new(ATTESTATION_DOC.to_vec())),
             endpoints: Arc::new(Mock {}),

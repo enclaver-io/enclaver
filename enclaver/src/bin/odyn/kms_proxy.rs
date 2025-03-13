@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use aws_credential_types::provider::ProvideCredentials;
+
 use log::{error, info};
 use tokio::task::JoinHandle;
 
@@ -9,7 +9,7 @@ use enclaver::http_util::HttpServer;
 use enclaver::keypair::KeyPair;
 use enclaver::nsm::{Nsm, NsmAttestationProvider};
 use enclaver::proxy::aws_util;
-use enclaver::proxy::kms::{KmsProxyConfig, KmsProxyHandler};
+use enclaver::proxy::kms::{KmsProxyConfig, KmsProxyHandler, CredentialsGetter};
 
 use crate::config::Configuration;
 
@@ -32,18 +32,12 @@ impl KmsProxyService {
 
                 let imds = aws_util::imds_client_with_proxy(proxy_uri.clone()).await?;
 
-                info!("Fetching credentials from IMDSv2");
+                info!("Fetching config from IMDSv2");
                 let sdk_config = aws_util::load_config_from_imds(imds).await?;
-                let credentials = sdk_config
-                    .credentials_provider()
-                    .ok_or(anyhow!("credentials provider is missing"))?
-                    .provide_credentials()
-                    .await?;
-                info!("Credentials fetched");
 
                 let client = Box::new(enclaver::http_client::new_http_proxy_client(proxy_uri));
                 let kms_config = KmsProxyConfig {
-                    credentials,
+                    credentials_get: CredentialsGetter::SdkConfig(sdk_config),
                     client,
                     keypair,
                     attester,
