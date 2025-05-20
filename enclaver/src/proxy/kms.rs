@@ -358,7 +358,7 @@ impl KmsProxyHandler {
     }
 
     async fn send(&self, req: KmsRequestOutgoing, region: &str) -> Result<Response<Full<Bytes>>> {
-        let signed = req.sign(&self.config.credentials().await?, region)?;
+        let signed = req.sign(self.config.credentials().await?, region)?;
 
         debug!("Sending Request: {:?}", signed);
         let resp = self.config.client.request(signed).await?;
