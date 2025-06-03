@@ -37,7 +37,7 @@ impl KmsProxyService {
 
                 let client = Box::new(enclaver::http_client::new_http_proxy_client(proxy_uri));
                 let kms_config = KmsProxyConfig {
-                    credentials_get: CredentialsGetter::SdkConfig(sdk_config),
+                    credentials_get: CredentialsGetter::SdkConfig(Box::new(sdk_config)),
                     client,
                     keypair,
                     attester,

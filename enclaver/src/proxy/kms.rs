@@ -235,7 +235,7 @@ pub trait KmsEndpointProvider {
 
 pub enum CredentialsGetter {
     Credentials(Credentials),
-    SdkConfig(SdkConfig)
+    SdkConfig(Box<SdkConfig>)
 }
 
 pub struct KmsProxyConfig {
