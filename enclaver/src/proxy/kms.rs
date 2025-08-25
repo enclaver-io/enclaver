@@ -339,7 +339,14 @@ impl KmsProxyHandler {
             let ciphertext = base64::decode(b64ciphertext)?;
             let plaintext = self.decrypt_cms(&ciphertext)?;
 
-            body_obj["Plaintext"] = json::JsonValue::String(base64::encode(plaintext));
+            let field_name = if body_obj.get("KeyAgreementAlgorithm").is_some() {
+                // DeriveSharedSecret
+                "SharedSecret"
+            } else {
+                // Default for Decrypt, GenerateDataKey, etc.
+                "Plaintext"
+            };
+            body_obj[field_name] = json::JsonValue::String(base64::encode(plaintext));
             Ok(json_response(head, JsonValue::Object(body_obj)))
         } else {
             Err(anyhow!("The response body is not a JSON object"))
