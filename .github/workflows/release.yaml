@@ -75,7 +75,7 @@ jobs:
 
 
   publish-images:
-    if: github.repository == 'edgebitio/enclaver' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag')
+    if: github.repository == 'enclaver-io/enclaver' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag')
     needs: build-release-binaries
     runs-on: ubuntu-latest
 
@@ -172,7 +172,7 @@ jobs:
           tags: ${{ steps.wrapper-base-metadata.outputs.tags }}
 
   upload-release-artifact:
-    if: github.repository == 'edgebitio/enclaver' && github.ref_type == 'tag'
+    if: github.repository == 'enclaver-io/enclaver' && github.ref_type == 'tag'
     needs: build-release-binaries
     runs-on: ubuntu-latest
 
