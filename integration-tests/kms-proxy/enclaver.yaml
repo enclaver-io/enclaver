@@ -1,0 +1,15 @@
+version: v1
+name: "intg-tests"
+target: "intg-tests:enclave"
+sources:
+  app: "intg-tests:latest"
+  supervisor: "odyn-dev:latest"
+  wrapper: "enclaver-wrapper-base:latest"
+defaults:
+  memory_mb: 1500
+egress:
+  allow:
+    - kms.*.amazonaws.com
+    - 169.254.169.254
+kms_proxy:
+  listen_port: 7123

@@ -346,7 +346,7 @@ impl KmsProxyHandler {
             let field_name = match method {
                 "TrentService.GenerateDataKeyPair" => "PrivateKeyPlaintext",
                 "TrentService.DeriveSharedSecret" => "SharedSecret",
-                _ => "Plaintext", // TODO: check if this is correct
+                _ => "Plaintext",
             };
 
             body_obj[field_name] = json::JsonValue::String(base64::encode(plaintext));
