@@ -20,9 +20,9 @@ const ENCLAVE_OVERLAY_CHOWN: &str = "0:0";
 const RELEASE_OVERLAY_CHOWN: &str = "0:0";
 
 const NITRO_CLI_IMAGE: &str = "registry.edgebit.io/nitro-cli:latest";
-const ODYN_IMAGE: &str = "registry.edgebit.io/odyn:latest";
+const ODYN_IMAGE: &str = "registry.enclaver.io/odyn:latest";
 const ODYN_IMAGE_BINARY_PATH: &str = "/usr/local/bin/odyn";
-const RELEASE_BASE_IMAGE: &str = "registry.edgebit.io/enclaver-wrapper-base:latest";
+const RELEASE_BASE_IMAGE: &str = "registry.enclaver.io/enclaver-wrapper-base:latest";
 
 pub struct EnclaveArtifactBuilder {
     docker: Arc<Docker>,

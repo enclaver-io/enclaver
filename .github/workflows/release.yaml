@@ -101,21 +101,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
-      - name: Authenticate to Google Cloud
-        uses: 'google-github-actions/auth@v2'
-        with:
-          workload_identity_provider: 'projects/77991489452/locations/global/workloadIdentityPools/gh-actions-identity-pool/providers/gh-actions-identity-provider'
-          service_account: 'github-actions-service-account@edgebit-containers.iam.gserviceaccount.com'
-
-      - name: Configure GCP Docker Auth
-        run: |
-          gcloud auth configure-docker us-docker.pkg.dev
-
       - name: Authenticate to AWS
-        uses: aws-actions/configure-aws-credentials@v1-node16
+        uses: aws-actions/configure-aws-credentials@v5
         with:
           aws-region: us-east-1
-          role-to-assume: arn:aws:iam::970625735569:role/GitHubActionsECRPush
+          role-to-assume: arn:aws:iam::077296892761:role/EnclaverGitHubActionsRegistryPush
 
       - name: Configure AWS Docker Auth
         id: login-ecr
@@ -127,9 +117,7 @@ jobs:
         id: odyn-metadata
         uses: docker/metadata-action@v4
         with:
-          images: |
-            us-docker.pkg.dev/edgebit-containers/containers/odyn
-            public.ecr.aws/p0s1m1r8/odyn
+          images: public.ecr.aws/s2t1d4c6/enclaver-io/odyn
           tags: |
             type=sha,
             type=semver,pattern=v{{major}}
@@ -151,9 +139,7 @@ jobs:
         id: wrapper-base-metadata
         uses: docker/metadata-action@v4
         with:
-          images: |
-            us-docker.pkg.dev/edgebit-containers/containers/enclaver-wrapper-base
-            public.ecr.aws/p0s1m1r8/enclaver-wrapper-base
+          images: public.ecr.aws/s2t1d4c6/enclaver-io/enclaver-wrapper-base
           tags: |
             type=sha,
             type=semver,pattern=v{{major}}

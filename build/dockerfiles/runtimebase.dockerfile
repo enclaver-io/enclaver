@@ -1,4 +1,4 @@
-FROM registry.edgebit.io/nitro-cli:latest AS nitro_cli
+FROM public.ecr.aws/s2t1d4c6/enclaver-io/nitro-cli:latest AS nitro_cli
 RUN touch /tmp/dummy
 
 ###############################
