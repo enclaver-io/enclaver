@@ -2,7 +2,7 @@
 
 Enclaver is an open source toolkit created to enable easy adoption of software enclaves, for new and existing backend software.
 
-<a href="https://discord.gg/a5CvXkNWYF"><img src="docs/img/edgebit-discord.svg" height="30" /></a>
+<a href="https://discord.gg/a5CvXkNWYF"><img src="docs/img/enclaver-discord.svg" height="30" /></a>
 
 Enclaves provide several critical features for operating software which processes sensitive data, including:
 
@@ -12,8 +12,8 @@ Enclaves provide several critical features for operating software which processe
 
 These demos show off how your apps can use these unique features to improve privacy and security:
 
- - [Run a simple Python app](docs/guide-app.md) that represents a microservice or security-centric function
- - [Run Hashicorp Vault](docs/guide-vault.md) to fully isolate it after it's unsealed
+ - [Run a simple Python app](https://enclaver.io/docs/0.x/guide-app/) that represents a microservice or security-centric function
+ - [Run Hashicorp Vault](https://enclaver.io/docs/0.x/guide-vault/) to fully isolate it after it's unsealed
 
 <a href="https://www.youtube.com/watch?v=nxSgRYten1o"><img src="docs/img/thumb-run.png" width="400" /></a>
 
@@ -21,13 +21,13 @@ These demos show off how your apps can use these unique features to improve priv
 
 Enclaver is currently in beta and should be used cautiously in production. Enclaver currently only supports [AWS Nitro Enclaves](https://aws.amazon.com/ec2/nitro/nitro-enclaves/); support for Azure Confidential VMs, GCP Confidential VMs, and arbitrary SGX and OP-TEE enclaves is on the roadmap.
 
- - [Getting started guide](docs/getting-started.md)
- - [Deploy an enclave on AWS](docs/deploy-aws.md)
- - [Deploy an enclave on Kubernetes](docs/deploy-kubernetes.md)
+ - [Getting started guide](https://enclaver.io/docs/0.x/getting-started/)
+ - [Deploy an enclave on AWS](https://enclaver.io/docs/0.x/deploy-aws/)
+ - [Deploy an enclave on Kubernetes](https://enclaver.io/docs/0.x/deploy-kubernetes/)
 
 ## Architecture
 
-Read the [architecture doc](docs/architecture.md) for the full details. Enclaver consists of 3 interrelated pieces of software: 
+Read the [architecture doc](https://enclaver.io/docs/0.x/architecture/) for the full details. Enclaver consists of 3 interrelated pieces of software: 
 
  - `enclaver` CLI for build and run
  - “Outer Proxy” + Enclave Supervisor
@@ -37,9 +37,9 @@ Read the [architecture doc](docs/architecture.md) for the full details. Enclaver
 
 ## FAQ
 
-See [the FAQ](docs/faq.md) for common questions and a comparison of Enclaver to similar technologies.
+See [the FAQ](https://enclaver.io/docs/0.x/faq/) for common questions and a comparison of Enclaver to similar technologies.
 
 
 ## Reporting Security Bugs
 
-Report security bugs confidentially at https://edgebit.io/contact
+Report security bugs confidentially at security@enclaver.io
