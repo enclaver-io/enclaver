@@ -4,16 +4,16 @@ use std::time::{Duration, SystemTime};
 use anyhow::{anyhow, Error, Result};
 use async_trait::async_trait;
 use aws_config::SdkConfig;
-use aws_credential_types::Credentials;
 use aws_credential_types::provider::ProvideCredentials;
+use aws_credential_types::Credentials;
 use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings};
 use aws_sigv4::sign::v4::SigningParams;
 use aws_smithy_runtime_api::client::identity::Identity;
-use hyper::{Method, Request, Response, StatusCode, Uri};
+use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper::header::{HeaderName, HeaderValue};
 use hyper::http::uri::{Authority, Scheme};
-use http_body_util::{Full, BodyExt};
+use hyper::{Method, Request, Response, StatusCode, Uri};
 use json::{object, JsonValue};
 use lazy_static::lazy_static;
 use log::{debug, trace};
@@ -190,7 +190,7 @@ impl KmsRequestOutgoing {
         let identity = Identity::new(credentials, Some(expires));
 
         let signing_settings = SigningSettings::default();
-        let signing_params= SigningParams::builder()
+        let signing_params = SigningParams::builder()
             .identity(&identity)
             .region(region)
             .name(KMS_SERVICE_NAME)
@@ -201,13 +201,19 @@ impl KmsRequestOutgoing {
         let signable_request = SignableRequest::new(
             self.inner.method().as_str(),
             self.inner.uri().to_string(),
-            self.inner.headers().iter().map(|(k, v)| (k.as_str(), v.to_str().unwrap())),
+            self.inner
+                .headers()
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.to_str().unwrap())),
             SignableBody::Bytes(self.inner.body()),
         )?;
 
         // Sign and then apply the signature to the request
-        let signed =
-            aws_sigv4::http_request::sign(signable_request, &aws_sigv4::http_request::SigningParams::V4(signing_params)).map_err(Error::msg)?;
+        let signed = aws_sigv4::http_request::sign(
+            signable_request,
+            &aws_sigv4::http_request::SigningParams::V4(signing_params),
+        )
+        .map_err(Error::msg)?;
 
         let (signing_instructions, _signature) = signed.into_parts();
         signing_instructions.apply_to_request_http1x(&mut self.inner);
@@ -235,7 +241,7 @@ pub trait KmsEndpointProvider {
 
 pub enum CredentialsGetter {
     Credentials(Credentials),
-    SdkConfig(Box<SdkConfig>)
+    SdkConfig(Box<SdkConfig>),
 }
 
 pub struct KmsProxyConfig {
@@ -254,13 +260,11 @@ impl KmsProxyConfig {
     pub async fn credentials(&self) -> Result<Credentials> {
         match &self.credentials_get {
             CredentialsGetter::Credentials(c) => Ok(c.clone()),
-            CredentialsGetter::SdkConfig(sdk_config) => {
-                Ok(sdk_config
+            CredentialsGetter::SdkConfig(sdk_config) => Ok(sdk_config
                 .credentials_provider()
                 .ok_or(anyhow!("credentials provider is missing"))?
                 .provide_credentials()
-                .await?)
-            },
+                .await?),
         }
     }
 }
@@ -274,7 +278,10 @@ impl KmsProxyHandler {
         Self { config }
     }
 
-    async fn handle_attesting_action(&self, req_in: KmsRequestIncoming) -> Result<Response<Full<Bytes>>> {
+    async fn handle_attesting_action(
+        &self,
+        req_in: KmsRequestIncoming,
+    ) -> Result<Response<Full<Bytes>>> {
         // Take the original request, insert "Recipient": <RecipientInfo> into the body json,
         // re-sign the request and send it off.
         debug!("Handling attesting action");
@@ -318,7 +325,11 @@ impl KmsProxyHandler {
         })
     }
 
-    async fn handle_response(&self, method: &str, resp: Response<Full<Bytes>>) -> Result<Response<Full<Bytes>>> {
+    async fn handle_response(
+        &self,
+        method: &str,
+        resp: Response<Full<Bytes>>,
+    ) -> Result<Response<Full<Bytes>>> {
         let (mut head, body) = resp.into_parts();
         head.headers.remove(hyper::header::CONTENT_LENGTH);
 
@@ -406,10 +417,7 @@ impl HttpHandler for KmsProxyHandler {
 // trait but it uses `&mut self` and would require a needless mutex.
 #[async_trait]
 pub trait HttpClient {
-    async fn request(
-        &self,
-        req: Request<Full<Bytes>>,
-    ) -> Result<Response<Full<Bytes>>>;
+    async fn request(&self, req: Request<Full<Bytes>>) -> Result<Response<Full<Bytes>>>;
 }
 
 #[async_trait]
@@ -417,11 +425,10 @@ impl<C> HttpClient for hyper_util::client::legacy::Client<C, Full<Bytes>>
 where
     C: hyper_util::client::legacy::connect::Connect + Clone + Send + Sync + 'static,
 {
-    async fn request(
-        &self,
-        req: Request<Full<Bytes>>,
-    ) -> Result<Response<Full<Bytes>>> {
-        let (head, body) = hyper_util::client::legacy::Client::request(self, req).await?.into_parts();
+    async fn request(&self, req: Request<Full<Bytes>>) -> Result<Response<Full<Bytes>>> {
+        let (head, body) = hyper_util::client::legacy::Client::request(self, req)
+            .await?
+            .into_parts();
         let body = body.collect().await?;
 
         Ok(Response::from_parts(head, Full::new(body.to_bytes())))
@@ -486,10 +493,7 @@ mod tests {
 
     #[async_trait]
     impl HttpClient for Mock {
-        async fn request(
-            &self,
-            req: Request<Full<Bytes>>,
-        ) -> Result<Response<Full<Bytes>>> {
+        async fn request(&self, req: Request<Full<Bytes>>) -> Result<Response<Full<Bytes>>> {
             let action = req.headers().get(&X_AMZ_TARGET).unwrap().to_str().unwrap();
 
             let authz = req
@@ -512,17 +516,11 @@ mod tests {
     }
 
     impl Mock {
-        async fn list_keys(
-            &self,
-            _req: Request<Full<Bytes>>,
-        ) -> Result<Response<Full<Bytes>>> {
+        async fn list_keys(&self, _req: Request<Full<Bytes>>) -> Result<Response<Full<Bytes>>> {
             Ok(kms_response(KEYS.clone()))
         }
 
-        async fn decrypt(
-            &self,
-            req: Request<Full<Bytes>>,
-        ) -> Result<Response<Full<Bytes>>> {
+        async fn decrypt(&self, req: Request<Full<Bytes>>) -> Result<Response<Full<Bytes>>> {
             let (_, body) = req.into_parts();
             let body = body.collect().await?.to_bytes();
             let body = body_as_json(body).await.unwrap();
@@ -580,7 +578,11 @@ mod tests {
 
         let config = KmsProxyConfig {
             client: Box::new(Mock),
-            credentials_get: CredentialsGetter::Credentials(Credentials::from_keys("TESTKEY", "TESTSECRET", None)),
+            credentials_get: CredentialsGetter::Credentials(Credentials::from_keys(
+                "TESTKEY",
+                "TESTSECRET",
+                None,
+            )),
             keypair: Arc::new(KeyPair::from_private(priv_key)),
             attester: Box::new(StaticAttestationProvider::new(ATTESTATION_DOC.to_vec())),
             endpoints: Arc::new(Mock {}),

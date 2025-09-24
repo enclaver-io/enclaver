@@ -3,12 +3,12 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use hyper::{Request, Response, StatusCode};
-use hyper::server::conn::http1;
+use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
+use hyper::server::conn::http1;
 use hyper::service::service_fn;
+use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use http_body_util::{Full, BodyExt};
 use tokio::net::TcpListener;
 
 #[async_trait]
@@ -45,16 +45,20 @@ impl HttpServer {
                 // Finally, we bind the incoming connection to our `hello` service
                 if let Err(err) = http1::Builder::new()
                     // `service_fn` converts our function in a `Service`
-                    .serve_connection(io, service_fn(move |req: Request<Incoming>| {
-                        let handler = handler.clone();  // Clone before moving into async block
-                        async move {
-                            let (head, body) = req.into_parts();
-                            let body = body.collect().await?;
+                    .serve_connection(
+                        io,
+                        service_fn(move |req: Request<Incoming>| {
+                            let handler = handler.clone(); // Clone before moving into async block
+                            async move {
+                                let (head, body) = req.into_parts();
+                                let body = body.collect().await?;
 
-                            let req_full = Request::from_parts(head, Full::new(body.to_bytes()));
-                            handler.handle(req_full).await
-                        }
-                    }))
+                                let req_full =
+                                    Request::from_parts(head, Full::new(body.to_bytes()));
+                                handler.handle(req_full).await
+                            }
+                        }),
+                    )
                     .await
                 {
                     eprintln!("Error serving connection: {:?}", err);

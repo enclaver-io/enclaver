@@ -43,12 +43,17 @@ impl EgressService {
 }
 
 fn set_proxy_env_var(value: &str) {
-    std::env::set_var("http_proxy", value);
-    std::env::set_var("https_proxy", value);
-    std::env::set_var("HTTP_PROXY", value);
-    std::env::set_var("HTTPS_PROXY", value);
+    unsafe {
+        // SAFETY: While not 100% b/c it is a multi-threaded program, with 3rd party code,
+        // we only get/set env vars in a ::start() methods that are serialized via .await.
 
-    const NO_PROXY: &str = "localhost,127.0.0.1";
-    std::env::set_var("no_proxy", NO_PROXY);
-    std::env::set_var("NO_PROXY", NO_PROXY);
+        std::env::set_var("http_proxy", value);
+        std::env::set_var("https_proxy", value);
+        std::env::set_var("HTTP_PROXY", value);
+        std::env::set_var("HTTPS_PROXY", value);
+
+        const NO_PROXY: &str = "localhost,127.0.0.1";
+        std::env::set_var("no_proxy", NO_PROXY);
+        std::env::set_var("NO_PROXY", NO_PROXY);
+    }
 }

@@ -2,19 +2,21 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use http::Uri;
-use hyper::body::Bytes;
 use http_body_util::BodyExt;
+use hyper::body::Bytes;
 
 use aws_config::imds;
 use aws_config::imds::credentials::ImdsCredentialsProvider;
 use aws_config::imds::region::ImdsRegionProvider;
 use aws_config::provider_config::ProviderConfig;
-use aws_types::sdk_config::{SdkConfig, SharedHttpClient, SharedCredentialsProvider};
+use aws_types::sdk_config::{SdkConfig, SharedCredentialsProvider, SharedHttpClient};
 
+use aws_smithy_runtime_api::client::http::{
+    HttpClient, HttpConnector, HttpConnectorFuture, HttpConnectorSettings, SharedHttpConnector,
+};
+use aws_smithy_runtime_api::client::result::ConnectorError;
 use aws_smithy_runtime_api::client::runtime_components::RuntimeComponents;
 use aws_smithy_runtime_api::http::Request;
-use aws_smithy_runtime_api::client::http::{HttpClient, HttpConnectorSettings, SharedHttpConnector, HttpConnector, HttpConnectorFuture};
-use aws_smithy_runtime_api::client::result::ConnectorError;
 use aws_smithy_types::body::SdkBody;
 
 use crate::http_client::HttpProxyClient;
@@ -26,7 +28,9 @@ struct ProxiedHttpClient(Arc<HttpProxyClient<SdkBody>>);
 
 impl ProxiedHttpClient {
     fn new(proxy_uri: Uri) -> Self {
-        Self(Arc::new(crate::http_client::new_http_proxy_client(proxy_uri)))
+        Self(Arc::new(crate::http_client::new_http_proxy_client(
+            proxy_uri,
+        )))
     }
 }
 
@@ -47,7 +51,8 @@ impl HttpConnector for ProxiedHttpClient {
             let request = request.try_into_http1x().unwrap();
             let response = client.request(request).await.unwrap();
             let (head, body) = response.into_parts();
-            body.collect().await
+            body.collect()
+                .await
                 .map_err(|err| ConnectorError::user(err.into()))
                 .and_then(|body| into_aws_response(head, body.to_bytes()))
         };
@@ -56,9 +61,10 @@ impl HttpConnector for ProxiedHttpClient {
     }
 }
 
-fn into_aws_response(head: hyper::http::response::Parts, body: Bytes)
-    -> Result<aws_smithy_runtime_api::client::orchestrator::HttpResponse, ConnectorError>
-{
+fn into_aws_response(
+    head: hyper::http::response::Parts,
+    body: Bytes,
+) -> Result<aws_smithy_runtime_api::client::orchestrator::HttpResponse, ConnectorError> {
     let resp = http::Response::from_parts(head, body.into());
     aws_smithy_runtime_api::client::orchestrator::HttpResponse::try_from(resp)
         .map_err(|err| ConnectorError::user(err.into()))
@@ -77,7 +83,7 @@ pub async fn imds_client_with_proxy(proxy_uri: Uri) -> Result<imds::Client> {
     let client = imds::Client::builder()
         .configure(&config)
         .endpoint(IMDS_URL)
-        .map_err( anyhow::Error::from_boxed)?
+        .map_err(anyhow::Error::from_boxed)?
         .build();
 
     Ok(client)

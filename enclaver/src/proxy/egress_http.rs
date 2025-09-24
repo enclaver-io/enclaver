@@ -6,15 +6,15 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 use http_body_util::combinators::BoxBody;
-use hyper::{Method, Request, Response, StatusCode};
-use hyper::body::{Body, Bytes, Incoming};
-use hyper::http::uri::PathAndQuery;
-use hyper::header::HeaderValue;
-use hyper::server::conn::http1 as http1_server;
-use hyper::client::conn::http1 as http1_client;
-use hyper::service::service_fn;
-use hyper_util::rt::TokioIo;
 use http_body_util::Full;
+use hyper::body::{Body, Bytes, Incoming};
+use hyper::client::conn::http1 as http1_client;
+use hyper::header::HeaderValue;
+use hyper::http::uri::PathAndQuery;
+use hyper::server::conn::http1 as http1_server;
+use hyper::service::service_fn;
+use hyper::{Method, Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
 use log::{debug, error};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -211,7 +211,8 @@ async fn proxy(
 
 fn with_boxed_body<B>(resp: Response<B>) -> Response<BoxBody<Bytes, anyhow::Error>>
 where
-    B: Body<Data = Bytes> + Send + Sync + 'static, <B as hyper::body::Body>::Error: std::error::Error + Send + Sync
+    B: Body<Data = Bytes> + Send + Sync + 'static,
+    <B as hyper::body::Body>::Error: std::error::Error + Send + Sync,
 {
     use http_body_util::BodyExt;
 
@@ -246,9 +247,7 @@ async fn handle_connect(
             // Connect to remote server before the upgrade so we can return an error if it fails
             let mut remote = match remote_connect(egress_port, authority.host(), port).await {
                 Ok(remote) => remote,
-                Err(err) => {
-                    return err_resp(StatusCode::SERVICE_UNAVAILABLE, err.to_string())
-                }
+                Err(err) => return err_resp(StatusCode::SERVICE_UNAVAILABLE, err.to_string()),
             };
 
             tokio::task::spawn(async move {
@@ -280,7 +279,11 @@ async fn handle_request(
 ) -> anyhow::Result<Response<BoxBody<Bytes, anyhow::Error>>> {
     let host = match req.uri().host() {
         Some(host) => host,
-        None => return Ok(with_boxed_body(bad_request("URI is missing a host".to_string()))),
+        None => {
+            return Ok(with_boxed_body(bad_request(
+                "URI is missing a host".to_string(),
+            )))
+        }
     };
     let port = req.uri().port_u16().unwrap_or(80);
 
@@ -390,12 +393,12 @@ async fn remote_connect(egress_port: u32, host: &str, port: u16) -> anyhow::Resu
 mod tests {
     use assert2::assert;
     use http::{uri::PathAndQuery, Method, Version};
-    use hyper::{Request, Response};
+    use http_body_util::{BodyExt, Full};
     use hyper::body::{Bytes, Incoming};
     use hyper::server::conn::http1 as http1_server;
     use hyper::service::service_fn;
+    use hyper::{Request, Response};
     use hyper_util::rt::TokioIo;
-    use http_body_util::{Full, BodyExt};
     use rand::RngCore;
     use std::convert::Infallible;
     use std::net::{Ipv4Addr, SocketAddr};

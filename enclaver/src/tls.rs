@@ -5,14 +5,14 @@ use std::sync::{Arc, LazyLock};
 
 use anyhow::{anyhow, Result};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use tokio_rustls::rustls::{ClientConfig, DigitallySignedStruct, Error, RootCertStore, ServerConfig, SignatureScheme};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::crypto::aws_lc_rs;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use tokio_rustls::rustls::{
+    ClientConfig, DigitallySignedStruct, Error, RootCertStore, ServerConfig, SignatureScheme,
+};
 
-
-static CRYPTO_PROVIDER_INIT: LazyLock<()> = LazyLock::new(|| {
-    aws_lc_rs::default_provider().install_default().unwrap()
-}); 
+static CRYPTO_PROVIDER_INIT: LazyLock<()> =
+    LazyLock::new(|| aws_lc_rs::default_provider().install_default().unwrap());
 
 fn init_crypto_provider() {
     LazyLock::force(&CRYPTO_PROVIDER_INIT);
@@ -30,7 +30,10 @@ fn load_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
     Ok(key)
 }
 
-pub fn load_server_config<P1: AsRef<Path>, P2: AsRef<Path>>(key: P1, cert: P2) -> Result<Arc<ServerConfig>> {
+pub fn load_server_config<P1: AsRef<Path>, P2: AsRef<Path>>(
+    key: P1,
+    cert: P2,
+) -> Result<Arc<ServerConfig>> {
     init_crypto_provider();
 
     let certs = load_certs(cert.as_ref())?;
