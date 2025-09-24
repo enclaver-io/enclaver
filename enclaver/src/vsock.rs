@@ -1,9 +1,9 @@
 use anyhow::Result;
 use futures::{Stream, StreamExt};
 use log::{debug, error, info};
-use tokio_rustls::rustls::{ClientConfig, ServerConfig};
-use tokio_rustls::rustls::pki_types::ServerName;
 use std::sync::Arc;
+use tokio_rustls::rustls::pki_types::ServerName;
+use tokio_rustls::rustls::{ClientConfig, ServerConfig};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tokio_vsock::{VsockListener, VsockStream};
 

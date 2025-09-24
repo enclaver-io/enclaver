@@ -1,7 +1,7 @@
 use crate::utils::StringablePathExt;
 use anyhow::{anyhow, Context, Result};
-use bollard::image::{BuildImageOptions, CreateImageOptions, TagImageOptions};
 use bollard::models::{BuildInfo, CreateImageInfo, ImageId};
+use bollard::query_parameters::{BuildImageOptions, CreateImageOptions, TagImageOptions};
 use bollard::Docker;
 use futures_util::stream::{StreamExt, TryStreamExt};
 use log::{debug, trace};
@@ -102,7 +102,7 @@ impl ImageManager {
         debug!("fetching image: {}", image_name);
         let mut fetch_stream = self.docker.create_image(
             Some(CreateImageOptions {
-                from_image: image_name,
+                from_image: Some(image_name.to_string()),
                 ..Default::default()
             }),
             None,
@@ -134,9 +134,8 @@ impl ImageManager {
         // pair of streams, and lazily write the tarball to one of them while streaming
         // the other end of the pipe into the daemon request.
         let (tar_write, tar_read) = duplex(1024);
-        let byte_stream = codec::FramedRead::new(tar_read, codec::BytesCodec::new()).map(|r| {
-            r.unwrap().freeze()
-        });
+        let byte_stream =
+            codec::FramedRead::new(tar_read, codec::BytesCodec::new()).map(|r| r.unwrap().freeze());
 
         // Concurrently build the context tarball and perform the build request.
         let (realize_res, build_res) = tokio::join!(
@@ -144,7 +143,7 @@ impl ImageManager {
             self.docker
                 .build_image(
                     BuildImageOptions {
-                        dockerfile: "Dockerfile",
+                        dockerfile: "Dockerfile".to_string(),
                         rm: true,
                         ..Default::default()
                     },
@@ -190,7 +189,7 @@ impl ImageManager {
             .tag_image(
                 img.to_str(),
                 Some(TagImageOptions {
-                    repo: tag,
+                    repo: Some(tag.to_string()),
                     ..Default::default()
                 }),
             )

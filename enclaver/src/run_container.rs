@@ -1,6 +1,10 @@
 use anyhow::{anyhow, Result};
-use bollard::container::{Config, LogOutput, LogsOptions, WaitContainerOptions};
-use bollard::models::{DeviceMapping, HostConfig, PortBinding, PortMap};
+use bollard::container::LogOutput;
+use bollard::models::{ContainerCreateBody, DeviceMapping, HostConfig, PortBinding, PortMap};
+use bollard::query_parameters::{
+    CreateContainerOptions, LogsOptions, RemoveContainerOptions, StartContainerOptions,
+    StopContainerOptions, WaitContainerOptions,
+};
 use bollard::Docker;
 use futures_util::stream::{StreamExt, TryStreamExt};
 use std::collections::HashMap;
@@ -63,9 +67,9 @@ impl RunWrapper {
 
         let container_id = self
             .docker
-            .create_container::<String, String>(
-                None,
-                Config {
+            .create_container(
+                None::<CreateContainerOptions>,
+                ContainerCreateBody {
                     image: Some(image_name.to_string()),
                     cmd: match debug_mode {
                         // TODO(russell_h): pass through additional args
@@ -94,14 +98,14 @@ impl RunWrapper {
         self.container_id = Some(container_id.clone());
 
         self.docker
-            .start_container::<String>(&container_id, None)
+            .start_container(&container_id, None::<StartContainerOptions>)
             .await?;
 
         self.start_output_stream_task(container_id.clone()).await?;
 
         let status_code = self
             .docker
-            .wait_container(&container_id, None::<WaitContainerOptions<String>>)
+            .wait_container(&container_id, None::<WaitContainerOptions>)
             .try_collect::<Vec<_>>()
             .await?
             .first()
@@ -115,7 +119,9 @@ impl RunWrapper {
         }
 
         // Remove the container after it successfully exits.
-        self.docker.remove_container(&container_id, None).await?;
+        self.docker
+            .remove_container(&container_id, None::<RemoveContainerOptions>)
+            .await?;
 
         Ok(())
     }
@@ -124,7 +130,7 @@ impl RunWrapper {
         let mut stdout = tokio::io::stdout();
         let mut stderr = tokio::io::stderr();
 
-        let mut log_stream = self.docker.logs::<String>(
+        let mut log_stream = self.docker.logs(
             &container_id,
             Some(LogsOptions {
                 follow: true,
@@ -149,9 +155,13 @@ impl RunWrapper {
 
     pub async fn cleanup(&mut self) -> Result<()> {
         if let Some(container_id) = self.container_id.take() {
-            self.docker.stop_container(&container_id, None).await?;
+            self.docker
+                .stop_container(&container_id, None::<StopContainerOptions>)
+                .await?;
 
-            self.docker.remove_container(&container_id, None).await?;
+            self.docker
+                .remove_container(&container_id, None::<RemoveContainerOptions>)
+                .await?;
         }
 
         if let Some(stream_task) = self.stream_task.take() {

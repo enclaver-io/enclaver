@@ -54,7 +54,7 @@ fn load_filters(opt_spec: &Option<Vec<String>>) -> (DomainFilter, IpFilter) {
     let mut domains = DomainFilter::new();
     let mut ips = IpFilter::new();
 
-    if let Some(ref spec) = opt_spec {
+    if let Some(spec) = opt_spec {
         for pattern in spec {
             if ips.add(pattern).is_err() {
                 domains.add(pattern);

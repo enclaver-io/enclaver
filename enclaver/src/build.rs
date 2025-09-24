@@ -5,8 +5,12 @@ use crate::images::{FileBuilder, FileSource, ImageManager, ImageRef, LayerBuilde
 use crate::manifest::{load_manifest, Manifest};
 use crate::nitro_cli::{EIFInfo, KnownIssue};
 use anyhow::{anyhow, Result};
-use bollard::container::{Config, LogOutput, LogsOptions, WaitContainerOptions};
-use bollard::models::{ImageConfig, HostConfig, Mount, MountTypeEnum};
+use bollard::container::LogOutput;
+use bollard::models::{ContainerCreateBody, HostConfig, ImageConfig, Mount, MountTypeEnum};
+use bollard::query_parameters::{
+    CreateContainerOptions, LogsOptions, RemoveContainerOptions, RemoveImageOptions,
+    StartContainerOptions, WaitContainerOptions,
+};
 use bollard::Docker;
 use futures_util::stream::{StreamExt, TryStreamExt};
 use log::{debug, info, warn};
@@ -96,7 +100,8 @@ impl EnclaveArtifactBuilder {
 
         if let Some(signature) = &manifest.signature {
             if let Some(parent_path) = PathBuf::from(manifest_path).parent() {
-                certificate_path = Some(canonicalize(parent_path.join(&signature.certificate)).await?);
+                certificate_path =
+                    Some(canonicalize(parent_path.join(&signature.certificate)).await?);
                 key_path = Some(canonicalize(parent_path.join(&signature.key)).await?);
             } else {
                 return Err(anyhow!("Failed to get parent path of manifest"));
@@ -104,7 +109,13 @@ impl EnclaveArtifactBuilder {
         }
 
         let eif_info = self
-            .image_to_eif(&amended_img, &build_dir, EIF_FILE_NAME, key_path, certificate_path)
+            .image_to_eif(
+                &amended_img,
+                &build_dir,
+                EIF_FILE_NAME,
+                key_path,
+                certificate_path,
+            )
             .await?;
 
         Ok(IntermediateBuildResult {
@@ -237,7 +248,7 @@ impl EnclaveArtifactBuilder {
         build_dir: &TempDir,
         eif_name: &str,
         key: Option<PathBuf>,
-        certificate: Option<PathBuf>
+        certificate: Option<PathBuf>,
     ) -> Result<EIFInfo> {
         let build_dir_path = build_dir.path().to_str().unwrap();
 
@@ -288,7 +299,6 @@ impl EnclaveArtifactBuilder {
             cmd.push("--private-key");
             cmd.push("/var/run/key");
 
-
             mounts.push(Mount {
                 typ: Some(MountTypeEnum::BIND),
                 source: Some(key_path.to_string_lossy().to_string()),
@@ -306,11 +316,11 @@ impl EnclaveArtifactBuilder {
 
         let build_container_id = self
             .docker
-            .create_container::<&str, &str>(
-                None,
-                Config {
-                    image: Some(nitro_cli.to_str()),
-                    cmd: Some(cmd),
+            .create_container(
+                None::<CreateContainerOptions>,
+                ContainerCreateBody {
+                    image: Some(nitro_cli.to_string()),
+                    cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
                     attach_stderr: Some(true),
                     attach_stdout: Some(true),
                     host_config: Some(HostConfig {
@@ -329,11 +339,11 @@ impl EnclaveArtifactBuilder {
         );
 
         self.docker
-            .start_container::<String>(&build_container_id, None)
+            .start_container(&build_container_id, None::<StartContainerOptions>)
             .await?;
 
         // Convert docker output to log lines, to give the user some feedback as to what is going on.
-        let mut log_stream = self.docker.logs::<String>(
+        let mut log_stream = self.docker.logs(
             &build_container_id,
             Some(LogsOptions {
                 follow: true,
@@ -365,7 +375,7 @@ impl EnclaveArtifactBuilder {
 
         let status_code = self
             .docker
-            .wait_container(&build_container_id, None::<WaitContainerOptions<String>>)
+            .wait_container(&build_container_id, None::<WaitContainerOptions>)
             .try_collect::<Vec<_>>()
             .await?
             .first()
@@ -377,7 +387,7 @@ impl EnclaveArtifactBuilder {
         }
 
         let mut json_buf = Vec::with_capacity(4096);
-        let mut log_stream = self.docker.logs::<String>(
+        let mut log_stream = self.docker.logs(
             &build_container_id,
             Some(LogsOptions {
                 stdout: true,
@@ -391,9 +401,12 @@ impl EnclaveArtifactBuilder {
 
         // If we make it this far, do a little bit of cleanup
         self.docker
-            .remove_container(&build_container_id, None)
+            .remove_container(&build_container_id, None::<RemoveContainerOptions>)
             .await?;
-        let _ = self.docker.remove_image(&img_tag, None, None).await?;
+        let _ = self
+            .docker
+            .remove_image(&img_tag, None::<RemoveImageOptions>, None)
+            .await?;
 
         Ok(serde_json::from_slice(&json_buf)?)
     }

@@ -19,8 +19,10 @@ jobs:
 
       - name: Parse MSRV
         run: sed -n 's/^rust-version = "\(.*\)"$/RUSTUP_TOOLCHAIN=\1/p' enclaver/Cargo.toml >> $GITHUB_ENV
+
       - name: Install Rust Toolchain
         run: rustup toolchain install $RUSTUP_TOOLCHAIN
+
       - name: Install Clippy and Rustfmt
         run: rustup component add clippy rustfmt
 

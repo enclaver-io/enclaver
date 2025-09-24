@@ -126,8 +126,6 @@ mod tests {
     use anyhow::Result;
     use assert2::assert;
     use rand::RngCore;
-    use tokio_rustls::rustls::{ClientConfig, ServerConfig};
-    use tokio_rustls::rustls::pki_types::ServerName;
     use std::collections::hash_map::DefaultHasher;
     use std::hash::Hasher;
     use std::net::{Ipv4Addr, SocketAddrV4};
@@ -136,6 +134,8 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::watch::Sender;
     use tokio::task::JoinHandle;
+    use tokio_rustls::rustls::pki_types::ServerName;
+    use tokio_rustls::rustls::{ClientConfig, ServerConfig};
     use tokio_rustls::TlsConnector;
 
     use super::{EnclaveProxy, HostProxy};

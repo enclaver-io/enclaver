@@ -137,7 +137,10 @@ impl Enclave {
 
         self.enclave_info = Some(enclave_info.clone());
 
-        info!("started enclave ID={}, CID={}", enclave_info.id, enclave_info.cid);
+        info!(
+            "started enclave ID={}, CID={}",
+            enclave_info.id, enclave_info.cid
+        );
 
         if self.debug_mode {
             // TODO: Should we let an an EOF from the console terminate run?
@@ -177,7 +180,7 @@ impl Enclave {
 
     async fn start_ingress_proxies(&mut self, cid: u32) -> Result<()> {
         let ingress = match &self.manifest.ingress {
-            Some(ref ingress) => ingress,
+            Some(ingress) => ingress,
             None => {
                 info!("no ingress defined, no ingress proxies will be started");
                 return Ok(());
