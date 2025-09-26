@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - "ey/attest"
     tags:
       - v*
 
@@ -30,6 +31,10 @@ jobs:
             host: 'macos-latest'
 
     runs-on: ${{ matrix.host }}
+
+    permissions:
+      id-token: write
+      attestations: write
 
     steps:
       - uses: actions/checkout@v4
@@ -63,6 +68,11 @@ jobs:
             --manifest-path enclaver/Cargo.toml
             --release
             ${{ matrix.extra_cargo_args }}
+
+      - name: Generate a SLSA provenance attestation
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: 'target/**/enclaver, target/**/odyn, target/**/enclaver-run'
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
