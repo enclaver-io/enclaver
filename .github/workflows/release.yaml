@@ -31,6 +31,10 @@ jobs:
 
     runs-on: ${{ matrix.host }}
 
+    permissions:
+      id-token: write
+      attestations: write
+
     steps:
       - uses: actions/checkout@v4
 
@@ -64,6 +68,12 @@ jobs:
             --release
             ${{ matrix.extra_cargo_args }}
 
+      - name: Generate a SLSA provenance attestation
+        if: github.repository == 'enclaver-io/enclaver' && github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: "enclaver/target/*/release/enclaver"
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -82,6 +92,11 @@ jobs:
     permissions:
       contents: 'read'
       id-token: 'write'
+      attestations: 'write'
+
+    env:
+      ODYN_IMAGE: public.ecr.aws/s2t1d4c6/enclaver-io/odyn
+      RUNTIME_BASE_IMAGE: public.ecr.aws/s2t1d4c6/enclaver-io/enclaver-wrapper-base
 
     steps:
       - name: Download Binaries
@@ -117,16 +132,17 @@ jobs:
         id: odyn-metadata
         uses: docker/metadata-action@v4
         with:
-          images: public.ecr.aws/s2t1d4c6/enclaver-io/odyn
+          images: ${{ env.ODYN_IMAGE }}
           tags: |
             type=sha,
-            type=semver,pattern=v{{major}}
-            type=semver,pattern=v{{major}}.{{minor}}
-            type=semver,pattern=v{{major}}.{{minor}}.{{patch}}
+            type=semver,pattern=v{{major}},enable=${{ github.ref_type == 'tag' }}
+            type=semver,pattern=v{{major}}.{{minor}},enable=${{ github.ref_type == 'tag' }}
+            type=semver,pattern=v{{major}}.{{minor}}.{{patch}},enable=${{ github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
 
       - name: Build Odyn Image
-        uses: docker/build-push-action@v3
+        id: odyn-build-image
+        uses: docker/build-push-action@v5
         with:
           context: "{{defaultContext}}:build/dockerfiles"
           build-contexts: artifacts=.
@@ -135,19 +151,28 @@ jobs:
           push: true
           tags: ${{ steps.odyn-metadata.outputs.tags }}
 
+      - name: Generate SLSA provenance for Odyn
+        if: github.repository == 'enclaver-io/enclaver' && github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: ${{ env.ODYN_IMAGE }}
+          subject-digest: ${{ steps.odyn-build-image.outputs.digest }}
+          push-to-registry: true
+
       - name: Generate Runtime Base Image Metadata
         id: wrapper-base-metadata
         uses: docker/metadata-action@v4
         with:
-          images: public.ecr.aws/s2t1d4c6/enclaver-io/enclaver-wrapper-base
+          images: ${{ env.RUNTIME_BASE_IMAGE }}
           tags: |
             type=sha,
-            type=semver,pattern=v{{major}}
-            type=semver,pattern=v{{major}}.{{minor}}
-            type=semver,pattern=v{{major}}.{{minor}}.{{patch}}
+            type=semver,pattern=v{{major}},enable=${{ github.ref_type == 'tag' }}
+            type=semver,pattern=v{{major}}.{{minor}},enable=${{ github.ref_type == 'tag' }}
+            type=semver,pattern=v{{major}}.{{minor}}.{{patch}},enable=${{ github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
 
       - name: Build Runtime Base Image
+        id: runtime-base-build-image
         uses: docker/build-push-action@v3
         with:
           context: "{{defaultContext}}:build/dockerfiles"
@@ -156,6 +181,14 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.wrapper-base-metadata.outputs.tags }}
+
+      - name: Generate SLSA provenance for Runtime Base
+        if: github.repository == 'enclaver-io/enclaver' && github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: ${{ env.RUNTIME_BASE_IMAGE }}
+          subject-digest: ${{ steps.runtime-base-build-image.outputs.digest }}
+          push-to-registry: true
 
   upload-release-artifact:
     if: github.repository == 'enclaver-io/enclaver' && github.ref_type == 'tag'
