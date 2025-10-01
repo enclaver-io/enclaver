@@ -13,9 +13,16 @@ use tokio::fs::{create_dir, File};
 use tokio::io::{duplex, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio_util::codec;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ImageRef {
-    id: String,
+    #[serde(rename = "ID")]
+    pub id: String,
+
+    #[serde(rename = "Name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+
+    #[serde(rename = "RepoDigest", skip_serializing_if = "Option::is_none")]
+    pub repo_digest: Option<String>,
 }
 
 impl ImageRef {
@@ -64,7 +71,11 @@ impl ImageManager {
             .with_context(|| format!("inspecting image {}", name))?;
 
         match img.id {
-            Some(id) => Ok(ImageRef { id }),
+            Some(id) => Ok(ImageRef {
+                id,
+                name: None,
+                repo_digest: img.repo_digests.unwrap_or_default().first().cloned(),
+            }),
             None => Err(anyhow!("missing image ID in image_inspect result")),
         }
     }
