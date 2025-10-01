@@ -4,22 +4,21 @@ use crate::constants::{
 use crate::images::{FileBuilder, FileSource, ImageManager, ImageRef, LayerBuilder};
 use crate::manifest::{load_manifest, Manifest};
 use crate::nitro_cli::{EIFInfo, KnownIssue};
+use crate::nitro_cli_container::NitroCLIContainer;
+pub use crate::nitro_cli_container::SigningInfo;
 use anyhow::{anyhow, Result};
-use bollard::container::LogOutput;
-use bollard::models::{ContainerCreateBody, HostConfig, ImageConfig, Mount, MountTypeEnum};
+use bollard::models::{ImageConfig};
 use bollard::query_parameters::{
-    CreateContainerOptions, LogsOptions, RemoveContainerOptions, RemoveImageOptions,
-    StartContainerOptions, WaitContainerOptions,
+    RemoveImageOptions,
 };
 use bollard::Docker;
-use futures_util::stream::{StreamExt, TryStreamExt};
+use futures_util::stream::{StreamExt};
 use log::{debug, info, warn};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::fs::{canonicalize, rename};
 use uuid::Uuid;
-
 const ENCLAVE_OVERLAY_CHOWN: &str = "0:0";
 const RELEASE_OVERLAY_CHOWN: &str = "0:0";
 
@@ -49,20 +48,21 @@ impl EnclaveArtifactBuilder {
     }
 
     /// Build a release image based on the referenced manifest.
-    pub async fn build_release(&self, manifest_path: &str) -> Result<(EIFInfo, ImageRef, String)> {
+    pub async fn build_release(&self, manifest_path: &str) -> Result<(EIFInfo, ResolvedSources, ImageRef)> {
         let ibr = self.common_build(manifest_path).await?;
         let eif_path = ibr.build_dir.path().join(EIF_FILE_NAME);
-        let release_img = self
+        let mut release_img = self
             .package_eif(eif_path, manifest_path, &ibr.resolved_sources)
             .await?;
 
         let release_tag = &ibr.manifest.target;
+        release_img.name = Some(release_tag.to_string());
 
         self.image_manager
             .tag_image(&release_img, release_tag)
             .await?;
 
-        Ok((ibr.eif_info, release_img, release_tag.to_string()))
+        Ok((ibr.eif_info, ibr.resolved_sources, release_img))
     }
 
     /// Build an EIF, as would be included in a release image, based on the referenced manifest.
@@ -95,26 +95,26 @@ impl EnclaveArtifactBuilder {
 
         let build_dir = TempDir::new()?;
 
-        let mut certificate_path: Option<PathBuf> = None;
-        let mut key_path: Option<PathBuf> = None;
-
-        if let Some(signature) = &manifest.signature {
+        let sign: Option<SigningInfo> = if let Some(signature) = &manifest.signature {
             if let Some(parent_path) = PathBuf::from(manifest_path).parent() {
-                certificate_path =
-                    Some(canonicalize(parent_path.join(&signature.certificate)).await?);
-                key_path = Some(canonicalize(parent_path.join(&signature.key)).await?);
+                Some(SigningInfo {
+                    certificate: canonicalize(parent_path.join(&signature.certificate)).await?,
+                    key: canonicalize(parent_path.join(&signature.key)).await?,
+                })
             } else {
                 return Err(anyhow!("Failed to get parent path of manifest"));
             }
-        }
+        } else {
+            None
+        };
 
         let eif_info = self
             .image_to_eif(
                 &amended_img,
+                resolved_sources.nitro_cli.clone(),
                 &build_dir,
                 EIF_FILE_NAME,
-                key_path,
-                certificate_path,
+                sign,
             )
             .await?;
 
@@ -245,10 +245,10 @@ impl EnclaveArtifactBuilder {
     async fn image_to_eif(
         &self,
         source_img: &ImageRef,
+        nitro_cli_img: ImageRef,
         build_dir: &TempDir,
         eif_name: &str,
-        key: Option<PathBuf>,
-        certificate: Option<PathBuf>,
+        sign: Option<SigningInfo>,
     ) -> Result<EIFInfo> {
         let build_dir_path = build_dir.path().to_str().unwrap();
 
@@ -260,103 +260,20 @@ impl EnclaveArtifactBuilder {
 
         debug!("tagged intermediate image: {}", img_tag);
 
-        // Note: we're deliberately not modeling nitro-cli as part of ResolvedSources.
-        // I might be overthinking this, but it doesn't directly end up as part of the
-        // final artifact, and it is very likely that two different versions of nitro-cli
-        // would output an identical EIF, so this seems like it should be modeled as more
-        // of a toolchain than a source. In any case there isn't much use-case for overriding
-        // it right now (perhaps pinning though), so deferring that problem for later.
-        let nitro_cli = self.resolve_external_source_image(NITRO_CLI_IMAGE).await?;
-
-        debug!("using nitro-cli image: {nitro_cli}");
-
-        let mut cmd = vec![
-            "build-enclave",
-            "--docker-uri",
-            &img_tag,
-            "--output-file",
-            eif_name,
-        ];
-
-        let mut mounts = vec![
-            Mount {
-                typ: Some(MountTypeEnum::BIND),
-                source: Some(String::from("/var/run/docker.sock")),
-                target: Some(String::from("/var/run/docker.sock")),
-                ..Default::default()
-            },
-            Mount {
-                typ: Some(MountTypeEnum::BIND),
-                source: Some(build_dir_path.into()),
-                target: Some(String::from("/build")),
-                ..Default::default()
-            },
-        ];
-
-        if let (Some(key_path), Some(certificate_path)) = (key, certificate) {
-            cmd.push("--signing-certificate");
-            cmd.push("/var/run/certificate");
-            cmd.push("--private-key");
-            cmd.push("/var/run/key");
-
-            mounts.push(Mount {
-                typ: Some(MountTypeEnum::BIND),
-                source: Some(key_path.to_string_lossy().to_string()),
-                target: Some(String::from("/var/run/key")),
-                ..Default::default()
-            });
-
-            mounts.push(Mount {
-                typ: Some(MountTypeEnum::BIND),
-                source: Some(certificate_path.to_string_lossy().to_string()),
-                target: Some(String::from("/var/run/certificate")),
-                ..Default::default()
-            });
-        }
-
-        let build_container_id = self
-            .docker
-            .create_container(
-                None::<CreateContainerOptions>,
-                ContainerCreateBody {
-                    image: Some(nitro_cli.to_string()),
-                    cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
-                    attach_stderr: Some(true),
-                    attach_stdout: Some(true),
-                    host_config: Some(HostConfig {
-                        mounts: Some(mounts),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-            )
-            .await?
-            .id;
+        let nitro_cli = NitroCLIContainer::new(self.docker.clone(), nitro_cli_img);
+        let build_container_id = nitro_cli.build_enclave(eif_name, &img_tag, build_dir_path, sign).await?;
 
         info!(
-            "starting nitro-cli build-eif in container: {}",
+            "started nitro-cli build-eif in container: {}",
             build_container_id
         );
 
-        self.docker
-            .start_container(&build_container_id, None::<StartContainerOptions>)
-            .await?;
-
         // Convert docker output to log lines, to give the user some feedback as to what is going on.
-        let mut log_stream = self.docker.logs(
-            &build_container_id,
-            Some(LogsOptions {
-                follow: true,
-                stderr: true,
-                ..Default::default()
-            }),
-        );
-
         let mut detected_nitro_cli_issue = None;
 
-        while let Some(Ok(LogOutput::StdErr { message: bytes })) = log_stream.next().await {
+        let mut stderr_stream = nitro_cli.stderr(&build_container_id, true);
+        while let Some(line) = stderr_stream.next().await {
             // Note that these come with trailing newlines, which we trim off.
-            let line = String::from_utf8_lossy(&bytes);
             let trimmed = line.trim_end();
 
             if detected_nitro_cli_issue.is_none() {
@@ -373,36 +290,20 @@ impl EnclaveArtifactBuilder {
             );
         }
 
-        let status_code = self
-            .docker
-            .wait_container(&build_container_id, None::<WaitContainerOptions>)
-            .try_collect::<Vec<_>>()
-            .await?
-            .first()
-            .ok_or_else(|| anyhow!("missing wait response from daemon",))?
-            .status_code;
-
+        let status_code = nitro_cli.wait_container(&build_container_id).await?;
         if status_code != 0 {
             return Err(anyhow!("non-zero exit code from nitro-cli",));
         }
 
         let mut json_buf = Vec::with_capacity(4096);
-        let mut log_stream = self.docker.logs(
-            &build_container_id,
-            Some(LogsOptions {
-                stdout: true,
-                ..Default::default()
-            }),
-        );
+        let mut stdout_stream = nitro_cli.stdout(&build_container_id, false);
 
-        while let Some(Ok(LogOutput::StdOut { message })) = log_stream.next().await {
-            json_buf.extend_from_slice(message.as_ref());
+        while let Some(line) = stdout_stream.next().await {
+            json_buf.extend_from_slice(line.as_ref());
         }
 
         // If we make it this far, do a little bit of cleanup
-        self.docker
-            .remove_container(&build_container_id, None::<RemoveContainerOptions>)
-            .await?;
+        nitro_cli.remove_container(&build_container_id).await?;
         let _ = self
             .docker
             .remove_image(&img_tag, None::<RemoveImageOptions>, None)
@@ -440,8 +341,16 @@ impl EnclaveArtifactBuilder {
         default: &str,
     ) -> Result<ImageRef> {
         match name_override {
-            Some(image_name) => self.image_manager.find_or_pull(image_name).await,
-            None => self.image_manager.pull_image(default).await,
+            Some(image_name) => {
+                let mut img = self.image_manager.find_or_pull(image_name).await?;
+                img.name = Some(image_name.to_string());
+                Ok(img)
+            }
+            None => {
+                let mut img = self.image_manager.pull_image(default).await?;
+                img.name = Some(default.to_string());
+                Ok(img)
+            }
         }
     }
 
@@ -469,9 +378,15 @@ impl EnclaveArtifactBuilder {
             info!("using wrapper base image: {release_base}");
         }
 
+        let nitro_cli = self
+            .resolve_internal_source_image(None, NITRO_CLI_IMAGE)
+            .await?;
+        info!("using nitro-cli image: {nitro_cli}");
+
         let sources = ResolvedSources {
             app,
             odyn,
+            nitro_cli,
             release_base,
         };
 
@@ -486,8 +401,17 @@ struct IntermediateBuildResult {
     eif_info: EIFInfo,
 }
 
-struct ResolvedSources {
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ResolvedSources {
+    #[serde(rename = "App")]
     app: ImageRef,
+
+    #[serde(rename = "Odyn")]
     odyn: ImageRef,
+
+    #[serde(rename = "NitroCLI")]
+    nitro_cli: ImageRef,
+
+    #[serde(rename = "ReleaseBase")]
     release_base: ImageRef,
 }

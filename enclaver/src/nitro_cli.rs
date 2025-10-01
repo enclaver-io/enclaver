@@ -109,22 +109,22 @@ impl NitroCLI {
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EIFInfo {
     #[serde(rename = "Measurements")]
-    measurements: EIFMeasurements,
+    pub measurements: EIFMeasurements,
 }
 
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EIFMeasurements {
     #[serde(rename = "PCR0")]
-    pcr0: String,
+    pub pcr0: String,
 
     #[serde(rename = "PCR1")]
-    pcr1: String,
+    pub pcr1: String,
 
     #[serde(rename = "PCR2")]
-    pcr2: String,
+    pub pcr2: String,
 
     #[serde(rename = "PCR8", skip_serializing_if = "Option::is_none")]
-    pcr8: Option<String>,
+    pub pcr8: Option<String>,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize)]

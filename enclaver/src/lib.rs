@@ -4,11 +4,12 @@ extern crate core;
 
 pub mod build;
 
-mod images;
+pub mod images;
 
 pub mod constants;
 
 pub mod nitro_cli;
+pub mod nitro_cli_container;
 
 pub mod manifest;
 

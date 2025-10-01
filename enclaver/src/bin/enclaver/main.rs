@@ -1,11 +1,13 @@
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use enclaver::{
+    build::ResolvedSources,
+    nitro_cli::EIFMeasurements,
     build::EnclaveArtifactBuilder, constants::MANIFEST_FILE_NAME, manifest::load_manifest,
     run_container::RunWrapper,
+    images::ImageRef,
 };
 use log::{debug, error};
-use tokio::io::{stdout, AsyncWriteExt};
 
 #[derive(Debug, Parser)]
 #[clap(author, version)]
@@ -81,13 +83,15 @@ async fn run(args: Cli) -> Result<()> {
             force_pull,
         } => {
             let builder = EnclaveArtifactBuilder::new(force_pull)?;
-            let (eif_info, release_img, tag) = builder.build_release(&manifest_file).await?;
-            let eif_info_bytes = serde_json::to_vec_pretty(&eif_info)?;
+            let (eif_info, resolved_sources, release_img) = builder.build_release(&manifest_file).await?;
 
-            println!("Built Release Image: {release_img} ({tag})");
-            println!("EIF Info:");
+            let build_summary = BuildSummary {
+                sources: resolved_sources,
+                measurements: eif_info.measurements,
+                image: release_img,
+            };
 
-            stdout().write_all(&eif_info_bytes).await?;
+            serde_json::to_writer_pretty(std::io::stdout(), &build_summary)?;
             println!();
 
             Ok(())
@@ -98,15 +102,15 @@ async fn run(args: Cli) -> Result<()> {
             manifest_file,
             eif_file: Some(eif_file),
             force_pull,
+            ..
         } => {
             let builder = EnclaveArtifactBuilder::new(force_pull)?;
             let (eif_info, eif_path) = builder.build_eif_only(&manifest_file, &eif_file).await?;
-            let eif_info_bytes = serde_json::to_vec_pretty(&eif_info)?;
 
             println!("Built EIF: {}", eif_path.display());
             println!("EIF Info:");
 
-            stdout().write_all(&eif_info_bytes).await?;
+            serde_json::to_writer_pretty(std::io::stdout(), &eif_info)?;
             println!();
 
             Ok(())
@@ -160,6 +164,19 @@ async fn run(args: Cli) -> Result<()> {
             Ok(())
         }
     }
+}
+
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct BuildSummary {
+    #[serde(rename = "Sources")]
+    sources: ResolvedSources,
+
+    #[serde(rename = "Measurements")]
+    measurements: EIFMeasurements,
+
+    #[serde(rename = "Image")]
+    image: ImageRef,
 }
 
 #[tokio::main]
