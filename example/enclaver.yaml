@@ -3,8 +3,8 @@ name: "example"
 target: "enclave:latest"
 sources:
   app: "app:latest"
-  #supervisor: "odyn-dev:latest"
-  #wrapper: "enclaver-wrapper-base:latest"
+  #odyn: "odyn-dev:latest"
+  #sleeve: "enclaver-wrapper-base:latest"
 defaults:
   memory_mb: 1500
 ingress:

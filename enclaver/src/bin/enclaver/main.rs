@@ -4,7 +4,7 @@ use enclaver::{
     build::ResolvedSources,
     nitro_cli::EIFMeasurements,
     build::EnclaveArtifactBuilder, constants::MANIFEST_FILE_NAME, manifest::load_manifest,
-    run_container::RunWrapper,
+    run_container::Sleeve,
     images::ImageRef,
 };
 use log::{debug, error};
@@ -142,7 +142,7 @@ async fn run(args: Cli) -> Result<()> {
                 )),
             }?;
 
-            let mut runner = RunWrapper::new()?;
+            let mut runner = Sleeve::new()?;
 
             let shutdown_signal = enclaver::utils::register_shutdown_signal_handler().await?;
 

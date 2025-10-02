@@ -29,8 +29,8 @@ pub struct Manifest {
 #[serde(deny_unknown_fields)]
 pub struct Sources {
     pub app: String,
-    pub supervisor: Option<String>,
-    pub wrapper: Option<String>,
+    pub odyn: Option<String>,
+    pub sleeve: Option<String>,
 }
 
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]

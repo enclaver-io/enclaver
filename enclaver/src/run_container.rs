@@ -11,13 +11,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 
-pub struct RunWrapper {
+pub struct Sleeve {
     docker: Arc<Docker>,
     container_id: Option<String>,
     stream_task: Option<tokio::task::JoinHandle<()>>,
 }
 
-impl RunWrapper {
+impl Sleeve {
     pub fn new() -> Result<Self> {
         let docker_client = Arc::new(
             Docker::connect_with_local_defaults()
