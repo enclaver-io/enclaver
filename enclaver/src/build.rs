@@ -25,7 +25,7 @@ const RELEASE_OVERLAY_CHOWN: &str = "0:0";
 const NITRO_CLI_IMAGE: &str = "public.ecr.aws/s2t1d4c6/enclaver-io/nitro-cli:latest";
 const ODYN_IMAGE: &str = "public.ecr.aws/s2t1d4c6/enclaver-io/odyn:latest";
 const ODYN_IMAGE_BINARY_PATH: &str = "/usr/local/bin/odyn";
-const RELEASE_BASE_IMAGE: &str = "public.ecr.aws/s2t1d4c6/enclaver-io/enclaver-wrapper-base:latest";
+const SLEEVE_IMAGE: &str = "public.ecr.aws/s2t1d4c6/enclaver-io/enclaver-wrapper-base:latest";
 
 pub struct EnclaveArtifactBuilder {
     docker: Arc<Docker>,
@@ -217,7 +217,7 @@ impl EnclaveArtifactBuilder {
         let packaged_img = self
             .image_manager
             .append_layer(
-                &sources.release_base,
+                &sources.sleeve,
                 LayerBuilder::new()
                     .append_file(FileBuilder {
                         path: PathBuf::from(RELEASE_BUNDLE_DIR).join(MANIFEST_FILE_NAME),
@@ -361,21 +361,21 @@ impl EnclaveArtifactBuilder {
         info!("using app image: {app}");
 
         let odyn = self
-            .resolve_internal_source_image(manifest.sources.supervisor.as_deref(), ODYN_IMAGE)
+            .resolve_internal_source_image(manifest.sources.odyn.as_deref(), ODYN_IMAGE)
             .await?;
-        if manifest.sources.supervisor.is_none() {
+        if manifest.sources.odyn.is_none() {
             debug!("no supervisor image specified in manifest; using default: {odyn}");
         } else {
             info!("using supervisor image: {odyn}");
         }
 
         let release_base = self
-            .resolve_internal_source_image(manifest.sources.wrapper.as_deref(), RELEASE_BASE_IMAGE)
+            .resolve_internal_source_image(manifest.sources.sleeve.as_deref(), SLEEVE_IMAGE)
             .await?;
-        if manifest.sources.wrapper.is_none() {
-            debug!("no wrapper base image specified in manifest; using default: {release_base}");
+        if manifest.sources.sleeve.is_none() {
+            debug!("no sleeve base image specified in manifest; using default: {release_base}");
         } else {
-            info!("using wrapper base image: {release_base}");
+            info!("using sleeve base image: {release_base}");
         }
 
         let nitro_cli = self
@@ -387,7 +387,7 @@ impl EnclaveArtifactBuilder {
             app,
             odyn,
             nitro_cli,
-            release_base,
+            sleeve: release_base,
         };
 
         Ok(sources)
@@ -412,6 +412,6 @@ pub struct ResolvedSources {
     #[serde(rename = "NitroCLI")]
     nitro_cli: ImageRef,
 
-    #[serde(rename = "ReleaseBase")]
-    release_base: ImageRef,
+    #[serde(rename = "Sleeve")]
+    sleeve: ImageRef,
 }
