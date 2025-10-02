@@ -69,7 +69,6 @@ jobs:
             ${{ matrix.extra_cargo_args }}
 
       - name: Generate a SLSA provenance attestation
-        if: github.repository == 'enclaver-io/enclaver' && github.ref_type == 'tag'
         uses: actions/attest-build-provenance@v3
         with:
           subject-path: "enclaver/target/*/release/enclaver"
@@ -152,7 +151,6 @@ jobs:
           tags: ${{ steps.odyn-metadata.outputs.tags }}
 
       - name: Generate SLSA provenance for Odyn
-        if: github.repository == 'enclaver-io/enclaver' && github.ref_type == 'tag'
         uses: actions/attest-build-provenance@v3
         with:
           subject-name: ${{ env.ODYN_IMAGE }}
@@ -183,7 +181,6 @@ jobs:
           tags: ${{ steps.wrapper-base-metadata.outputs.tags }}
 
       - name: Generate SLSA provenance for Runtime Base
-        if: github.repository == 'enclaver-io/enclaver' && github.ref_type == 'tag'
         uses: actions/attest-build-provenance@v3
         with:
           subject-name: ${{ env.RUNTIME_BASE_IMAGE }}
