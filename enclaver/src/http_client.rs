@@ -1,10 +1,9 @@
-use hyper::body::Body;
 use hyper::Uri;
+use hyper::body::Body;
 use hyper_proxy2::{Intercept, Proxy, ProxyConnector};
-use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
+use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
-
 pub type HttpProxyClient<B> = Client<ProxyConnector<HttpConnector>, B>;
 
 /// Creates an HTTPS client that uses a proxy
@@ -16,7 +15,12 @@ where
 {
     let proxy = Proxy::new(Intercept::All, proxy_uri);
     let connector = HttpConnector::new();
-    let proxy_connector = ProxyConnector::from_proxy(connector, proxy).unwrap();
+    let proxy_connector = ProxyConnector::from_proxy_unsecured(connector, proxy);
 
     Client::builder(TokioExecutor::new()).build(proxy_connector)
+}
+
+pub fn new_http_proxy_connector(proxy_uri: Uri) -> ProxyConnector<HttpConnector> {
+    let proxy = Proxy::new(Intercept::All, proxy_uri);
+    ProxyConnector::from_proxy_unsecured(HttpConnector::new(), proxy)
 }

@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use log::{error, info};
 use tokio::task::JoinHandle;
 
 use enclaver::http_util::HttpServer;
 use enclaver::keypair::KeyPair;
-use enclaver::nsm::{Nsm, NsmAttestationProvider};
+use enclaver::nsm::AttestationProvider;
 use enclaver::proxy::aws_util;
 use enclaver::proxy::kms::{CredentialsGetter, KmsProxyConfig, KmsProxyHandler};
 
@@ -20,16 +20,14 @@ pub struct KmsProxyService {
 }
 
 impl KmsProxyService {
-    pub async fn start(config: Arc<Configuration>, nsm: Arc<Nsm>) -> Result<Self> {
+    pub async fn start(
+        config: Arc<Configuration>,
+        attester: Arc<dyn AttestationProvider + Send + Sync>,
+        keypair: Arc<KeyPair>,
+    ) -> Result<Self> {
         let task = if let Some(port) = config.kms_proxy_port() {
             if let Some(proxy_uri) = config.egress_proxy_uri() {
                 info!("Starting KMS proxy");
-                let attester = Box::new(NsmAttestationProvider::new(nsm));
-
-                // If a keypair will be needed elsewhere, this should be moved out
-                info!("Generating public/private keypair");
-                let keypair = Arc::new(KeyPair::generate()?);
-
                 let imds = aws_util::imds_client_with_proxy(proxy_uri.clone()).await?;
 
                 info!("Fetching config from IMDSv2");

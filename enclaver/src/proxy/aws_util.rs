@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use http::Uri;
 use http_body_util::BodyExt;
 use hyper::body::Bytes;

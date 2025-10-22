@@ -37,6 +37,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: 'true'
 
       - uses: actions-rs/toolchain@v1
         with:
@@ -48,6 +50,9 @@ jobs:
         with:
           workspaces: "enclaver -> target"
           key: ${{ matrix.target }}
+
+      - name: Install Protobuf compiler
+        uses: arduino/setup-protoc@v3
 
       - name: Build Release Binaries (native cargo)
         if: ${{ !matrix.uses_musl }}

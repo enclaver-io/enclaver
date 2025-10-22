@@ -1,11 +1,11 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
+use bollard::Docker;
 use bollard::container::LogOutput;
 use bollard::models::{ContainerCreateBody, DeviceMapping, HostConfig, PortBinding, PortMap};
 use bollard::query_parameters::{
     CreateContainerOptions, LogsOptions, RemoveContainerOptions, StartContainerOptions,
     StopContainerOptions, WaitContainerOptions,
 };
-use bollard::Docker;
 use futures_util::stream::{StreamExt, TryStreamExt};
 use std::collections::HashMap;
 use std::sync::Arc;

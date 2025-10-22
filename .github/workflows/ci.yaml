@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: 'true'
 
       - name: Parse MSRV
         run: sed -n 's/^rust-version = "\(.*\)"$/RUSTUP_TOOLCHAIN=\1/p' enclaver/Cargo.toml >> $GITHUB_ENV
@@ -25,6 +27,9 @@ jobs:
 
       - name: Install Clippy and Rustfmt
         run: rustup component add clippy rustfmt
+
+      - name: Install Protobuf compiler
+        uses: arduino/setup-protoc@v3
 
       - name: Check with default features
         run: |

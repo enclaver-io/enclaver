@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::pin::Pin;
@@ -23,6 +23,7 @@ pub struct Manifest {
     pub defaults: Option<Defaults>,
     pub kms_proxy: Option<KmsProxy>,
     pub api: Option<Api>,
+    pub spire: Option<Spire>,
 }
 
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -80,6 +81,15 @@ pub struct KmsProxy {
 #[serde(deny_unknown_fields)]
 pub struct Api {
     pub listen_port: u16,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Spire {
+    pub server_addr: String,
+    pub ca_cert: PathBuf,
+    pub trust_domain: String,
+    pub svid_dir: PathBuf,
 }
 
 fn parse_manifest(buf: &[u8]) -> Result<Manifest> {

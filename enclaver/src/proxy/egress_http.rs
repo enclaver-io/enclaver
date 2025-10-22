@@ -5,8 +5,8 @@ use crate::utils;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
-use http_body_util::combinators::BoxBody;
 use http_body_util::Full;
+use http_body_util::combinators::BoxBody;
 use hyper::body::{Body, Bytes, Incoming};
 use hyper::client::conn::http1 as http1_client;
 use hyper::header::HeaderValue;
@@ -16,7 +16,7 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use log::{debug, error};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_vsock::VsockStream;
@@ -282,7 +282,7 @@ async fn handle_request(
         None => {
             return Ok(with_boxed_body(bad_request(
                 "URI is missing a host".to_string(),
-            )))
+            )));
         }
     };
     let port = req.uri().port_u16().unwrap_or(80);
@@ -392,7 +392,7 @@ async fn remote_connect(egress_port: u32, host: &str, port: u16) -> anyhow::Resu
 #[cfg(test)]
 mod tests {
     use assert2::assert;
-    use http::{uri::PathAndQuery, Method, Version};
+    use http::{Method, Version, uri::PathAndQuery};
     use http_body_util::{BodyExt, Full};
     use hyper::body::{Bytes, Incoming};
     use hyper::server::conn::http1 as http1_server;

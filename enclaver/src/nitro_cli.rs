@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use log::{debug, error};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
@@ -168,10 +168,7 @@ impl NitroCLIArgs for RunEnclaveArgs {
         let mut args = vec![OsString::from("run-enclave")];
 
         if self.cpu_count < 1 {
-            bail!(
-                "at least 1 CPU is required, got: {}",
-                self.cpu_count
-            );
+            bail!("at least 1 CPU is required, got: {}", self.cpu_count);
         } else {
             args.push("--cpu-count".into());
             args.push(format!("{}", self.cpu_count).into());

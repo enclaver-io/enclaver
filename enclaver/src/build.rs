@@ -2,17 +2,15 @@ use crate::constants::{
     EIF_FILE_NAME, ENCLAVE_CONFIG_DIR, ENCLAVE_ODYN_PATH, MANIFEST_FILE_NAME, RELEASE_BUNDLE_DIR,
 };
 use crate::images::{FileBuilder, FileSource, ImageManager, ImageRef, LayerBuilder};
-use crate::manifest::{load_manifest, Manifest};
+use crate::manifest::{Manifest, load_manifest};
 use crate::nitro_cli::{EIFInfo, KnownIssue};
 use crate::nitro_cli_container::NitroCLIContainer;
 pub use crate::nitro_cli_container::SigningInfo;
-use anyhow::{anyhow, bail, Result};
-use bollard::models::{ImageConfig};
-use bollard::query_parameters::{
-    RemoveImageOptions,
-};
+use anyhow::{Result, anyhow, bail};
 use bollard::Docker;
-use futures_util::stream::{StreamExt};
+use bollard::models::ImageConfig;
+use bollard::query_parameters::RemoveImageOptions;
+use futures_util::stream::StreamExt;
 use log::{debug, info, warn};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -48,7 +46,10 @@ impl EnclaveArtifactBuilder {
     }
 
     /// Build a release image based on the referenced manifest.
-    pub async fn build_release(&self, manifest_path: &str) -> Result<(EIFInfo, ResolvedSources, ImageRef)> {
+    pub async fn build_release(
+        &self,
+        manifest_path: &str,
+    ) -> Result<(EIFInfo, ResolvedSources, ImageRef)> {
         let ibr = self.common_build(manifest_path).await?;
         let eif_path = ibr.build_dir.path().join(EIF_FILE_NAME);
         let mut release_img = self
@@ -261,7 +262,9 @@ impl EnclaveArtifactBuilder {
         debug!("tagged intermediate image: {}", img_tag);
 
         let nitro_cli = NitroCLIContainer::new(self.docker.clone(), nitro_cli_img);
-        let build_container_id = nitro_cli.build_enclave(eif_name, &img_tag, build_dir_path, sign).await?;
+        let build_container_id = nitro_cli
+            .build_enclave(eif_name, &img_tag, build_dir_path, sign)
+            .await?;
 
         info!(
             "started nitro-cli build-eif in container: {}",
@@ -320,7 +323,9 @@ impl EnclaveArtifactBuilder {
         }
 
         if manifest.egress.is_none() {
-            info!("no egress specified in manifest; this enclave will have no outbound network access");
+            info!(
+                "no egress specified in manifest; this enclave will have no outbound network access"
+            );
         }
     }
 
