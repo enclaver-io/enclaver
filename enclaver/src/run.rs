@@ -2,9 +2,9 @@ use crate::constants::{
     APP_LOG_PORT, EIF_FILE_NAME, HTTP_EGRESS_VSOCK_PORT, MANIFEST_FILE_NAME, RELEASE_BUNDLE_DIR,
     STATUS_PORT,
 };
-use crate::manifest::{load_manifest, Defaults, Manifest};
+use crate::manifest::{Defaults, Manifest, load_manifest};
 use crate::utils;
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use futures_util::stream::StreamExt;
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};

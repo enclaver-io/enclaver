@@ -1,11 +1,8 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
 use enclaver::{
-    build::ResolvedSources,
-    nitro_cli::EIFMeasurements,
-    build::EnclaveArtifactBuilder, constants::MANIFEST_FILE_NAME, manifest::load_manifest,
-    run_container::Sleeve,
-    images::ImageRef,
+    build::EnclaveArtifactBuilder, build::ResolvedSources, constants::MANIFEST_FILE_NAME,
+    images::ImageRef, manifest::load_manifest, nitro_cli::EIFMeasurements, run_container::Sleeve,
 };
 use log::{debug, error};
 
@@ -83,7 +80,8 @@ async fn run(args: Cli) -> Result<()> {
             force_pull,
         } => {
             let builder = EnclaveArtifactBuilder::new(force_pull)?;
-            let (eif_info, resolved_sources, release_img) = builder.build_release(&manifest_file).await?;
+            let (eif_info, resolved_sources, release_img) =
+                builder.build_release(&manifest_file).await?;
 
             let build_summary = BuildSummary {
                 sources: resolved_sources,
@@ -165,7 +163,6 @@ async fn run(args: Cli) -> Result<()> {
         }
     }
 }
-
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct BuildSummary {

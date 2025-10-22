@@ -8,6 +8,7 @@ pub mod enclave;
 pub mod ingress;
 pub mod kms_proxy;
 pub mod launcher;
+pub mod spiffe;
 
 use anyhow::Result;
 use clap::Parser;
@@ -16,12 +17,13 @@ use std::ffi::OsString;
 use std::sync::Arc;
 
 use enclaver::constants::{APP_LOG_PORT, STATUS_PORT};
-use enclaver::nsm::Nsm;
+use enclaver::nsm::{AttestationProvider, Nsm, StaticAttestationProvider};
 
 use api::ApiService;
 use config::Configuration;
 use console::{AppLog, AppStatus};
 use egress::EgressService;
+use enclaver::keypair::KeyPair;
 use ingress::IngressService;
 use kms_proxy::KmsProxyService;
 
@@ -46,17 +48,36 @@ struct CliArgs {
 async fn launch(args: &CliArgs) -> Result<launcher::ExitStatus> {
     let config = Arc::new(Configuration::load(&args.config_dir).await?);
 
-    let nsm = Arc::new(Nsm::new());
-
-    if !args.no_bootstrap {
+    let attester: Arc<dyn AttestationProvider + Send + Sync> = if !args.no_bootstrap {
+        let nsm = Arc::new(Nsm::new());
         enclave::bootstrap(nsm.clone()).await?;
         info!("Enclave initialized");
-    }
+        nsm
+    } else {
+        info!("No bootstrap, using static attestation");
+        let doc = std::fs::read("attestation.cbor").unwrap_or_default();
+        Arc::new(StaticAttestationProvider::new(doc))
+    };
+
+    // If a keypair will be needed elsewhere, this should be moved out
+    info!("Generating public/private keypair");
+    let keypair = Arc::new(KeyPair::generate()?);
 
     let egress = EgressService::start(&config).await?;
     let ingress = IngressService::start(&config)?;
-    let kms_proxy = KmsProxyService::start(config.clone(), nsm.clone()).await?;
-    let api = ApiService::start(&config, nsm.clone()).await?;
+    let kms_proxy =
+        KmsProxyService::start(config.clone(), attester.clone(), keypair.clone()).await?;
+    let api = ApiService::start(&config, attester.clone()).await?;
+
+    if let Some(spire_config) = &config.manifest.spire {
+        spiffe::acquire_svid(
+            spire_config,
+            &keypair,
+            attester.as_ref(),
+            config.egress_proxy_uri(),
+        )
+        .await?;
+    }
 
     let creds = launcher::Credentials { uid: 0, gid: 0 };
 

@@ -1,10 +1,9 @@
-use std::sync::Arc;
-
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde_bytes::ByteBuf;
 
 pub use aws_nitro_enclaves_nsm_api::api::{Request, Response};
 
+#[derive(Debug, Clone, Default)]
 pub struct AttestationParams {
     pub nonce: Option<Vec<u8>>,
     pub user_data: Option<Vec<u8>>,
@@ -30,19 +29,6 @@ impl Nsm {
         }
     }
 
-    pub fn attestation(&self, params: AttestationParams) -> Result<Vec<u8>> {
-        let req = Request::Attestation {
-            nonce: params.nonce.map(ByteBuf::from),
-            user_data: params.user_data.map(ByteBuf::from),
-            public_key: params.public_key.map(ByteBuf::from),
-        };
-
-        match self.process_request(req)? {
-            Response::Attestation { document } => Ok(document),
-            _ => Err(anyhow!("unexpected response for Attestation")),
-        }
-    }
-
     fn process_request(&self, req: Request) -> Result<Response> {
         match aws_nitro_enclaves_nsm_api::driver::nsm_process_request(self.fd, req) {
             Response::Error(err) => Err(anyhow!("nsm request failed with: {:?}", err)),
@@ -61,19 +47,18 @@ pub trait AttestationProvider {
     fn attestation(&self, params: AttestationParams) -> Result<Vec<u8>>;
 }
 
-pub struct NsmAttestationProvider {
-    nsm: Arc<Nsm>,
-}
-
-impl NsmAttestationProvider {
-    pub fn new(nsm: Arc<Nsm>) -> Self {
-        Self { nsm }
-    }
-}
-
-impl AttestationProvider for NsmAttestationProvider {
+impl AttestationProvider for Nsm {
     fn attestation(&self, params: AttestationParams) -> Result<Vec<u8>> {
-        self.nsm.attestation(params)
+        let req = Request::Attestation {
+            nonce: params.nonce.map(ByteBuf::from),
+            user_data: params.user_data.map(ByteBuf::from),
+            public_key: params.public_key.map(ByteBuf::from),
+        };
+
+        match self.process_request(req)? {
+            Response::Attestation { document } => Ok(document),
+            _ => Err(anyhow!("unexpected response for Attestation")),
+        }
     }
 }
 

@@ -1,11 +1,11 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use anyhow::{anyhow, bail, Error, Result};
+use anyhow::{Error, Result, anyhow, bail};
 use async_trait::async_trait;
 use aws_config::SdkConfig;
-use aws_credential_types::provider::ProvideCredentials;
 use aws_credential_types::Credentials;
+use aws_credential_types::provider::ProvideCredentials;
 use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings};
 use aws_sigv4::sign::v4::SigningParams;
 use aws_smithy_runtime_api::client::identity::Identity;
@@ -14,7 +14,7 @@ use hyper::body::Bytes;
 use hyper::header::{HeaderName, HeaderValue};
 use hyper::http::uri::{Authority, Scheme};
 use hyper::{Method, Request, Response, StatusCode, Uri};
-use json::{object, JsonValue};
+use json::{JsonValue, object};
 use lazy_static::lazy_static;
 use log::{debug, trace};
 use regex::Regex;
@@ -248,7 +248,7 @@ pub struct KmsProxyConfig {
     pub client: Box<dyn HttpClient + Send + Sync>,
     pub credentials_get: CredentialsGetter,
     pub keypair: Arc<KeyPair>,
-    pub attester: Box<dyn AttestationProvider + Send + Sync>,
+    pub attester: Arc<dyn AttestationProvider + Send + Sync>,
     pub endpoints: Arc<dyn KmsEndpointProvider + Send + Sync>,
 }
 
@@ -469,7 +469,7 @@ mod tests {
     use super::*;
     use crate::nsm::StaticAttestationProvider;
     use assert2::assert;
-    use pkcs8::DecodePrivateKey;
+    use rsa::pkcs8::DecodePrivateKey;
     use rsa::RsaPrivateKey;
 
     // Attestation document is passed through verbatim so can test with just random bytes
@@ -584,7 +584,7 @@ mod tests {
                 None,
             )),
             keypair: Arc::new(KeyPair::from_private(priv_key)),
-            attester: Box::new(StaticAttestationProvider::new(ATTESTATION_DOC.to_vec())),
+            attester: Arc::new(StaticAttestationProvider::new(ATTESTATION_DOC.to_vec())),
             endpoints: Arc::new(Mock {}),
         };
 
