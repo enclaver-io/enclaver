@@ -1,6 +1,6 @@
 #![allow(dead_code, unused)]
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use asn1_rs::{oid, BerSequence};
 use asn1_rs::{
     Any, Class, FromBer, Integer, OctetString, Oid, OptTaggedParser, SetOf, Tag, Tagged,
@@ -39,10 +39,10 @@ impl<'a> ContentInfo<'a> {
         let (rem, ci) = Self::from_ber(ber)?;
 
         if !rem.is_empty() {
-            return Err(anyhow!(
+            bail!(
                 "trailing {} bytes after parsing ContentInfo",
                 rem.len()
-            ));
+            );
         }
 
         ci.validate()?;
@@ -52,11 +52,11 @@ impl<'a> ContentInfo<'a> {
 
     fn validate(&self) -> Result<()> {
         if self.content_type != OID_PKCS7_ENVELOPED_DATA {
-            return Err(anyhow!(
+            bail!(
                 "unexpected content type: {}, expected {}",
                 self.content_type,
                 OID_PKCS7_ENVELOPED_DATA
-            ));
+            );
         }
 
         self.content.validate()
@@ -117,16 +117,16 @@ impl EnvelopedData<'_> {
     fn validate(&self) -> Result<()> {
         let ver = self.version.as_i32()?;
         if ver != 2 {
-            return Err(anyhow!(
+            bail!(
                 "unexpected EnvelopedData.version: {ver}, expected 2"
-            ));
+            );
         }
 
         if self.recipient_infos.len() != 1 {
-            return Err(anyhow!(
+            bail!(
                 "unexpected EnvelopedData.recipient_infos length: {}, expected 1",
                 self.recipient_infos.len()
-            ));
+            );
         }
 
         self.recipient_infos.iter().next().unwrap().validate()?;
@@ -181,25 +181,25 @@ impl<'a> KeyTransRecipientInfo<'a> {
     fn validate(&self) -> Result<()> {
         let ver = self.version.as_i32()?;
         if ver != 2 {
-            return Err(anyhow!(
+            bail!(
                 "unexpected KeyTransRecipientInfo.version: {ver}, expected 2"
-            ));
+            );
         }
 
         let key_algo = &self.key_encryption_algorithm;
 
         if key_algo.algorithm != OID_PKCS1_RSA_OAEP {
-            return Err(anyhow!("unexpected KeyTransRecipientInfo.key_encryption_algorithm.algorithm: {}, expected {OID_PKCS1_RSA_OAEP}",
-                key_algo.algorithm));
+            bail!("unexpected KeyTransRecipientInfo.key_encryption_algorithm.algorithm: {}, expected {OID_PKCS1_RSA_OAEP}",
+                key_algo.algorithm);
         }
 
         if let Some(ref params) = key_algo.parameters {
             let rsa_oaep_params: RsaesOaepParameters<'a> = params.clone().try_into()?;
             rsa_oaep_params.validate()?;
         } else {
-            return Err(anyhow!(
+            bail!(
                 "Missing KeyTransRecipientInfo.key_encryption_algorithm.parameters"
-            ));
+            );
         }
 
         Ok(())
@@ -248,30 +248,30 @@ impl RsaesOaepParameters<'_> {
     fn validate(&self) -> Result<()> {
         if let Some(ref alg) = self.hash_alg {
             if alg.algorithm != OID_NIST_SHA_256 {
-                return Err(anyhow!("unexpected KeyTransRecipientInfo.key_encryption_algorithm.hash_func: {}, expected {OID_NIST_SHA_256}",
-                    alg.algorithm));
+                bail!("unexpected KeyTransRecipientInfo.key_encryption_algorithm.hash_func: {}, expected {OID_NIST_SHA_256}",
+                    alg.algorithm);
             }
         } else {
-            return Err(anyhow!("missing KeyTransRecipientInfo.key_encryption_algorithm.hash_func, expected {OID_NIST_SHA_256}"));
+            bail!("missing KeyTransRecipientInfo.key_encryption_algorithm.hash_func, expected {OID_NIST_SHA_256}");
         }
 
         if let Some(ref alg) = self.mask_gen_alg {
             if alg.algorithm != OID_PKCS1_MGF {
-                return Err(anyhow!("unexpected KeyTransRecipientInfo.key_encryption_algorithm.mask_gen_func: {}, expected {OID_PKCS1_MGF}",
-                    alg.algorithm));
+                bail!("unexpected KeyTransRecipientInfo.key_encryption_algorithm.mask_gen_func: {}, expected {OID_PKCS1_MGF}",
+                    alg.algorithm);
             }
 
             if let Some(ref params) = alg.parameters {
                 let (_, mgf_hash) = Oid::from_ber(params.as_bytes())?;
                 if mgf_hash != OID_NIST_SHA_256 {
-                    return Err(anyhow!("unexpected KeyTransRecipientInfo.key_encryption_algorithm.mask_gen_func.hash: {}, expected {OID_NIST_SHA_256}",
-                        mgf_hash));
+                    bail!("unexpected KeyTransRecipientInfo.key_encryption_algorithm.mask_gen_func.hash: {}, expected {OID_NIST_SHA_256}",
+                        mgf_hash);
                 }
             } else {
-                return Err(anyhow!("missing KeyTransRecipientInfo.key_encryption_algorithm.mask_gen_func.parameters"));
+                bail!("missing KeyTransRecipientInfo.key_encryption_algorithm.mask_gen_func.parameters");
             }
         } else {
-            return Err(anyhow!("missing KeyTransRecipientInfo.key_encryption_algorithm.parameters.mask_gen_func, expected {OID_PKCS1_MGF}"));
+            bail!("missing KeyTransRecipientInfo.key_encryption_algorithm.parameters.mask_gen_func, expected {OID_PKCS1_MGF}");
         }
 
         Ok(())
@@ -335,33 +335,33 @@ pub(crate) struct EncryptedContentInfo<'a> {
 impl EncryptedContentInfo<'_> {
     fn validate(&self) -> Result<()> {
         if self.content_type != OID_PKCS7_DATA {
-            return Err(anyhow!(
+            bail!(
                 "unexpected EncryptedContentInfo.content_type: {}, expected {OID_PKCS7_DATA}",
                 self.content_type
-            ));
+            );
         }
 
         if self.content_encryption_algorithm.algorithm != OID_NIST_AES256_CBC {
-            return Err(anyhow!("unexpected EncryptedContentInfo.content_encryption_algorithm: {}, expected {OID_NIST_AES256_CBC}",
-                    self.content_encryption_algorithm.algorithm));
+            bail!("unexpected EncryptedContentInfo.content_encryption_algorithm: {}, expected {OID_NIST_AES256_CBC}",
+                    self.content_encryption_algorithm.algorithm);
         }
 
         // Ignoring the OPTIONAL directive, it should always be there in our use case
         let any = &self.encrypted_content;
 
         if any.header.class() != Class::ContextSpecific {
-            return Err(anyhow!(
+            bail!(
                 "unexpected EncryptedContentInfo.encrypted_content.class: {}, expected {}",
                 any.header.class(),
                 Class::ContextSpecific
-            ));
+            );
         }
 
         if any.header.tag().0 != 0 {
-            return Err(anyhow!(
+            bail!(
                 "unexpected EncryptedContentInfo.encrypted_content.tag: {}, expected 0",
                 any.header.tag().0
-            ));
+            );
         }
 
         Ok(())

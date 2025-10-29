@@ -1,5 +1,5 @@
 use crate::utils::StringablePathExt;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use bollard::models::{BuildInfo, CreateImageInfo, ImageId};
 use bollard::query_parameters::{BuildImageOptions, CreateImageOptions, TagImageOptions};
 use bollard::Docker;
@@ -183,7 +183,7 @@ impl ImageManager {
                 }
                 BuildInfo {
                     error: Some(msg), ..
-                } => return Err(anyhow!("build error appending layer: {}", msg)),
+                } => bail!("build error appending layer: {}", msg),
                 _ => {}
             }
         }

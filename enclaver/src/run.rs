@@ -4,7 +4,7 @@ use crate::constants::{
 };
 use crate::manifest::{load_manifest, Defaults, Manifest};
 use crate::utils;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use futures_util::stream::StreamExt;
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
@@ -116,7 +116,7 @@ impl Enclave {
     // the passed in cancellation token. Terminates the enclave prior to returning.
     pub async fn run(mut self, cancellation: CancellationToken) -> Result<EnclaveExitStatus> {
         if self.enclave_info.is_some() {
-            return Err(anyhow!("Enclave already started"));
+            bail!("Enclave already started");
         }
 
         // Start the egress proxy before starting the enclave, to avoid (unlikely) race conditions
@@ -250,9 +250,9 @@ impl Enclave {
                 Err(_) => {
                     failed_attempts += 1;
                     if failed_attempts >= STATUS_VSOCK_RETRY_LIMIT {
-                        return Err(anyhow!(
+                        bail!(
                             "failed to connect to enclave status port after {STATUS_VSOCK_RETRY_LIMIT} attempts"
-                        ));
+                        );
                     }
                     tokio::time::sleep(STATUS_VSOCK_RETRY_INTERVAL).await;
                     continue;

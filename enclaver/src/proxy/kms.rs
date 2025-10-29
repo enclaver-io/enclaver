@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{anyhow, bail, Error, Result};
 use async_trait::async_trait;
 use aws_config::SdkConfig;
 use aws_credential_types::provider::ProvideCredentials;
@@ -81,10 +81,10 @@ impl CredentialScope {
 
     fn validate(&self) -> Result<()> {
         if self.service != KMS_SERVICE_NAME {
-            return Err(anyhow!(
+            bail!(
                 "Received request signed for a non-KMS ({}) service",
                 self.service
-            ));
+            );
         }
 
         Ok(())

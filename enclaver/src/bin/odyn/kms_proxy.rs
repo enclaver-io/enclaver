@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::{bail, Result};
 
 use log::{error, info};
 use tokio::task::JoinHandle;
@@ -60,7 +60,7 @@ impl KmsProxyService {
                     }
                 }))
             } else {
-                return Err(anyhow!(NO_EGRESS_ERROR));
+                bail!(NO_EGRESS_ERROR);
             }
         } else {
             None
