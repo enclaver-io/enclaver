@@ -6,7 +6,7 @@ use crate::manifest::{load_manifest, Manifest};
 use crate::nitro_cli::{EIFInfo, KnownIssue};
 use crate::nitro_cli_container::NitroCLIContainer;
 pub use crate::nitro_cli_container::SigningInfo;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use bollard::models::{ImageConfig};
 use bollard::query_parameters::{
     RemoveImageOptions,
@@ -102,7 +102,7 @@ impl EnclaveArtifactBuilder {
                     key: canonicalize(parent_path.join(&signature.key)).await?,
                 })
             } else {
-                return Err(anyhow!("Failed to get parent path of manifest"));
+                bail!("Failed to get parent path of manifest");
             }
         } else {
             None
@@ -292,7 +292,7 @@ impl EnclaveArtifactBuilder {
 
         let status_code = nitro_cli.wait_container(&build_container_id).await?;
         if status_code != 0 {
-            return Err(anyhow!("non-zero exit code from nitro-cli",));
+            bail!("non-zero exit code from nitro-cli");
         }
 
         let mut json_buf = Vec::with_capacity(4096);

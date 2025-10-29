@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use bollard::container::LogOutput;
 use bollard::models::{ContainerCreateBody, DeviceMapping, HostConfig, PortBinding, PortMap};
 use bollard::query_parameters::{
@@ -38,7 +38,7 @@ impl Sleeve {
         debug_mode: bool,
     ) -> Result<()> {
         if self.container_id.is_some() {
-            return Err(anyhow!("container already running"));
+            bail!("container already running");
         }
 
         let port_re = regex::Regex::new(r"(\d+):(\d+)")?;
@@ -115,7 +115,7 @@ impl Sleeve {
         self.container_id = None;
 
         if status_code != 0 {
-            return Err(anyhow!("non-zero exit code from container",));
+            bail!("non-zero exit code from container");
         }
 
         // Remove the container after it successfully exits.
