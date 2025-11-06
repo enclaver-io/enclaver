@@ -4,3 +4,6 @@
 [submodule "enclaver/spire-api-sdk"]
 	path = enclaver/spire-api-sdk
 	url = https://github.com/spiffe/spire-api-sdk.git
+[submodule "enclaver/spiffe"]
+	path = enclaver/spiffe
+	url = git@github.com:spiffe/spiffe.git

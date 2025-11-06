@@ -90,6 +90,7 @@ pub struct Spire {
     pub ca_cert: PathBuf,
     pub trust_domain: String,
     pub svid_dir: PathBuf,
+    pub workload_api_addr: Option<String>,
 }
 
 fn parse_manifest(buf: &[u8]) -> Result<Manifest> {

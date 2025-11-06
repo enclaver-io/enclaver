@@ -321,6 +321,7 @@ impl AppStatus {
     }
 
     pub fn fatal(&self, err: String) {
+        log::error!("Fatal error: {err}");
         self.inner.lock().unwrap().fatal(err);
     }
 
