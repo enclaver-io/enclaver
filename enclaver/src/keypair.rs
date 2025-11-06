@@ -1,9 +1,8 @@
 use anyhow::Result;
 use rsa::pkcs1::EncodeRsaPrivateKey;
-use rsa::pkcs8::{EncodePublicKey, LineEnding};
+use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
 use rsa::{RsaPrivateKey, RsaPublicKey};
-use rustls::pki_types::PrivatePkcs1KeyDer;
-
+use rustls::pki_types::{PrivatePkcs1KeyDer, PrivatePkcs8KeyDer};
 const RSA_KEY_LEN: usize = 2048;
 
 #[derive(Clone)]
@@ -44,6 +43,12 @@ impl KeyPair {
     pub fn as_pkcs1(&self) -> Result<PrivatePkcs1KeyDer<'static>> {
         Ok(PrivatePkcs1KeyDer::from(
             self.private.to_pkcs1_der()?.as_bytes().to_vec(),
+        ))
+    }
+
+    pub fn as_pkcs8(&self) -> Result<PrivatePkcs8KeyDer<'static>> {
+        Ok(PrivatePkcs8KeyDer::from(
+            self.private.to_pkcs8_der()?.as_bytes().to_vec(),
         ))
     }
 }

@@ -9,6 +9,11 @@ pub mod pb {
                         tonic::include_proto!("spire.api.server.agent.v1");
                     }
                 }
+                pub mod bundle {
+                    pub mod v1 {
+                        tonic::include_proto!("spire.api.server.bundle.v1");
+                    }
+                }
                 pub mod entry {
                     pub mod v1 {
                         tonic::include_proto!("spire.api.server.entry.v1");
@@ -33,12 +38,19 @@ use pb::spire::api::server::agent::v1::agent_client::AgentClient;
 use pb::spire::api::server::agent::v1::attest_agent_request::{Params, Step};
 use pb::spire::api::server::agent::v1::attest_agent_response::Step as AttestAgentResponseStep;
 use pb::spire::api::server::agent::v1::{AgentX509svidParams, AttestAgentRequest};
+use pb::spire::api::server::bundle::v1::GetBundleRequest;
+use pb::spire::api::server::bundle::v1::bundle_client::BundleClient;
 use pb::spire::api::server::entry::v1::GetAuthorizedEntriesRequest;
 use pb::spire::api::server::entry::v1::entry_client::EntryClient;
 use pb::spire::api::server::svid::v1::svid_client::SvidClient;
-use pb::spire::api::server::svid::v1::{BatchNewX509svidRequest, NewX509svidParams};
-pub use pb::spire::api::types::{AttestationData, Entry, EntryMask, X509svid};
+use pb::spire::api::server::svid::v1::{
+    BatchNewX509svidRequest, NewJwtsvidRequest, NewX509svidParams,
+};
+pub use pb::spire::api::types::{
+    AttestationData, Bundle, BundleMask, Entry, EntryMask, Jwtsvid, X509svid,
+};
 
+use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream;
 use hyper::Uri;
@@ -47,6 +59,14 @@ use x509_cert::builder::Builder;
 
 use super::channel::{ClientIdentity, ServerIdentity};
 use enclaver::keypair::KeyPair;
+
+#[async_trait]
+pub trait SpireAgentProtocol {
+    async fn entries(&self) -> Result<Vec<Entry>>;
+    async fn x509_svid(&self, entry_id: &str, keypair: &KeyPair) -> Result<X509svid>;
+    async fn jwt_svid(&self, entry_id: &str, audience: Vec<String>) -> Result<Jwtsvid>;
+    async fn get_bundle(&self) -> Result<Bundle>;
+}
 
 pub struct SpireAgentClient {
     channel: tonic::transport::Channel,
@@ -126,8 +146,11 @@ impl SpireAgentClient {
 
         bail!("No result from attest agent");
     }
+}
 
-    pub async fn entries(&self) -> Result<Vec<Entry>> {
+#[async_trait]
+impl SpireAgentProtocol for SpireAgentClient {
+    async fn entries(&self) -> Result<Vec<Entry>> {
         let request = GetAuthorizedEntriesRequest {
             output_mask: Some(EntryMask {
                 spiffe_id: true,
@@ -141,7 +164,7 @@ impl SpireAgentClient {
         Ok(response.entries)
     }
 
-    pub async fn x509_svid(&self, entry_id: &str, keypair: &KeyPair) -> Result<X509svid> {
+    async fn x509_svid(&self, entry_id: &str, keypair: &KeyPair) -> Result<X509svid> {
         let csr = create_csr(keypair)?;
 
         let req = BatchNewX509svidRequest {
@@ -152,7 +175,9 @@ impl SpireAgentClient {
         };
 
         let mut client = SvidClient::new(self.channel.clone());
+        log::debug!("Requesting new X.509 SVID for entry {entry_id}");
         let mut response = client.batch_new_x509svid(req).await?.into_inner();
+        log::debug!("Response: {:?}", response);
         if let Some(result) = response.results.pop()
             && let Some(svid) = result.svid
         {
@@ -160,6 +185,38 @@ impl SpireAgentClient {
         }
 
         bail!("No result from batch new x509 svid");
+    }
+
+    async fn jwt_svid(&self, entry_id: &str, audience: Vec<String>) -> Result<Jwtsvid> {
+        let req = NewJwtsvidRequest {
+            entry_id: entry_id.to_string(),
+            audience,
+        };
+
+        let mut client = SvidClient::new(self.channel.clone());
+        let response = client.new_jwtsvid(req).await?.into_inner();
+        if let Some(result) = response.svid {
+            return Ok(result);
+        }
+
+        bail!("No result from new jwt svid");
+    }
+
+    async fn get_bundle(&self) -> Result<Bundle> {
+        let mut client = BundleClient::new(self.channel.clone());
+        let response = client
+            .get_bundle(GetBundleRequest {
+                output_mask: Some(BundleMask {
+                    x509_authorities: true,
+                    jwt_authorities: true,
+                    refresh_hint: true,
+                    sequence_number: true,
+                }),
+            })
+            .await?
+            .into_inner();
+
+        Ok(response)
     }
 }
 

@@ -1,0 +1,34 @@
+version: v1
+name: "spiffe-server"
+target: "spiffe-server-enclave:latest"
+
+sources:
+  app: "spiffe-server-app:latest"
+
+defaults:
+  cpu_count: 2
+  memory_mb: 1500
+
+# Enclaver listens on the host and forwards to port 8443 inside the enclave,
+# where the app terminates mTLS itself. The proxy just moves bytes; it is the
+# app that authenticates the peer.
+ingress:
+  - listen_port: 8443
+
+# "host" is the machine outside the enclave. odyn needs it to reach the SPIRE
+# server; without an allow list there is no egress proxy at all.
+egress:
+  allow:
+    - host
+
+spire:
+  server_addr: https://host:8081
+  # Baked into the app image, so it is covered by PCR0.
+  ca_cert: /etc/spire/ca.crt
+  trust_domain: example.org
+  # Where odyn writes this enclave's SVID. The app reads its SVID from the
+  # Workload API instead, but odyn writes the file regardless.
+  svid_dir: /var/run/spiffe
+  # Where odyn serves the SPIFFE Workload API. It exports the address to the app
+  # as SPIFFE_ENDPOINT_SOCKET=tcp://127.0.0.1:5000, which is the default.
+  workload_api_addr: 127.0.0.1:5000

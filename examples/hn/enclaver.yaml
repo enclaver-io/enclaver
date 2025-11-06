@@ -11,4 +11,9 @@ ingress:
   - listen_port: 8000
 egress:
   allow:
-    - news.ycombinator.com
+  #  - news.ycombinator.com
+spire:
+  server_addr: https://127.0.0.1:8081
+  ca_cert: /home/eugene/Downloads/spire-1.12.5/conf/server/ca.crt
+  trust_domain: example.org
+  svid_dir: /tmp

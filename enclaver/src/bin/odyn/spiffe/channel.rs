@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use log::info;
 use rustls::{
     SignatureScheme,
     crypto::{CryptoProvider, WebPkiSupportedAlgorithms},
@@ -76,6 +77,7 @@ pub async fn channel(
 
     let endpoint = tonic::transport::Endpoint::from_shared(addr.to_string())?;
     if let Some(proxy_uri) = proxy_uri {
+        info!("Using proxy: {}", proxy_uri);
         let proxy_connector = enclaver::http_client::new_http_proxy_connector(proxy_uri);
         let connector = HttpsConnectorBuilder::new()
             .with_tls_config(tls.clone())
@@ -84,6 +86,7 @@ pub async fn channel(
             .wrap_connector(proxy_connector);
         Ok(tonic::transport::Channel::connect(connector, endpoint).await?)
     } else {
+        info!("No proxy, using direct connection");
         let connector = HttpsConnectorBuilder::new()
             .with_tls_config(tls)
             .https_only()

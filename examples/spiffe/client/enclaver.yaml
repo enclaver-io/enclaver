@@ -1,0 +1,32 @@
+version: v1
+name: "spiffe-client"
+target: "spiffe-client-enclave:latest"
+
+sources:
+  app: "spiffe-client-app:latest"
+
+defaults:
+  cpu_count: 2
+  memory_mb: 1500
+
+# No ingress: nothing connects to the client.
+#
+# "host" is the machine outside the enclave. odyn needs it to reach the SPIRE
+# server, and the app needs it to reach the server enclave's published port.
+# Everything the app sends leaves through the egress proxy odyn points
+# https_proxy at, and anything not listed here is refused.
+egress:
+  allow:
+    - host
+
+spire:
+  server_addr: https://host:8081
+  # Baked into the app image, so it is covered by PCR0.
+  ca_cert: /etc/spire/ca.crt
+  trust_domain: example.org
+  # Where odyn writes this enclave's SVID. The app reads its SVID from the
+  # Workload API instead, but odyn writes the file regardless.
+  svid_dir: /var/run/spiffe
+  # Where odyn serves the SPIFFE Workload API. It exports the address to the app
+  # as SPIFFE_ENDPOINT_SOCKET=tcp://127.0.0.1:5000, which is the default.
+  workload_api_addr: 127.0.0.1:5000

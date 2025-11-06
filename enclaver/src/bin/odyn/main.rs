@@ -26,6 +26,7 @@ use egress::EgressService;
 use enclaver::keypair::KeyPair;
 use ingress::IngressService;
 use kms_proxy::KmsProxyService;
+use spiffe::SpiffeService;
 
 #[derive(Parser)]
 struct CliArgs {
@@ -69,21 +70,32 @@ async fn launch(args: &CliArgs) -> Result<launcher::ExitStatus> {
         KmsProxyService::start(config.clone(), attester.clone(), keypair.clone()).await?;
     let api = ApiService::start(&config, attester.clone()).await?;
 
-    if let Some(spire_config) = &config.manifest.spire {
-        spiffe::acquire_svid(
-            spire_config,
-            &keypair,
-            attester.as_ref(),
-            config.egress_proxy_uri(),
+    let spiffe_svc = if let Some(spire_config) = &config.manifest.spire {
+        Some(
+            SpiffeService::start(
+                spire_config,
+                &keypair,
+                attester.as_ref(),
+                config.egress_proxy_uri(),
+            )
+            .await?,
         )
-        .await?;
-    }
+    } else {
+        None
+    };
 
-    let creds = launcher::Credentials { uid: 0, gid: 0 };
+    let creds = launcher::Credentials {
+        uid: 1000,
+        gid: 1000,
+    };
 
     info!("Starting {:?}", args.entrypoint);
     let exit_status = launcher::start_child(args.entrypoint.clone(), creds).await??;
     info!("Entrypoint {}", exit_status);
+
+    if let Some(spiffe_svc) = spiffe_svc {
+        spiffe_svc.stop().await;
+    }
 
     api.stop().await;
     kms_proxy.stop().await;
