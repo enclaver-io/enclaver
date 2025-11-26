@@ -5,6 +5,7 @@ use nix::sys::wait::{WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
 use std::ffi::OsString;
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::process::Command;
 use tokio::task::JoinHandle;
 
@@ -28,16 +29,25 @@ impl std::fmt::Display for ExitStatus {
 }
 
 // runs the child and reaps all of its children as well
-pub fn run_child(argv: &[OsString], creds: &Credentials) -> Result<ExitStatus> {
+pub fn run_child(
+    argv: &[OsString],
+    creds: &Credentials,
+    work_dir: Option<PathBuf>,
+) -> Result<ExitStatus> {
     // Don't use tokio::process::Command because it wants to reap the process.
     // However we need to run waitpid() ourselves to reap the zombies and it'll
     // end up picking up the spawned child as well.
-    let child = Command::new(&argv[0])
-        .args(&argv[1..])
+    let mut cmd = Command::new(&argv[0]);
+    cmd.args(&argv[1..])
         .uid(creds.uid)
         .gid(creds.gid)
-        .process_group(0)
-        .spawn()?;
+        .process_group(0);
+
+    if let Some(dir) = work_dir {
+        cmd.current_dir(dir);
+    }
+
+    let child = cmd.spawn()?;
 
     debug!("Child process started");
     let child_pid = Pid::from_raw(child.id() as i32);
@@ -46,8 +56,12 @@ pub fn run_child(argv: &[OsString], creds: &Credentials) -> Result<ExitStatus> {
 }
 
 // runs the child and reaps all of its children as well
-pub fn start_child(argv: Vec<OsString>, creds: Credentials) -> JoinHandle<Result<ExitStatus>> {
-    tokio::task::spawn_blocking(move || run_child(&argv, &creds))
+pub fn start_child(
+    argv: Vec<OsString>,
+    creds: Credentials,
+    work_dir: Option<PathBuf>,
+) -> JoinHandle<Result<ExitStatus>> {
+    tokio::task::spawn_blocking(move || run_child(&argv, &creds, work_dir))
 }
 
 // Reap processes until a process with sentinel pid exits.
