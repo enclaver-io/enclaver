@@ -162,12 +162,26 @@ impl EnclaveArtifactBuilder {
             _ => vec![],
         };
 
+        let working_dir = match img_config {
+            Some(ImageConfig {
+                working_dir: Some(ref working_dir),
+                ..
+            }) => Some(working_dir.clone()),
+            _ => None,
+        };
+
         let mut odyn_command = vec![
             String::from(ENCLAVE_ODYN_PATH),
             String::from("--config-dir"),
             String::from("/etc/enclaver"),
-            String::from("--"),
         ];
+
+        if let Some(wd) = working_dir {
+            odyn_command.push(String::from("--work-dir"));
+            odyn_command.push(wd);
+        }
+
+        odyn_command.push(String::from("--"));
 
         odyn_command.append(&mut entrypoint);
         odyn_command.append(&mut cmd);

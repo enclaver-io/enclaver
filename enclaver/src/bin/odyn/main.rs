@@ -14,6 +14,7 @@ use anyhow::Result;
 use clap::Parser;
 use log::{error, info};
 use std::ffi::OsString;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use enclaver::constants::{APP_LOG_PORT, STATUS_PORT};
@@ -37,6 +38,9 @@ struct CliArgs {
 
     #[clap(long = "config-dir")]
     config_dir: String,
+
+    #[clap(long = "work-dir")]
+    work_dir: Option<PathBuf>,
 
     #[clap(required = true)]
     entrypoint: Vec<OsString>,
@@ -64,7 +68,8 @@ async fn launch(args: &CliArgs) -> Result<launcher::ExitStatus> {
     let creds = launcher::Credentials { uid: 0, gid: 0 };
 
     info!("Starting {:?}", args.entrypoint);
-    let exit_status = launcher::start_child(args.entrypoint.clone(), creds).await??;
+    let exit_status =
+        launcher::start_child(args.entrypoint.clone(), creds, args.work_dir.clone()).await??;
     info!("Entrypoint {}", exit_status);
 
     aux_api.stop().await;
