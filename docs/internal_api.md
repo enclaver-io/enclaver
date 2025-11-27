@@ -1,0 +1,199 @@
+# Enclaver Internal API
+
+Enclaver provides internal HTTP APIs that allow applications running inside the enclave to perform sensitive operations, such as signing transactions with the enclave's secure key and obtaining high-quality random numbers.
+
+There are two distinct API services available:
+
+1.  **Primary Internal API (`api`)**: Provides full access to all functionality, including signing with custom payloads and generating attestations with custom user data. This is intended for the main application logic.
+2.  **Auxiliary API (`aux_api`)**: Provides a restricted subset of functionality. It proxies requests to the internal API but enforces security restrictions, such as sanitizing attestation requests to prevent spoofing of user data. This is intended for sidecars or auxiliary processes.
+
+## Configuration
+
+The ports for these APIs are defined in the `enclaver.yaml` manifest.
+
+**Example `enclaver.yaml` configuration:**
+
+```yaml
+api:
+  listen_port: 9000
+
+aux_api:
+  listen_port: 9001
+```
+
+In this example:
+- The **Primary API** is available at `http://127.0.0.1:9000`.
+- The **Auxiliary API** is available at `http://127.0.0.1:9001`.
+
+If `aux_api` is not explicitly configured, it defaults to `api.listen_port + 1`.
+
+## Primary Internal API Endpoints
+
+The Primary API supports all the endpoints listed below without restrictions.
+
+### Get Ethereum Address
+
+Retrieve the Ethereum address and public key associated with the enclave's secure key.
+
+- **URL:** `/v1/eth/address`
+- **Method:** `GET`
+- **Success Response:**
+  - **Code:** 200 OK
+  - **Content-Type:** `application/json`
+  - **Body:**
+    ```json
+    {
+      "address": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+      "public_key": "0x04..."
+    }
+    ```
+
+### Sign Transaction
+
+Sign an Ethereum transaction using the enclave's secure key.
+
+- **URL:** `/v1/eth/sign-tx`
+- **Method:** `POST`
+- **Content-Type:** `application/json`
+- **Request Body:**
+
+  **Option 1: Structured Payload (EIP-1559)**
+  ```json
+  {
+    "include_attestation": false,
+    "payload": {
+      "kind": "structured",
+      "chain_id": "0x1",
+      "nonce": "0x0",
+      "max_priority_fee_per_gas": "0x3b9aca00",
+      "max_fee_per_gas": "0x77359400",
+      "gas_limit": "0x5208",
+      "to": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+      "value": "0xde0b6b3a7640000",
+      "data": "0x",
+      "access_list": []
+    }
+  }
+  ```
+
+  **Option 2: Raw RLP Payload**
+  ```json
+  {
+    "include_attestation": false,
+    "payload": {
+      "kind": "raw_rlp",
+      "raw_payload": "0x..."
+    }
+  }
+  ```
+
+- **Success Response:**
+  - **Code:** 200 OK
+  - **Content-Type:** `application/json`
+  - **Body:**
+    ```json
+    {
+      "raw_transaction": "0x02...",
+      "transaction_hash": "0x...",
+      "signature": "0x...",
+      "address": "0x...",
+      "attestation": null
+    }
+    ```
+
+### Get Random Bytes
+
+Obtain cryptographically secure random bytes from the Nitro Secure Module (NSM).
+
+- **URL:** `/v1/random`
+- **Method:** `GET`
+- **Success Response:**
+  - **Code:** 200 OK
+  - **Content-Type:** `application/json`
+  - **Body:**
+    ```json
+    {
+      "random_bytes": "0x..." // 32 bytes hex encoded
+    }
+    ```
+
+### Sign Message
+
+Sign a raw message hash (32 bytes).
+
+- **URL:** `/v1/eth/sign`
+- **Method:** `POST`
+- **Content-Type:** `application/json`
+- **Request Body:**
+  ```json
+  {
+    "message_hash": "0x...", // 32 bytes hex encoded
+    "include_attestation": false
+  }
+  ```
+- **Success Response:**
+  - **Code:** 200 OK
+  - **Content-Type:** `application/json`
+  - **Body:**
+    ```json
+    {
+      "signature": "0x...",
+      "address": "0x...",
+      "attestation": null
+    }
+    ```
+
+### Generate Attestation
+
+Generate an attestation document from the Nitro Secure Module.
+
+- **URL:** `/v1/attestation`
+- **Method:** `POST`
+- **Content-Type:** `application/json`
+- **Request Body:**
+  ```json
+  {
+    "nonce": "base64_encoded_nonce",       // Optional
+    "public_key": "PEM_encoded_public_key", // Optional
+    "user_data": "base64_encoded_user_data" // Optional
+  }
+  ```
+- **Success Response:**
+  - **Code:** 200 OK
+  - **Content-Type:** `application/cbor`
+  - **Body:** Binary CBOR data (Attestation Document)
+
+## Auxiliary API Endpoints
+
+The Auxiliary API exposes a **subset** of the Primary API endpoints with the following restrictions:
+
+### Get Ethereum Address (Aux)
+
+- **URL:** `/v1/eth/address`
+- **Method:** `GET`
+- **Behavior:** Same as Primary API.
+
+### Generate Attestation (Aux)
+
+- **URL:** `/v1/attestation`
+- **Method:** `POST`
+- **Restrictions:**
+  - The `public_key` and `user_data` fields in the request body are **ignored and removed** before forwarding to the Primary API.
+  - Only the `nonce` field is preserved.
+  - This ensures that the attestation always uses the enclave's default public key and user data (which typically includes the enclave's Ethereum address).
+
+- **Request Body:**
+  ```json
+  {
+    "nonce": "base64_encoded_nonce" // Optional
+  }
+  ```
+
+### Unavailable Endpoints
+
+The following endpoints are **NOT** available on the Auxiliary API:
+- `/v1/eth/sign-tx`
+- `/v1/eth/sign`
+- `/v1/random`
+
+Attempts to access these endpoints on the Auxiliary API port will result in a 404 Not Found error.
