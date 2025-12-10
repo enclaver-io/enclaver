@@ -154,7 +154,7 @@ impl ApiHandler {
             return Ok(http_util::bad_request("Message cannot be empty".to_string()));
         }
 
-        // Construct EIP-191 personal message prefix and sign the prefixed bytes once
+        // Construct EIP-191 personal message prefix. The prefixed message will be hashed with keccak256 and signed.
         let prefix = format!("\u{0019}Ethereum Signed Message:\n{}", msg_bytes.len());
         let mut prefixed_msg = prefix.into_bytes();
         prefixed_msg.extend_from_slice(msg_bytes);
