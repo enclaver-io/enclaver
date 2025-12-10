@@ -645,7 +645,7 @@ async fn test_eth_sign_signature_recovery() {
 }
 
 #[tokio::test]
-async fn test_eth_sign_invalid_hash() {
+async fn test_eth_sign_empty_message() {
     use crate::nsm::StaticAttestationProvider;
     use assert2::assert;
 
