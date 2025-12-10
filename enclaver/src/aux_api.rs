@@ -83,13 +83,13 @@ impl AuxApiHandler {
     }
 
     async fn handle_attestation(&self, body: Bytes) -> Result<Response<Full<Bytes>>> {
-        // Parse JSON body and extract only the nonce field
+        // Parse JSON body and filter only public_key (user_data is allowed, eth_addr will be injected by api.rs)
         let sanitized_body = match serde_json::from_slice::<Value>(&body) {
             Ok(mut json_value) => {
-                // Remove public_key and user_data to prevent external callers from overriding defaults; retain all other fields (including nonce)
+                // Remove public_key to prevent external callers from overriding defaults
+                // user_data is allowed - api.rs will inject eth_addr into it
                 if let Some(obj) = json_value.as_object_mut() {
                     obj.remove("public_key");
-                    obj.remove("user_data");
                 }
                 serde_json::to_vec(&json_value)?
             }
