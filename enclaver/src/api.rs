@@ -149,16 +149,22 @@ impl ApiHandler {
             Err(err) => return Ok(http_util::bad_request(err.to_string())),
         };
 
-        let msg_hash = match hex::decode(req.message_hash.trim_start_matches("0x")) {
-            Ok(hash) if hash.len() == 32 => hash,
-            _ => return Ok(http_util::bad_request("Invalid message hash".to_string())),
-        };
+        let msg_bytes = req.message.as_bytes();
+        if msg_bytes.is_empty() {
+            return Ok(http_util::bad_request("Message cannot be empty".to_string()));
+        }
 
-        let signature = self.eth_key.sign_message(&msg_hash);
+        // Construct EIP-191 personal message prefix. The prefixed message will be hashed with keccak256 and signed.
+        let prefix = format!("\u{0019}Ethereum Signed Message:\n{}", msg_bytes.len());
+        let mut prefixed_msg = prefix.into_bytes();
+        prefixed_msg.extend_from_slice(msg_bytes);
+
+        let signature = self.eth_key.sign_message(&prefixed_msg);
+        let msg_hash = eth_tx::keccak256(&prefixed_msg);
 
         let attestation = if req.include_attestation {
             let att_doc = self.attester.attestation(AttestationParams {
-                nonce: Some(msg_hash.clone()),
+                nonce: Some(msg_hash.to_vec()),
                 public_key: Some(self.eth_key.public_key_as_der()?),
                 user_data: Some(self.eth_key.address_bytes()),
             })?;
@@ -298,7 +304,8 @@ impl AttestationRequest {
 
 #[derive(Deserialize)]
 struct EthSignRequest {
-    message_hash: String,
+    message: String,
+    #[serde(default)]
     include_attestation: bool,
 }
 
@@ -532,9 +539,8 @@ async fn test_eth_sign_handler() {
     let handler =
         ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();
 
-    let message_hash = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
     let body = json::object! {
-        message_hash: message_hash,
+        message: "hello world",
         include_attestation: false,
     };
 
@@ -568,9 +574,8 @@ async fn test_eth_sign_with_attestation() {
     let handler =
         ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();
 
-    let message_hash = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
     let body = json::object! {
-        message_hash: message_hash,
+        message: "hello with attestation",
         include_attestation: true,
     };
 
@@ -594,7 +599,53 @@ async fn test_eth_sign_with_attestation() {
 }
 
 #[tokio::test]
-async fn test_eth_sign_invalid_hash() {
+async fn test_eth_sign_signature_recovery() {
+    use crate::eth_key::EthKey;
+    use crate::nsm::StaticAttestationProvider;
+    use assert2::assert;
+
+    let handler =
+        ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();
+
+    let msg = "recover me";
+
+    let body = json::object! {
+        message: msg,
+        include_attestation: false,
+    };
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/eth/sign")
+        .body(Bytes::from(json::stringify(body)))
+        .unwrap();
+
+    let (head, body) = req.into_parts();
+    let resp = handler.handle_request(&head, body).await.unwrap();
+
+    assert!(resp.status() == StatusCode::OK);
+
+    let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let response: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    let signature = response["signature"].as_str().unwrap();
+    let address = response["address"].as_str().unwrap();
+
+    // Recreate the EIP-191 prefixed message and verify the signature recovers the same address
+    let msg_bytes = msg.as_bytes();
+    let prefix = format!("\u{0019}Ethereum Signed Message:\n{}", msg_bytes.len());
+    let mut prefixed_msg = prefix.into_bytes();
+    prefixed_msg.extend_from_slice(msg_bytes);
+
+    assert!(EthKey::verify_message(
+        signature.to_string(),
+        &prefixed_msg,
+        address.to_string()
+    ));
+}
+
+#[tokio::test]
+async fn test_eth_sign_empty_message() {
     use crate::nsm::StaticAttestationProvider;
     use assert2::assert;
 
@@ -602,8 +653,7 @@ async fn test_eth_sign_invalid_hash() {
         ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();
 
     let body = json::object! {
-        message_hash: "0xinvalid",
-        include_attestation: false,
+        message: "",
     };
 
     let req = Request::builder()

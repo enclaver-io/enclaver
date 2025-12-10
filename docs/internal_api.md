@@ -119,7 +119,7 @@ Obtain cryptographically secure random bytes from the Nitro Secure Module (NSM).
 
 ### Sign Message
 
-Sign a raw message hash (32 bytes).
+Sign a plain-text message using the EIP-191 personal message prefix (`personal_sign`).
 
 - **URL:** `/v1/eth/sign`
 - **Method:** `POST`
@@ -127,10 +127,11 @@ Sign a raw message hash (32 bytes).
 - **Request Body:**
   ```json
   {
-    "message_hash": "0x...", // 32 bytes hex encoded
+    "message": "hello world", // plain-text string (must be non-empty)
     "include_attestation": false
   }
   ```
+  The service builds the EIP-191 prefix `"\u0019Ethereum Signed Message:\n<len>"`, concatenates it with the provided message, then signs the result.
 - **Success Response:**
   - **Code:** 200 OK
   - **Content-Type:** `application/json`
