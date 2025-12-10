@@ -1144,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "enclaver"
-version = "1.0.4"
+version = "1.0.7"
 dependencies = [
  "aes",
  "anyhow",

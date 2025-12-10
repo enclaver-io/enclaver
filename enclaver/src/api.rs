@@ -7,6 +7,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use pkcs8::{DecodePublicKey, SubjectPublicKeyInfo};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::sync::Arc;
 
 use crate::eth_key::EthKey;
@@ -163,10 +164,16 @@ impl ApiHandler {
         let msg_hash = eth_tx::keccak256(&prefixed_msg);
 
         let attestation = if req.include_attestation {
+            // user_data is always a JSON dict with eth_addr
+            let user_data_json = serde_json::json!({
+                "eth_addr": self.eth_key.address()
+            });
+            let user_data_bytes = serde_json::to_vec(&user_data_json)?;
+
             let att_doc = self.attester.attestation(AttestationParams {
                 nonce: Some(msg_hash.to_vec()),
                 public_key: Some(self.eth_key.public_key_as_der()?),
-                user_data: Some(self.eth_key.address_bytes()),
+                user_data: Some(user_data_bytes),
             })?;
 
             Some(base64::encode(att_doc))
@@ -212,10 +219,16 @@ impl ApiHandler {
         let tx_hash = eth_tx::keccak256(&raw_tx);
 
         let attestation = if req.include_attestation {
+            // user_data is always a JSON dict with eth_addr
+            let user_data_json = serde_json::json!({
+                "eth_addr": self.eth_key.address()
+            });
+            let user_data_bytes = serde_json::to_vec(&user_data_json)?;
+
             let att_doc = self.attester.attestation(AttestationParams {
                 nonce: Some(tx_hash.to_vec()),
                 public_key: Some(self.eth_key.public_key_as_der()?),
-                user_data: Some(self.eth_key.address_bytes()),
+                user_data: Some(user_data_bytes),
             })?;
             Some(base64::encode(att_doc))
         } else {
@@ -273,7 +286,7 @@ impl HttpHandler for ApiHandler {
 struct AttestationRequest {
     nonce: Option<String>,
     public_key: Option<String>,
-    user_data: Option<String>,
+    user_data: Option<Value>,  // JSON object, eth_addr will be injected
 }
 
 impl AttestationRequest {
@@ -285,19 +298,26 @@ impl AttestationRequest {
             None => Some(eth_key.public_key_as_der()?),
         };
 
-        let user_data = match self.user_data {
-            Some(b64) => Some(base64::decode(b64)?),
-            None => {
-                // Store ETH address as raw 20 bytes (not string)
-                // This matches tee-tls format where get_address_bytes() returns 20 bytes
-                Some(eth_key.address_bytes())
-            }
+        // user_data is always a JSON dict with eth_addr
+        let mut user_data_map = match self.user_data {
+            Some(Value::Object(map)) => map,
+            Some(_) => return Err(anyhow!("user_data must be a JSON object")),
+            None => serde_json::Map::new(),
         };
+
+        // Always inject eth_addr (overwrites if user tried to set it)
+        user_data_map.insert(
+            "eth_addr".to_string(),
+            Value::String(eth_key.address()),
+        );
+
+        // Serialize to JSON bytes
+        let user_data_bytes = serde_json::to_vec(&Value::Object(user_data_map))?;
 
         Ok(AttestationParams {
             nonce,
             public_key,
-            user_data,
+            user_data: Some(user_data_bytes),
         })
     }
 }
@@ -487,7 +507,10 @@ async fn test_attestation_handler() {
 
     let body = json::object!(
         nonce: base64::encode("the nonce"),
-        user_data: base64::encode("my data"),
+        user_data: json::object!(
+            app_name: "test-app",
+            version: "1.0"
+        ),
     );
 
     let req = Request::builder()
