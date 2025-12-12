@@ -59,7 +59,8 @@ jobs:
 
       - name: Build Release Binaries (native cargo)
         if: ${{ !matrix.uses_musl }}
-        env: ${{ env.PATH }}:${{ steps.protoc.outputs.path }}
+        env:
+          PATH: ${{ steps.protoc.outputs.path }}
         run: |
           cargo build \
           --target ${{ matrix.target }} \
@@ -69,7 +70,8 @@ jobs:
 
       - name: Build Release Binaries (cargo-zigbuild)
         if: ${{ matrix.uses_musl }}
-        env: ${{ env.PATH }}:${{ steps.protoc.outputs.path }}
+        env:
+          PATH: ${{ steps.protoc.outputs.path }}
         uses: ./.github/actions/cargo-zigbuild
         with:
           args: |
