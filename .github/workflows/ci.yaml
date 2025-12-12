@@ -30,6 +30,8 @@ jobs:
 
       - name: Install Protobuf compiler
         uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check with default features
         run: |

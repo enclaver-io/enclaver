@@ -6,6 +6,7 @@ on:
       - main
     tags:
       - v*
+    pull_request:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -57,10 +58,12 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Add protoc to path
+        run: |
+          echo ${{ steps.protoc.outputs.path }} >> "$GITHUB_PATH"
+
       - name: Build Release Binaries (native cargo)
         if: ${{ !matrix.uses_musl }}
-        env:
-          PATH: ${{ steps.protoc.outputs.path }}
         run: |
           cargo build \
           --target ${{ matrix.target }} \
@@ -70,8 +73,6 @@ jobs:
 
       - name: Build Release Binaries (cargo-zigbuild)
         if: ${{ matrix.uses_musl }}
-        env:
-          PATH: ${{ steps.protoc.outputs.path }}
         uses: ./.github/actions/cargo-zigbuild
         with:
           args: |
