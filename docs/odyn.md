@@ -153,14 +153,15 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
 ### 4.3 `api.rs`
 
 - Responsibilities
-  - Start a small internal HTTP server used for attestation endpoints, health checks, and light management.
+  - Start a small internal HTTP server used for attestation endpoints, encryption operations, health checks, and light management.
   - Provide handlers that optionally use the NSM to produce attestation material.
+  - Provide ECDH-based encryption/decryption using P-384 key pairs for secure client-enclave communication.
 
 - Key data structures
   - `ApiService { task: Option<JoinHandle<()>> }` and the `ApiHandler` implementing routes.
 
 - External deps
-  - The project's http server util, the NSM attestation helper, and route/handler types.
+  - The project's http server util, the NSM attestation helper, `EncryptionKey` for P-384 ECDH, and route/handler types.
 
 - Lifecycle
   - `start()` binds the API listen port and spawns the server task. `stop()` gracefully shuts it down.
@@ -195,6 +196,7 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
   - Routes supported:
     - `GET /v1/eth/address` — proxies to internal API to retrieve the enclave's Ethereum address.
     - `POST /v1/attestation` — proxies to internal API with sanitized request body (removes `public_key` and `user_data` fields to prevent external override of defaults).
+    - `GET /v1/encryption/public_key` — proxies to internal API to retrieve the enclave's P-384 encryption public key (in DER and PEM formats).
   - `stop()` aborts the server task and awaits completion.
 
 - Common errors

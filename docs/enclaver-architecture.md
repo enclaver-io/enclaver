@@ -72,7 +72,10 @@ Top-level modules and responsibilities
   - Wrapper around AWS Nitro Enclaves NSM driver. Exposes `AttestationProvider` trait and `NsmAttestationProvider` plus a `StaticAttestationProvider` used in tests.
 
 - api (`src/api.rs`) (feature `odyn`)
-  - Small HTTP handler exposing `/v1/attestation` (POST) to return attestation docs.
+  - Small HTTP handler exposing `/v1/attestation` (POST) to return attestation docs, `/v1/encryption/*` endpoints for ECDH-based encryption/decryption, and `/v1/eth/*` for Ethereum key operations.
+
+- encryption_key (`src/encryption_key.rs`) (feature `odyn`)
+  - P-384 ECDH key pair management for secure client-enclave encryption. Provides DER/PEM encoding, shared key derivation via ECDH + HKDF, and AES-256-GCM encrypt/decrypt operations.
 
 - tls (`src/tls.rs`) (feature `proxy`)
   - rustls config loaders and `NoCertificateVerification` test helper.
