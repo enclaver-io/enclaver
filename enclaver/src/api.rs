@@ -10,16 +10,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
+use crate::encryption_key::EncryptionKey;
 use crate::eth_key::EthKey;
 use crate::eth_tx::{self, AccessListEntry, TxSignature, UnsignedEip1559Tx};
 use crate::http_util::{self, HttpHandler};
 use crate::nsm::{AttestationParams, AttestationProvider, Nsm};
 
 const MIME_APPLICATION_CBOR: &str = "application/cbor";
+const MIME_APPLICATION_OCTET_STREAM: &str = "application/octet-stream";
 
 pub struct ApiHandler {
     attester: Box<dyn AttestationProvider + Send + Sync>,
     eth_key: Arc<EthKey>,
+    encryption_key: Arc<EncryptionKey>,
     nsm: Option<Arc<Nsm>>,
 }
 
@@ -52,9 +55,35 @@ impl ApiHandler {
             }
         };
         log::info!("Enclave Ethereum address: {}", eth_key.address());
+
+        // Generate P-384 encryption key for attestation
+        let encryption_key = match nsm.as_ref() {
+            Some(nsm_ref) => match Self::collect_random_bytes(nsm_ref, 32).and_then(|bytes| {
+                EncryptionKey::from_entropy(&bytes)
+            }) {
+                Ok(key) => {
+                    log::info!("Seeded P-384 encryption key from NSM RNG");
+                    Arc::new(key)
+                }
+                Err(err) => {
+                    log::warn!(
+                        "Failed to derive P-384 key from NSM RNG, falling back to OsRng: {}",
+                        err
+                    );
+                    Arc::new(EncryptionKey::new())
+                }
+            },
+            None => {
+                log::info!("NSM unavailable; generating P-384 encryption key from OsRng");
+                Arc::new(EncryptionKey::new())
+            }
+        };
+        log::info!("Enclave P-384 public key: {}", encryption_key.public_key_hex());
+
         Ok(Self {
             attester,
             eth_key,
+            encryption_key,
             nsm,
         })
     }
@@ -102,6 +131,10 @@ impl ApiHandler {
                 Method::GET => self.handle_random().await,
                 _ => Ok(http_util::method_not_allowed()),
             },
+            "/v1/encryption/public_key" => match head.method {
+                Method::GET => self.handle_encryption_public_key().await,
+                _ => Ok(http_util::method_not_allowed()),
+            },
             _ => Ok(http_util::not_found()),
         }
     }
@@ -116,7 +149,7 @@ impl ApiHandler {
             Err(err) => return Ok(http_util::bad_request(err.to_string())),
         };
 
-        let params = match attestation_req.into_params(&self.eth_key) {
+        let params = match attestation_req.into_params(&self.eth_key, &self.encryption_key) {
             Ok(params) => params,
             Err(err) => return Ok(http_util::bad_request(err.to_string())),
         };
@@ -270,6 +303,16 @@ impl ApiHandler {
             .header(CONTENT_TYPE, "application/json")
             .body(Full::new(Bytes::from(json::stringify(response))))?)
     }
+
+    /// Handle GET /v1/encryption/public_key - returns P-384 public key in DER format
+    async fn handle_encryption_public_key(&self) -> Result<Response<Full<Bytes>>> {
+        let der_bytes = self.encryption_key.public_key_as_der()?;
+        
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, MIME_APPLICATION_OCTET_STREAM)
+            .body(Full::new(Bytes::from(der_bytes)))?)
+    }
 }
 
 #[async_trait]
@@ -290,12 +333,13 @@ struct AttestationRequest {
 }
 
 impl AttestationRequest {
-    fn into_params(self, eth_key: &EthKey) -> Result<AttestationParams> {
+    fn into_params(self, eth_key: &EthKey, encryption_key: &EncryptionKey) -> Result<AttestationParams> {
         let nonce = self.nonce.map(base64::decode).transpose()?;
 
+        // Use P-384 encryption key by default, or user-provided PEM
         let public_key = match self.public_key {
             Some(pem) => Some(pem_decode(&pem)?),
-            None => Some(eth_key.public_key_as_der()?),
+            None => Some(encryption_key.public_key_as_der()?),
         };
 
         // user_data is always a JSON dict with eth_addr

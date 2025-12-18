@@ -1,6 +1,6 @@
 [package]
 name = "enclaver"
-version = "1.0.9"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.86"
 default-run = "enclaver"
@@ -35,6 +35,7 @@ pretty_env_logger = "0.5"
 nix = "0.24"
 futures = "0.3"
 rand = { version = "0.8", features = ["std", "std_rng"] }
+rand_chacha = "0.3"
 futures-util = "0.3"
 clap = { version = "4.5.48", features = ["derive"] }
 serde_yaml = "0.9"
@@ -73,6 +74,7 @@ sha2 = "0.10"
 ignore-result = "0.2.0"
 console-subscriber = { version = "0.1.10", optional = true }
 k256 = { version = "0.13.4", features = ["ecdsa"] }
+p384 = { version = "0.13", features = ["ecdh"] }
 sha3 = "0.10"
 rand_core = "0.9.3"
 hex = "0.4"

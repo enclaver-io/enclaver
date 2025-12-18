@@ -47,3 +47,6 @@ pub mod eth_key;
 
 #[cfg(feature = "odyn")]
 pub mod eth_tx;
+
+#[cfg(feature = "odyn")]
+pub mod encryption_key;
