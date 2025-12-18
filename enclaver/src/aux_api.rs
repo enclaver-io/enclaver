@@ -113,6 +113,31 @@ impl AuxApiHandler {
         .await
     }
 
+    fn cors_preflight_response(&self) -> Response<Full<Bytes>> {
+        Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Access-Control-Allow-Methods", "POST, OPTIONS")
+            .header("Access-Control-Allow-Headers", "Content-Type")
+            .header("Access-Control-Max-Age", "86400")
+            .body(Full::new(Bytes::new()))
+            .unwrap()
+    }
+
+    fn add_cors_headers(&self, response: Response<Full<Bytes>>) -> Response<Full<Bytes>> {
+        let (mut parts, body) = response.into_parts();
+        parts.headers.insert(
+            "Access-Control-Allow-Origin",
+            "*".parse().unwrap(),
+        );
+        Response::from_parts(parts, body)
+    }
+
+    async fn handle_attestation_with_cors(&self, body: Bytes) -> Result<Response<Full<Bytes>>> {
+        let response = self.handle_attestation(body).await?;
+        Ok(self.add_cors_headers(response))
+    }
+
     async fn handle_request(
         &self,
         head: &hyper::http::request::Parts,
@@ -124,7 +149,8 @@ impl AuxApiHandler {
                 _ => Ok(http_util::method_not_allowed()),
             },
             "/v1/attestation" => match head.method {
-                Method::POST => self.handle_attestation(body).await,
+                Method::OPTIONS => Ok(self.cors_preflight_response()),
+                Method::POST => self.handle_attestation_with_cors(body).await,
                 _ => Ok(http_util::method_not_allowed()),
             },
             _ => Ok(http_util::not_found()),
