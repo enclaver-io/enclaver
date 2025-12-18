@@ -138,6 +138,11 @@ impl AuxApiHandler {
         Ok(self.add_cors_headers(response))
     }
 
+    async fn handle_encryption_public_key(&self) -> Result<Response<Full<Bytes>>> {
+        self.proxy_request(Method::GET, "/v1/encryption/public_key", None)
+            .await
+    }
+
     async fn handle_request(
         &self,
         head: &hyper::http::request::Parts,
@@ -151,6 +156,10 @@ impl AuxApiHandler {
             "/v1/attestation" => match head.method {
                 Method::OPTIONS => Ok(self.cors_preflight_response()),
                 Method::POST => self.handle_attestation_with_cors(body).await,
+                _ => Ok(http_util::method_not_allowed()),
+            },
+            "/v1/encryption/public_key" => match head.method {
+                Method::GET => self.handle_encryption_public_key().await,
                 _ => Ok(http_util::method_not_allowed()),
             },
             _ => Ok(http_util::not_found()),
