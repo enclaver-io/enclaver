@@ -135,6 +135,14 @@ impl ApiHandler {
                 Method::GET => self.handle_encryption_public_key().await,
                 _ => Ok(http_util::method_not_allowed()),
             },
+            "/v1/encryption/decrypt" => match head.method {
+                Method::POST => self.handle_encryption_decrypt(body).await,
+                _ => Ok(http_util::method_not_allowed()),
+            },
+            "/v1/encryption/encrypt" => match head.method {
+                Method::POST => self.handle_encryption_encrypt(body).await,
+                _ => Ok(http_util::method_not_allowed()),
+            },
             _ => Ok(http_util::not_found()),
         }
     }
@@ -313,6 +321,117 @@ impl ApiHandler {
             .header(CONTENT_TYPE, MIME_APPLICATION_OCTET_STREAM)
             .body(Full::new(Bytes::from(der_bytes)))?)
     }
+
+    /// Handle POST /v1/encryption/decrypt - decrypt data from client
+    /// 
+    /// Request body JSON:
+    /// {
+    ///   "nonce": "hex-encoded nonce (at least 12 bytes)",
+    ///   "client_public_key": "hex-encoded DER public key",
+    ///   "encrypted_data": "hex-encoded ciphertext"
+    /// }
+    /// 
+    /// Response JSON:
+    /// {
+    ///   "plaintext": "decrypted string"
+    /// }
+    async fn handle_encryption_decrypt(&self, body: Bytes) -> Result<Response<Full<Bytes>>> {
+        let req: EncryptionDecryptRequest = match serde_json::from_slice(&body) {
+            Ok(req) => req,
+            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+        };
+
+        // Decode hex inputs
+        let nonce = match hex::decode(req.nonce.strip_prefix("0x").unwrap_or(&req.nonce)) {
+            Ok(n) => n,
+            Err(e) => return Ok(http_util::bad_request(format!("Invalid nonce hex: {}", e))),
+        };
+        let client_pub_key_der = match hex::decode(req.client_public_key.strip_prefix("0x").unwrap_or(&req.client_public_key)) {
+            Ok(k) => k,
+            Err(e) => return Ok(http_util::bad_request(format!("Invalid client_public_key hex: {}", e))),
+        };
+        let encrypted_data = match hex::decode(req.encrypted_data.strip_prefix("0x").unwrap_or(&req.encrypted_data)) {
+            Ok(d) => d,
+            Err(e) => return Ok(http_util::bad_request(format!("Invalid encrypted_data hex: {}", e))),
+        };
+
+        // Decrypt
+        let plaintext_bytes = match self.encryption_key.decrypt(&nonce, &client_pub_key_der, &encrypted_data) {
+            Ok(p) => p,
+            Err(e) => return Ok(http_util::bad_request(format!("Decryption failed: {}", e))),
+        };
+
+        // Convert to string
+        let plaintext = match String::from_utf8(plaintext_bytes) {
+            Ok(s) => s,
+            Err(e) => return Ok(http_util::bad_request(format!("Invalid UTF-8 in plaintext: {}", e))),
+        };
+
+        let response = EncryptionDecryptResponse { plaintext };
+
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "application/json")
+            .body(Full::new(Bytes::from(serde_json::to_string(&response)?)))?)
+    }
+
+    /// Handle POST /v1/encryption/encrypt - encrypt data to client
+    /// 
+    /// Request body JSON:
+    /// {
+    ///   "plaintext": "string to encrypt",
+    ///   "client_public_key": "hex-encoded DER public key"
+    /// }
+    /// 
+    /// Response JSON:
+    /// {
+    ///   "encrypted_data": "hex-encoded ciphertext",
+    ///   "enclave_public_key": "hex-encoded DER public key",
+    ///   "nonce": "hex-encoded nonce"
+    /// }
+    async fn handle_encryption_encrypt(&self, body: Bytes) -> Result<Response<Full<Bytes>>> {
+        let req: EncryptionEncryptRequest = match serde_json::from_slice(&body) {
+            Ok(req) => req,
+            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+        };
+
+        // Decode hex client public key
+        let client_pub_key_der = match hex::decode(req.client_public_key.strip_prefix("0x").unwrap_or(&req.client_public_key)) {
+            Ok(k) => k,
+            Err(e) => return Ok(http_util::bad_request(format!("Invalid client_public_key hex: {}", e))),
+        };
+
+        // Generate nonce
+        let nonce = if let Some(nsm) = &self.nsm {
+            Self::collect_random_bytes(nsm, 32)?
+        } else {
+            let mut rng = rand::rngs::OsRng;
+            let mut bytes = [0u8; 32];
+            rng.fill_bytes(&mut bytes);
+            bytes.to_vec()
+        };
+
+        // Encrypt
+        let plaintext_bytes = req.plaintext.as_bytes();
+        let encrypted_data = match self.encryption_key.encrypt(plaintext_bytes, &client_pub_key_der, &nonce) {
+            Ok(c) => c,
+            Err(e) => return Ok(http_util::bad_request(format!("Encryption failed: {}", e))),
+        };
+
+        // Get our public key
+        let enclave_pub_key_der = self.encryption_key.public_key_as_der()?;
+
+        let response = EncryptionEncryptResponse {
+            encrypted_data: hex::encode(&encrypted_data),
+            enclave_public_key: hex::encode(&enclave_pub_key_der),
+            nonce: hex::encode(&nonce),
+        };
+
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "application/json")
+            .body(Full::new(Bytes::from(serde_json::to_string(&response)?)))?)
+    }
 }
 
 #[async_trait]
@@ -394,6 +513,31 @@ struct EthSignTxResponse {
     signature: String,
     address: String,
     attestation: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct EncryptionDecryptRequest {
+    nonce: String,
+    client_public_key: String,
+    encrypted_data: String,
+}
+
+#[derive(Serialize)]
+struct EncryptionDecryptResponse {
+    plaintext: String,
+}
+
+#[derive(Deserialize)]
+struct EncryptionEncryptRequest {
+    plaintext: String,
+    client_public_key: String,
+}
+
+#[derive(Serialize)]
+struct EncryptionEncryptResponse {
+    encrypted_data: String,
+    enclave_public_key: String,
+    nonce: String,
 }
 
 #[derive(Deserialize)]

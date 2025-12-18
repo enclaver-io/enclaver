@@ -79,6 +79,8 @@ sha3 = "0.10"
 rand_core = "0.9.3"
 hex = "0.4"
 rlp = "0.5"
+aes-gcm = "0.10"
+hkdf = "0.12"
 
 [dev-dependencies]
 assert2 = "0.3"

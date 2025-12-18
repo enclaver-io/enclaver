@@ -1,21 +1,25 @@
-use anyhow::Result;
-use p384::ecdh::EphemeralSecret;
-use p384::PublicKey;
+use anyhow::{Result, anyhow};
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use aes_gcm::aead::Aead;
+use hkdf::Hkdf;
+use p384::{PublicKey, SecretKey, ecdh::diffie_hellman};
+use p384::elliptic_curve::sec1::ToEncodedPoint;
 use rand::rngs::OsRng;
+use sha2::Sha256;
 
-/// P-384 encryption key pair for attestation
-/// Used for ECDH key exchange to encrypt data to the enclave
+/// P-384 encryption key pair for attestation and ECDH-based encryption
+/// Used for ECDH key exchange to encrypt data to/from the enclave
 pub struct EncryptionKey {
-    secret: EphemeralSecret,
+    secret_key: SecretKey,
     public_key: PublicKey,
 }
 
 impl EncryptionKey {
     /// Generate new P-384 key pair
     pub fn new() -> Self {
-        let secret = EphemeralSecret::random(&mut OsRng);
-        let public_key = secret.public_key();
-        Self { secret, public_key }
+        let secret_key = SecretKey::random(&mut OsRng);
+        let public_key = secret_key.public_key();
+        Self { secret_key, public_key }
     }
 
     /// Generate P-384 key pair from entropy (for NSM RNG)
@@ -30,9 +34,9 @@ impl EncryptionKey {
         seed[..len].copy_from_slice(&entropy[..len]);
         
         let mut rng = ChaCha20Rng::from_seed(seed);
-        let secret = EphemeralSecret::random(&mut rng);
-        let public_key = secret.public_key();
-        Ok(Self { secret, public_key })
+        let secret_key = SecretKey::random(&mut rng);
+        let public_key = secret_key.public_key();
+        Ok(Self { secret_key, public_key })
     }
 
     /// Get the public key
@@ -42,7 +46,6 @@ impl EncryptionKey {
 
     /// Raw SEC1-encoded uncompressed public key (97 bytes: 0x04 + 96 bytes)
     pub fn public_key_bytes(&self) -> Vec<u8> {
-        use p384::elliptic_curve::sec1::ToEncodedPoint;
         self.public_key.to_encoded_point(false).as_bytes().to_vec()
     }
 
@@ -59,8 +62,6 @@ impl EncryptionKey {
     ///   parameters OBJECT IDENTIFIER   -- 1.3.132.0.34 (secp384r1/P-384)
     /// }
     pub fn public_key_as_der(&self) -> Result<Vec<u8>> {
-        use p384::elliptic_curve::sec1::ToEncodedPoint;
-        
         // OID encodings:
         // 1.2.840.10045.2.1 (EC public key) = 06 07 2a 86 48 ce 3d 02 01
         // 1.3.132.0.34 (secp384r1/P-384) = 06 05 2b 81 04 00 22
@@ -123,9 +124,160 @@ impl EncryptionKey {
         format!("0x{}", hex::encode(self.public_key_bytes()))
     }
 
-    /// Get the ephemeral secret for ECDH operations
-    pub fn secret(&self) -> &EphemeralSecret {
-        &self.secret
+    /// Derive shared AES-256 key using ECDH + HKDF
+    /// 
+    /// Args:
+    ///   peer_public_key_der: Peer's public key in DER (SPKI) format
+    /// 
+    /// Returns:
+    ///   32-byte AES key
+    fn derive_shared_key(&self, peer_public_key_der: &[u8]) -> Result<[u8; 32]> {
+        // Parse DER-encoded SPKI to get the public key
+        let peer_public_key = parse_der_public_key(peer_public_key_der)?;
+        
+        // Perform ECDH
+        let shared_secret = diffie_hellman(
+            self.secret_key.to_nonzero_scalar(),
+            peer_public_key.as_affine()
+        );
+        
+        // Derive AES key using HKDF-SHA256
+        let hkdf = Hkdf::<Sha256>::new(None, shared_secret.raw_secret_bytes());
+        let mut aes_key = [0u8; 32];
+        hkdf.expand(b"encryption data", &mut aes_key)
+            .map_err(|_| anyhow!("HKDF expand failed"))?;
+        
+        Ok(aes_key)
+    }
+
+    /// Decrypt data encrypted by a client using ECDH + AES-GCM
+    /// 
+    /// Args:
+    ///   nonce: 12-byte nonce (or 32-byte, first 12 used)
+    ///   client_public_key_der: Client's ephemeral public key (DER/SPKI format)
+    ///   encrypted_data: AES-GCM encrypted ciphertext with tag
+    /// 
+    /// Returns:
+    ///   Decrypted plaintext bytes
+    pub fn decrypt(&self, nonce: &[u8], client_public_key_der: &[u8], encrypted_data: &[u8]) -> Result<Vec<u8>> {
+        // Derive shared key
+        let aes_key = self.derive_shared_key(client_public_key_der)?;
+        
+        // Use first 12 bytes of nonce for AES-GCM (standard nonce size)
+        let nonce_bytes = if nonce.len() >= 12 {
+            &nonce[..12]
+        } else {
+            return Err(anyhow!("Nonce must be at least 12 bytes"));
+        };
+        
+        // Decrypt using AES-256-GCM
+        let cipher = Aes256Gcm::new_from_slice(&aes_key)
+            .map_err(|e| anyhow!("Failed to create cipher: {}", e))?;
+        let nonce = Nonce::from_slice(nonce_bytes);
+        
+        let plaintext = cipher.decrypt(nonce, encrypted_data)
+            .map_err(|e| anyhow!("Decryption failed: {}", e))?;
+        
+        Ok(plaintext)
+    }
+
+    /// Encrypt data to send to a client using ECDH + AES-GCM
+    /// 
+    /// Args:
+    ///   plaintext: Data to encrypt
+    ///   client_public_key_der: Client's public key (DER/SPKI format)
+    ///   nonce: 12-byte nonce (or 32-byte, first 12 used)
+    /// 
+    /// Returns:
+    ///   Encrypted ciphertext with authentication tag
+    pub fn encrypt(&self, plaintext: &[u8], client_public_key_der: &[u8], nonce: &[u8]) -> Result<Vec<u8>> {
+        // Derive shared key
+        let aes_key = self.derive_shared_key(client_public_key_der)?;
+        
+        // Use first 12 bytes of nonce for AES-GCM (standard nonce size)
+        let nonce_bytes = if nonce.len() >= 12 {
+            &nonce[..12]
+        } else {
+            return Err(anyhow!("Nonce must be at least 12 bytes"));
+        };
+        
+        // Encrypt using AES-256-GCM
+        let cipher = Aes256Gcm::new_from_slice(&aes_key)
+            .map_err(|e| anyhow!("Failed to create cipher: {}", e))?;
+        let nonce = Nonce::from_slice(nonce_bytes);
+        
+        let ciphertext = cipher.encrypt(nonce, plaintext)
+            .map_err(|e| anyhow!("Encryption failed: {}", e))?;
+        
+        Ok(ciphertext)
+    }
+}
+
+/// Parse a DER-encoded SubjectPublicKeyInfo to extract the P-384 public key
+fn parse_der_public_key(der: &[u8]) -> Result<PublicKey> {
+    // Simple DER parser for SPKI structure
+    // SEQUENCE { AlgorithmIdentifier, BIT STRING }
+    
+    if der.len() < 4 || der[0] != 0x30 {
+        return Err(anyhow!("Invalid DER: expected SEQUENCE"));
+    }
+    
+    // Parse outer SEQUENCE length
+    let (content_start, _content_len) = parse_der_length(&der[1..])?;
+    let content = &der[1 + content_start..];
+    
+    // Skip AlgorithmIdentifier SEQUENCE
+    if content.is_empty() || content[0] != 0x30 {
+        return Err(anyhow!("Invalid DER: expected AlgorithmIdentifier SEQUENCE"));
+    }
+    let (alg_len_size, alg_len) = parse_der_length(&content[1..])?;
+    let bit_string_start = 1 + alg_len_size + alg_len;
+    
+    if bit_string_start >= content.len() || content[bit_string_start] != 0x03 {
+        return Err(anyhow!("Invalid DER: expected BIT STRING"));
+    }
+    
+    // Parse BIT STRING
+    let bit_string = &content[bit_string_start..];
+    let (bs_len_size, bs_len) = parse_der_length(&bit_string[1..])?;
+    let bs_content_start = 1 + bs_len_size;
+    
+    if bs_content_start + bs_len > bit_string.len() {
+        return Err(anyhow!("Invalid DER: BIT STRING length mismatch"));
+    }
+    
+    // Skip unused_bits byte (should be 0)
+    let public_key_bytes = &bit_string[bs_content_start + 1..bs_content_start + bs_len];
+    
+    // Parse as P-384 public key (SEC1 encoded point)
+    PublicKey::from_sec1_bytes(public_key_bytes)
+        .map_err(|e| anyhow!("Failed to parse P-384 public key: {}", e))
+}
+
+/// Parse DER length encoding
+/// Returns (bytes consumed, length value)
+fn parse_der_length(data: &[u8]) -> Result<(usize, usize)> {
+    if data.is_empty() {
+        return Err(anyhow!("Empty data for DER length"));
+    }
+    
+    if data[0] < 0x80 {
+        // Short form
+        Ok((1, data[0] as usize))
+    } else if data[0] == 0x81 {
+        // Long form, 1 byte
+        if data.len() < 2 {
+            return Err(anyhow!("Truncated DER length"));
+        }
+        Ok((2, data[1] as usize))
+    } else if data[0] == 0x82 {
+        // Long form, 2 bytes
+        if data.len() < 3 {
+            return Err(anyhow!("Truncated DER length"));
+        }
+        Ok((3, ((data[1] as usize) << 8) | (data[2] as usize)))
+    } else {
+        Err(anyhow!("Unsupported DER length encoding"))
     }
 }
 
@@ -170,4 +322,38 @@ mod tests {
         // Same entropy should produce same key
         assert_eq!(key1.public_key_bytes(), key2.public_key_bytes());
     }
+
+    #[test]
+    fn test_encrypt_decrypt_roundtrip() {
+        // Create two key pairs (simulating enclave and client)
+        let enclave_key = EncryptionKey::new();
+        let client_key = EncryptionKey::new();
+        
+        // Get DER-encoded public keys
+        let enclave_pub_der = enclave_key.public_key_as_der().unwrap();
+        let client_pub_der = client_key.public_key_as_der().unwrap();
+        
+        // Client encrypts data to enclave
+        let plaintext = b"Hello, Enclave!";
+        let nonce = [0x42u8; 12];
+        let ciphertext = client_key.encrypt(plaintext, &enclave_pub_der, &nonce).unwrap();
+        
+        // Enclave decrypts data from client
+        let decrypted = enclave_key.decrypt(&nonce, &client_pub_der, &ciphertext).unwrap();
+        
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_der_parse_roundtrip() {
+        let key = EncryptionKey::new();
+        let der = key.public_key_as_der().unwrap();
+        
+        // Parse the DER we generated
+        let parsed = parse_der_public_key(&der).unwrap();
+        
+        // Should match original
+        assert_eq!(key.public_key_bytes(), parsed.to_encoded_point(false).as_bytes().to_vec());
+    }
 }
+
