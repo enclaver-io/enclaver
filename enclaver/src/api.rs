@@ -17,7 +17,6 @@ use crate::http_util::{self, HttpHandler};
 use crate::nsm::{AttestationParams, AttestationProvider, Nsm};
 
 const MIME_APPLICATION_CBOR: &str = "application/cbor";
-const MIME_APPLICATION_OCTET_STREAM: &str = "application/octet-stream";
 
 pub struct ApiHandler {
     attester: Box<dyn AttestationProvider + Send + Sync>,
