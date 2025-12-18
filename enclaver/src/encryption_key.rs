@@ -119,6 +119,23 @@ impl EncryptionKey {
         Ok(spki)
     }
 
+    /// PEM-encoded public key for human-readable format
+    pub fn public_key_as_pem(&self) -> Result<String> {
+        let der = self.public_key_as_der()?;
+        let b64 = base64::encode(&der);
+        
+        // Split into 64-character lines
+        let lines: Vec<&str> = b64.as_bytes()
+            .chunks(64)
+            .map(|chunk| std::str::from_utf8(chunk).unwrap())
+            .collect();
+        
+        Ok(format!(
+            "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----",
+            lines.join("\n")
+        ))
+    }
+
     /// Public key as hex string (for debugging/logging)
     pub fn public_key_hex(&self) -> String {
         format!("0x{}", hex::encode(self.public_key_bytes()))
@@ -285,6 +302,8 @@ fn parse_der_length(data: &[u8]) -> Result<(usize, usize)> {
 mod tests {
     use super::*;
 
+    // ==================== Key Generation Tests ====================
+
     #[test]
     fn test_generate_key() {
         let key = EncryptionKey::new();
@@ -296,6 +315,105 @@ mod tests {
         
         println!("P-384 Public Key: {}", key.public_key_hex());
     }
+
+    #[test]
+    fn test_generate_key_uniqueness() {
+        // Each new() call should generate a different key
+        let key1 = EncryptionKey::new();
+        let key2 = EncryptionKey::new();
+        let key3 = EncryptionKey::new();
+        
+        assert_ne!(key1.public_key_bytes(), key2.public_key_bytes());
+        assert_ne!(key2.public_key_bytes(), key3.public_key_bytes());
+        assert_ne!(key1.public_key_bytes(), key3.public_key_bytes());
+    }
+
+    #[test]
+    fn test_public_key_accessor() {
+        let key = EncryptionKey::new();
+        let pub_key = key.public_key();
+        
+        // Verify public key is valid by encoding it
+        let encoded = pub_key.to_encoded_point(false);
+        assert_eq!(encoded.as_bytes().len(), 97);
+    }
+
+    #[test]
+    fn test_public_key_hex_format() {
+        let key = EncryptionKey::new();
+        let hex_str = key.public_key_hex();
+        
+        // Should start with 0x
+        assert!(hex_str.starts_with("0x"));
+        
+        // Should be 0x + 194 hex chars (97 bytes * 2)
+        assert_eq!(hex_str.len(), 2 + 194);
+        
+        // All chars after 0x should be valid hex
+        assert!(hex_str[2..].chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    // ==================== Entropy-based Key Generation Tests ====================
+
+    #[test]
+    fn test_from_entropy() {
+        let entropy = [0x42u8; 32];
+        let key1 = EncryptionKey::from_entropy(&entropy).unwrap();
+        let key2 = EncryptionKey::from_entropy(&entropy).unwrap();
+        
+        // Same entropy should produce same key
+        assert_eq!(key1.public_key_bytes(), key2.public_key_bytes());
+    }
+
+    #[test]
+    fn test_from_entropy_different_inputs() {
+        let entropy1 = [0x00u8; 32];
+        let entropy2 = [0xffu8; 32];
+        let entropy3 = [0x42u8; 32];
+        
+        let key1 = EncryptionKey::from_entropy(&entropy1).unwrap();
+        let key2 = EncryptionKey::from_entropy(&entropy2).unwrap();
+        let key3 = EncryptionKey::from_entropy(&entropy3).unwrap();
+        
+        // Different entropy should produce different keys
+        assert_ne!(key1.public_key_bytes(), key2.public_key_bytes());
+        assert_ne!(key2.public_key_bytes(), key3.public_key_bytes());
+        assert_ne!(key1.public_key_bytes(), key3.public_key_bytes());
+    }
+
+    #[test]
+    fn test_from_entropy_short_input() {
+        // Should work with less than 32 bytes (zero-padded)
+        let short_entropy = [0xab, 0xcd, 0xef];
+        let key = EncryptionKey::from_entropy(&short_entropy).unwrap();
+        
+        assert_eq!(key.public_key_bytes().len(), 97);
+    }
+
+    #[test]
+    fn test_from_entropy_long_input() {
+        // Should work with more than 32 bytes (truncated)
+        let long_entropy = [0x42u8; 64];
+        let key = EncryptionKey::from_entropy(&long_entropy).unwrap();
+        
+        assert_eq!(key.public_key_bytes().len(), 97);
+        
+        // Verify it only uses first 32 bytes
+        let truncated_entropy = [0x42u8; 32];
+        let key_truncated = EncryptionKey::from_entropy(&truncated_entropy).unwrap();
+        assert_eq!(key.public_key_bytes(), key_truncated.public_key_bytes());
+    }
+
+    #[test]
+    fn test_from_entropy_empty_input() {
+        // Empty entropy should work (all zeros seed)
+        let empty_entropy: [u8; 0] = [];
+        let key = EncryptionKey::from_entropy(&empty_entropy).unwrap();
+        
+        assert_eq!(key.public_key_bytes().len(), 97);
+    }
+
+    // ==================== DER Encoding Tests ====================
 
     #[test]
     fn test_der_encoding() {
@@ -314,14 +432,169 @@ mod tests {
     }
 
     #[test]
-    fn test_from_entropy() {
-        let entropy = [0x42u8; 32];
-        let key1 = EncryptionKey::from_entropy(&entropy).unwrap();
-        let key2 = EncryptionKey::from_entropy(&entropy).unwrap();
+    fn test_der_encoding_contains_ec_oid() {
+        let key = EncryptionKey::new();
+        let der = key.public_key_as_der().unwrap();
         
-        // Same entropy should produce same key
-        assert_eq!(key1.public_key_bytes(), key2.public_key_bytes());
+        // Should contain the EC public key OID (1.2.840.10045.2.1)
+        let oid_ec_pubkey = [0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
+        assert!(der.windows(oid_ec_pubkey.len()).any(|w| w == oid_ec_pubkey));
     }
+
+    #[test]
+    fn test_der_encoding_contains_public_key() {
+        let key = EncryptionKey::new();
+        let der = key.public_key_as_der().unwrap();
+        let pub_bytes = key.public_key_bytes();
+        
+        // DER should contain the raw public key bytes
+        assert!(der.windows(pub_bytes.len()).any(|w| w == pub_bytes.as_slice()));
+    }
+
+    #[test]
+    fn test_der_encoding_consistent() {
+        let key = EncryptionKey::new();
+        let der1 = key.public_key_as_der().unwrap();
+        let der2 = key.public_key_as_der().unwrap();
+        
+        // Same key should produce identical DER
+        assert_eq!(der1, der2);
+    }
+
+    #[test]
+    fn test_der_encoding_expected_length() {
+        let key = EncryptionKey::new();
+        let der = key.public_key_as_der().unwrap();
+        
+        // Expected SPKI structure size for P-384:
+        // Outer SEQUENCE: 2 bytes tag+length (long form)
+        // AlgorithmIdentifier: 2 + 9 + 7 = 18 bytes
+        // BIT STRING: 3 (tag + long length) + 1 (unused bits) + 97 (key) = 101 bytes
+        // Total: ~120 bytes (exact depends on length encoding)
+        assert!(der.len() >= 115 && der.len() <= 125);
+    }
+
+    #[test]
+    fn test_der_parse_roundtrip() {
+        let key = EncryptionKey::new();
+        let der = key.public_key_as_der().unwrap();
+        
+        // Parse the DER we generated
+        let parsed = parse_der_public_key(&der).unwrap();
+        
+        // Should match original
+        assert_eq!(key.public_key_bytes(), parsed.to_encoded_point(false).as_bytes().to_vec());
+    }
+
+    #[test]
+    fn test_der_parse_multiple_keys() {
+        // Verify DER roundtrip works for multiple different keys
+        for _ in 0..5 {
+            let key = EncryptionKey::new();
+            let der = key.public_key_as_der().unwrap();
+            let parsed = parse_der_public_key(&der).unwrap();
+            assert_eq!(key.public_key_bytes(), parsed.to_encoded_point(false).as_bytes().to_vec());
+        }
+    }
+
+    // ==================== DER Parsing Error Cases ====================
+
+    #[test]
+    fn test_der_parse_empty_input() {
+        let result = parse_der_public_key(&[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_der_parse_invalid_tag() {
+        // Not starting with SEQUENCE (0x30)
+        let invalid = [0x31, 0x00];
+        let result = parse_der_public_key(&invalid);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_der_parse_truncated_data() {
+        let key = EncryptionKey::new();
+        let der = key.public_key_as_der().unwrap();
+        
+        // Truncate to various lengths
+        for len in [1, 2, 10, 50, der.len() - 1] {
+            let truncated = &der[..len.min(der.len())];
+            let result = parse_der_public_key(truncated);
+            assert!(result.is_err(), "Should fail with {} bytes", len);
+        }
+    }
+
+    #[test]
+    fn test_der_parse_corrupted_public_key() {
+        let key = EncryptionKey::new();
+        let mut der = key.public_key_as_der().unwrap();
+        
+        // Corrupt the public key bytes near the end (changes EC point)
+        let len = der.len();
+        der[len - 10] ^= 0xff; // XOR to corrupt while keeping length valid
+        der[len - 5] ^= 0xff;
+        
+        // Parsing should fail because the corrupted bytes don't form a valid EC point
+        let result = parse_der_public_key(&der);
+        assert!(result.is_err());
+    }
+
+    // ==================== parse_der_length Tests ====================
+
+    #[test]
+    fn test_parse_der_length_short_form() {
+        // Values 0-127 use short form
+        let data = [0x42];
+        let (bytes_consumed, length) = parse_der_length(&data).unwrap();
+        assert_eq!(bytes_consumed, 1);
+        assert_eq!(length, 0x42);
+    }
+
+    #[test]
+    fn test_parse_der_length_long_form_one_byte() {
+        // 0x81 prefix for 1-byte length
+        let data = [0x81, 0x80];
+        let (bytes_consumed, length) = parse_der_length(&data).unwrap();
+        assert_eq!(bytes_consumed, 2);
+        assert_eq!(length, 128);
+    }
+
+    #[test]
+    fn test_parse_der_length_long_form_two_bytes() {
+        // 0x82 prefix for 2-byte length
+        let data = [0x82, 0x01, 0x00];
+        let (bytes_consumed, length) = parse_der_length(&data).unwrap();
+        assert_eq!(bytes_consumed, 3);
+        assert_eq!(length, 256);
+    }
+
+    #[test]
+    fn test_parse_der_length_empty_data() {
+        let result = parse_der_length(&[]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_der_length_truncated_long_form() {
+        // 0x81 but no length byte follows
+        let result = parse_der_length(&[0x81]);
+        assert!(result.is_err());
+        
+        // 0x82 but only one length byte
+        let result = parse_der_length(&[0x82, 0x01]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_der_length_unsupported_encoding() {
+        // 0x83 would be 3-byte length, currently unsupported
+        let result = parse_der_length(&[0x83, 0x01, 0x02, 0x03]);
+        assert!(result.is_err());
+    }
+
+    // ==================== Encryption/Decryption Tests ====================
 
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
@@ -345,15 +618,326 @@ mod tests {
     }
 
     #[test]
-    fn test_der_parse_roundtrip() {
-        let key = EncryptionKey::new();
-        let der = key.public_key_as_der().unwrap();
+    fn test_encrypt_decrypt_bidirectional() {
+        let party_a = EncryptionKey::new();
+        let party_b = EncryptionKey::new();
         
-        // Parse the DER we generated
-        let parsed = parse_der_public_key(&der).unwrap();
+        let a_pub_der = party_a.public_key_as_der().unwrap();
+        let b_pub_der = party_b.public_key_as_der().unwrap();
         
-        // Should match original
-        assert_eq!(key.public_key_bytes(), parsed.to_encoded_point(false).as_bytes().to_vec());
+        // A sends message to B
+        let msg_a_to_b = b"Message from A to B";
+        let nonce1 = [0x01u8; 12];
+        let ciphertext1 = party_a.encrypt(msg_a_to_b, &b_pub_der, &nonce1).unwrap();
+        let decrypted1 = party_b.decrypt(&nonce1, &a_pub_der, &ciphertext1).unwrap();
+        assert_eq!(decrypted1, msg_a_to_b);
+        
+        // B sends message to A
+        let msg_b_to_a = b"Message from B to A";
+        let nonce2 = [0x02u8; 12];
+        let ciphertext2 = party_b.encrypt(msg_b_to_a, &a_pub_der, &nonce2).unwrap();
+        let decrypted2 = party_a.decrypt(&nonce2, &b_pub_der, &ciphertext2).unwrap();
+        assert_eq!(decrypted2, msg_b_to_a);
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_empty_plaintext() {
+        let key1 = EncryptionKey::new();
+        let key2 = EncryptionKey::new();
+        
+        let pub1_der = key1.public_key_as_der().unwrap();
+        let pub2_der = key2.public_key_as_der().unwrap();
+        
+        let plaintext: &[u8] = b"";
+        let nonce = [0x00u8; 12];
+        
+        let ciphertext = key1.encrypt(plaintext, &pub2_der, &nonce).unwrap();
+        let decrypted = key2.decrypt(&nonce, &pub1_der, &ciphertext).unwrap();
+        
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_large_plaintext() {
+        let key1 = EncryptionKey::new();
+        let key2 = EncryptionKey::new();
+        
+        let pub1_der = key1.public_key_as_der().unwrap();
+        let pub2_der = key2.public_key_as_der().unwrap();
+        
+        // 1MB of data
+        let plaintext: Vec<u8> = (0..1024 * 1024).map(|i| (i % 256) as u8).collect();
+        let nonce = [0xabu8; 12];
+        
+        let ciphertext = key1.encrypt(&plaintext, &pub2_der, &nonce).unwrap();
+        let decrypted = key2.decrypt(&nonce, &pub1_der, &ciphertext).unwrap();
+        
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_with_32_byte_nonce() {
+        // API accepts 32-byte nonce, uses first 12 bytes
+        let key1 = EncryptionKey::new();
+        let key2 = EncryptionKey::new();
+        
+        let pub1_der = key1.public_key_as_der().unwrap();
+        let pub2_der = key2.public_key_as_der().unwrap();
+        
+        let plaintext = b"Testing 32-byte nonce";
+        let nonce_32 = [0xffu8; 32];
+        
+        let ciphertext = key1.encrypt(plaintext, &pub2_der, &nonce_32).unwrap();
+        let decrypted = key2.decrypt(&nonce_32, &pub1_der, &ciphertext).unwrap();
+        
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_nonce_prefix_matters() {
+        let key1 = EncryptionKey::new();
+        let key2 = EncryptionKey::new();
+        
+        let _pub1_der = key1.public_key_as_der().unwrap();
+        let pub2_der = key2.public_key_as_der().unwrap();
+        
+        let plaintext = b"Test nonce prefix";
+        
+        // Two nonces that differ only in bytes 12+ should produce same result
+        let nonce_a = [0x42u8; 32];
+        let mut nonce_b = [0x42u8; 32];
+        nonce_b[12..].fill(0xff); // Change only bytes after first 12
+        
+        let ciphertext_a = key1.encrypt(plaintext, &pub2_der, &nonce_a).unwrap();
+        let ciphertext_b = key1.encrypt(plaintext, &pub2_der, &nonce_b).unwrap();
+        
+        // Should produce same ciphertext since first 12 bytes are identical
+        assert_eq!(ciphertext_a, ciphertext_b);
+    }
+
+    #[test]
+    fn test_encrypt_produces_different_ciphertext_with_different_nonces() {
+        let key1 = EncryptionKey::new();
+        let key2 = EncryptionKey::new();
+        
+        let pub2_der = key2.public_key_as_der().unwrap();
+        
+        let plaintext = b"Same plaintext";
+        let nonce1 = [0x01u8; 12];
+        let nonce2 = [0x02u8; 12];
+        
+        let ciphertext1 = key1.encrypt(plaintext, &pub2_der, &nonce1).unwrap();
+        let ciphertext2 = key1.encrypt(plaintext, &pub2_der, &nonce2).unwrap();
+        
+        assert_ne!(ciphertext1, ciphertext2);
+    }
+
+    #[test]
+    fn test_ciphertext_includes_auth_tag() {
+        let key1 = EncryptionKey::new();
+        let key2 = EncryptionKey::new();
+        
+        let pub2_der = key2.public_key_as_der().unwrap();
+        
+        let plaintext = b"Test";
+        let nonce = [0x00u8; 12];
+        
+        let ciphertext = key1.encrypt(plaintext, &pub2_der, &nonce).unwrap();
+        
+        // AES-GCM adds 16-byte auth tag
+        assert_eq!(ciphertext.len(), plaintext.len() + 16);
+    }
+
+    // ==================== Encryption Error Cases ====================
+
+    #[test]
+    fn test_encrypt_short_nonce() {
+        let key1 = EncryptionKey::new();
+        let key2 = EncryptionKey::new();
+        
+        let pub2_der = key2.public_key_as_der().unwrap();
+        let plaintext = b"Test";
+        let short_nonce = [0x00u8; 8]; // Less than 12 bytes
+        
+        let result = key1.encrypt(plaintext, &pub2_der, &short_nonce);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_short_nonce() {
+        let key1 = EncryptionKey::new();
+        let short_nonce = [0x00u8; 8]; // Less than 12 bytes
+        let fake_ciphertext = [0x00u8; 32];
+        
+        // Create a valid DER for peer key
+        let key2 = EncryptionKey::new();
+        let pub2_der = key2.public_key_as_der().unwrap();
+        
+        let result = key1.decrypt(&short_nonce, &pub2_der, &fake_ciphertext);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_encrypt_invalid_peer_public_key() {
+        let key1 = EncryptionKey::new();
+        let plaintext = b"Test";
+        let nonce = [0x00u8; 12];
+        let invalid_der = [0x30, 0x00]; // Invalid/empty SPKI
+        
+        let result = key1.encrypt(plaintext, &invalid_der, &nonce);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_invalid_peer_public_key() {
+        let key1 = EncryptionKey::new();
+        let nonce = [0x00u8; 12];
+        let ciphertext = [0x00u8; 32];
+        let invalid_der = [0x30, 0x00]; // Invalid/empty SPKI
+        
+        let result = key1.decrypt(&nonce, &invalid_der, &ciphertext);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_tampered_ciphertext() {
+        let key1 = EncryptionKey::new();
+        let key2 = EncryptionKey::new();
+        
+        let pub1_der = key1.public_key_as_der().unwrap();
+        let pub2_der = key2.public_key_as_der().unwrap();
+        
+        let plaintext = b"Sensitive data";
+        let nonce = [0x42u8; 12];
+        
+        let mut ciphertext = key1.encrypt(plaintext, &pub2_der, &nonce).unwrap();
+        
+        // Tamper with ciphertext
+        ciphertext[0] ^= 0xff;
+        
+        // Decryption should fail due to authentication failure
+        let result = key2.decrypt(&nonce, &pub1_der, &ciphertext);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_wrong_nonce() {
+        let key1 = EncryptionKey::new();
+        let key2 = EncryptionKey::new();
+        
+        let pub1_der = key1.public_key_as_der().unwrap();
+        let pub2_der = key2.public_key_as_der().unwrap();
+        
+        let plaintext = b"Test data";
+        let nonce = [0x42u8; 12];
+        let wrong_nonce = [0x00u8; 12];
+        
+        let ciphertext = key1.encrypt(plaintext, &pub2_der, &nonce).unwrap();
+        
+        // Decryption with wrong nonce should fail
+        let result = key2.decrypt(&wrong_nonce, &pub1_der, &ciphertext);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_wrong_key() {
+        let key1 = EncryptionKey::new();
+        let key2 = EncryptionKey::new();
+        let key3 = EncryptionKey::new(); // Third party
+        
+        let pub1_der = key1.public_key_as_der().unwrap();
+        let pub2_der = key2.public_key_as_der().unwrap();
+        
+        let plaintext = b"Secret message";
+        let nonce = [0x42u8; 12];
+        
+        // Key1 encrypts for Key2
+        let ciphertext = key1.encrypt(plaintext, &pub2_der, &nonce).unwrap();
+        
+        // Key3 (wrong recipient) tries to decrypt
+        let result = key3.decrypt(&nonce, &pub1_der, &ciphertext);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_empty_ciphertext() {
+        let key1 = EncryptionKey::new();
+        let key2 = EncryptionKey::new();
+        
+        let pub2_der = key2.public_key_as_der().unwrap();
+        let nonce = [0x00u8; 12];
+        
+        // Empty ciphertext (no auth tag)
+        let result = key1.decrypt(&nonce, &pub2_der, &[]);
+        assert!(result.is_err());
+    }
+
+    // ==================== ECDH Shared Key Derivation Tests ====================
+
+    #[test]
+    fn test_ecdh_shared_secret_symmetric() {
+        // ECDH should produce same shared secret regardless of direction
+        let key1 = EncryptionKey::new();
+        let key2 = EncryptionKey::new();
+        
+        let pub1_der = key1.public_key_as_der().unwrap();
+        let pub2_der = key2.public_key_as_der().unwrap();
+        
+        // If we encrypt with key1->key2 and key2->key1, using same nonce,
+        // the derived keys should be the same, so ciphertexts should match
+        let plaintext = b"Test symmetry";
+        let nonce = [0x42u8; 12];
+        
+        let ct1 = key1.encrypt(plaintext, &pub2_der, &nonce).unwrap();
+        let ct2 = key2.encrypt(plaintext, &pub1_der, &nonce).unwrap();
+        
+        // Same shared key, same plaintext, same nonce = same ciphertext
+        assert_eq!(ct1, ct2);
+    }
+
+    // ==================== Multiple Operations Tests ====================
+
+    #[test]
+    fn test_multiple_messages_same_keys() {
+        let key1 = EncryptionKey::new();
+        let key2 = EncryptionKey::new();
+        
+        let pub1_der = key1.public_key_as_der().unwrap();
+        let pub2_der = key2.public_key_as_der().unwrap();
+        
+        // Send multiple messages with different nonces
+        for i in 0..10u8 {
+            let plaintext = format!("Message number {}", i);
+            let mut nonce = [0u8; 12];
+            nonce[0] = i;
+            
+            let ciphertext = key1.encrypt(plaintext.as_bytes(), &pub2_der, &nonce).unwrap();
+            let decrypted = key2.decrypt(&nonce, &pub1_der, &ciphertext).unwrap();
+            
+            assert_eq!(decrypted, plaintext.as_bytes());
+        }
+    }
+
+    #[test]
+    fn test_various_plaintext_sizes() {
+        let key1 = EncryptionKey::new();
+        let key2 = EncryptionKey::new();
+        
+        let pub1_der = key1.public_key_as_der().unwrap();
+        let pub2_der = key2.public_key_as_der().unwrap();
+        
+        let sizes = [0, 1, 15, 16, 17, 31, 32, 33, 127, 128, 255, 256, 1000, 4096];
+        
+        for size in sizes {
+            let plaintext: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
+            let mut nonce = [0u8; 12];
+            nonce[0] = (size % 256) as u8;
+            
+            let ciphertext = key1.encrypt(&plaintext, &pub2_der, &nonce).unwrap();
+            let decrypted = key2.decrypt(&nonce, &pub1_der, &ciphertext).unwrap();
+            
+            assert_eq!(decrypted, plaintext, "Failed for size {}", size);
+        }
     }
 }
 

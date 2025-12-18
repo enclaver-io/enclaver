@@ -312,14 +312,20 @@ impl ApiHandler {
             .body(Full::new(Bytes::from(json::stringify(response))))?)
     }
 
-    /// Handle GET /v1/encryption/public_key - returns P-384 public key in DER format
+    /// Handle GET /v1/encryption/public_key - returns P-384 public key in multiple formats
     async fn handle_encryption_public_key(&self) -> Result<Response<Full<Bytes>>> {
         let der_bytes = self.encryption_key.public_key_as_der()?;
+        let pem = self.encryption_key.public_key_as_pem()?;
+        
+        let response = json::object! {
+            public_key_der: format!("0x{}", hex::encode(&der_bytes)),
+            public_key_pem: pem,
+        };
         
         Ok(Response::builder()
             .status(StatusCode::OK)
-            .header(CONTENT_TYPE, MIME_APPLICATION_OCTET_STREAM)
-            .body(Full::new(Bytes::from(der_bytes)))?)
+            .header(CONTENT_TYPE, "application/json")
+            .body(Full::new(Bytes::from(json::stringify(response))))?)
     }
 
     /// Handle POST /v1/encryption/decrypt - decrypt data from client
