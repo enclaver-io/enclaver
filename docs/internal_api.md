@@ -164,6 +164,77 @@ Generate an attestation document from the Nitro Secure Module.
   - **Content-Type:** `application/cbor`
   - **Body:** Binary CBOR data (Attestation Document)
 
+### Get Encryption Public Key
+
+Retrieve the enclave's P-384 public key for ECDH-based encryption.
+
+- **URL:** `/v1/encryption/public_key`
+- **Method:** `GET`
+- **Success Response:**
+  - **Code:** 200 OK
+  - **Content-Type:** `application/json`
+  - **Body:**
+    ```json
+    {
+      "public_key_der": "0x3076...",
+      "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"
+    }
+    ```
+
+The `public_key_der` is hex-encoded DER (SPKI format), suitable for use in encryption operations.
+The `public_key_pem` is PEM format, suitable for use with standard crypto libraries.
+
+### Decrypt Data
+
+Decrypt data sent from a client using ECDH + AES-256-GCM.
+
+- **URL:** `/v1/encryption/decrypt`
+- **Method:** `POST`
+- **Content-Type:** `application/json`
+- **Request Body:**
+  ```json
+  {
+    "nonce": "0x...",          // Hex-encoded nonce (at least 12 bytes)
+    "client_public_key": "0x...", // Hex-encoded DER public key
+    "encrypted_data": "0x..."  // Hex-encoded ciphertext with auth tag
+  }
+  ```
+- **Success Response:**
+  - **Code:** 200 OK
+  - **Content-Type:** `application/json`
+  - **Body:**
+    ```json
+    {
+      "plaintext": "decrypted string"
+    }
+    ```
+
+### Encrypt Data
+
+Encrypt data to send to a client using ECDH + AES-256-GCM.
+
+- **URL:** `/v1/encryption/encrypt`
+- **Method:** `POST`
+- **Content-Type:** `application/json`
+- **Request Body:**
+  ```json
+  {
+    "plaintext": "string to encrypt",
+    "client_public_key": "0x..." // Hex-encoded DER public key
+  }
+  ```
+- **Success Response:**
+  - **Code:** 200 OK
+  - **Content-Type:** `application/json`
+  - **Body:**
+    ```json
+    {
+      "encrypted_data": "...",     // Hex-encoded ciphertext
+      "enclave_public_key": "...", // Hex-encoded DER public key
+      "nonce": "..."               // Hex-encoded nonce
+    }
+    ```
+
 ## Auxiliary API Endpoints
 
 The Auxiliary API exposes a **subset** of the Primary API endpoints with the following restrictions:
@@ -190,11 +261,19 @@ The Auxiliary API exposes a **subset** of the Primary API endpoints with the fol
   }
   ```
 
+### Get Encryption Public Key (Aux)
+
+- **URL:** `/v1/encryption/public_key`
+- **Method:** `GET`
+- **Behavior:** Same as Primary API.
+
 ### Unavailable Endpoints
 
 The following endpoints are **NOT** available on the Auxiliary API:
 - `/v1/eth/sign-tx`
 - `/v1/eth/sign`
 - `/v1/random`
+- `/v1/encryption/decrypt`
+- `/v1/encryption/encrypt`
 
 Attempts to access these endpoints on the Auxiliary API port will result in a 404 Not Found error.

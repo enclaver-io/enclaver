@@ -52,6 +52,7 @@ The diagram below shows how the release Docker image runs as a single container,
 |   - ingress:  inbound traffic --> App                                            |
 |   - egress:   App --> outbound traffic                                           |
 |   - kms-proxy: talk to external KMS over network                                 |
+|   - encryption: ECDH (P-384) encrypt/decrypt for secure client communication     |
 |   - console:  collect App stdout/stderr --> container logs                       |
 |   - api/config: read unified config (from enclaver.yaml)                         |
 |                                                                                  |
