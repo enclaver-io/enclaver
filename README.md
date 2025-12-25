@@ -1,8 +1,8 @@
 <img src="docs/img/enclaver-logo-color.png" width="350" />
 
-Enclaver is an open source toolkit created to enable easy adoption of software enclaves, for new and existing backend software.
+Enclaver is an open source toolkit that simplifies packaging and running applications inside [AWS Nitro Enclaves](https://aws.amazon.com/ec2/nitro/nitro-enclaves/). It handles the complexity of enclave networking (ingress/egress proxies), cryptographic attestation, secure key management (KMS integration), and application lifecycle management — so you can focus on building your application.
 
-This is a Sparsity edition of Enclaver. See [here](https://github.com/enclaver-io/enclaver) for original project.
+This is the **Sparsity edition** of Enclaver, which adds support for Ethereum signing, P-384 ECDH encryption, and an Internal API for enclave-based applications. See [enclaver-io/enclaver](https://github.com/enclaver-io/enclaver) for the original project.
 
 ## Installation
 
