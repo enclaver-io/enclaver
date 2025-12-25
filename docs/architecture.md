@@ -22,13 +22,15 @@ This document provides a comprehensive overview of the Enclaver runtime architec
 ```mermaid
 graph TB
     subgraph "User Space"
-        APP["User Application"]
+        APP["User Application<br/>(Docker Image)"]
         YAML["enclaver.yaml<br/>(Configuration)"]
     end
     
     subgraph "Build-Time Components"
         ENCLAVER_CLI["enclaver CLI<br/>(build command)"]
+        ODYN_IMAGE["Odyn Image<br/>(supervisor binary)"]
         NITRO_CLI_BUILD["nitro-cli<br/>(build-enclave)"]
+        SLEEVE_BASE["Sleeve Base Image"]
     end
     
     subgraph "Docker Image (Release)"
@@ -45,9 +47,12 @@ graph TB
     
     APP --> ENCLAVER_CLI
     YAML --> ENCLAVER_CLI
+    ODYN_IMAGE --> ENCLAVER_CLI
     ENCLAVER_CLI --> NITRO_CLI_BUILD
     NITRO_CLI_BUILD --> EIF
+    SLEEVE_BASE --> SLEEVE
     EIF --> SLEEVE
+    YAML --> SLEEVE
     SLEEVE --> NITRO_CLI_RUN
     NITRO_CLI_RUN --> ODYN
     ODYN --> APP_INSIDE

@@ -15,68 +15,76 @@
 # - Domain allow/deny rules support `*` (single label) and `**` (any suffix). See examples below.
 # - IP allow/deny rules support exact IP and CIDR (IPv4/IPv6).
 #
+# ============================================================================
+# Parameter Usage Legend:
+#   [BUILD]   - Used by `enclaver build` CLI (build-time only)
+#   [SLEEVE]  - Used by `enclaver-run` / Sleeve program (host-side runtime)
+#   [ODYN]    - Used by Odyn supervisor (enclave-side runtime)
+# ============================================================================
+
 # Required top-level fields
-version: "v1"                 # Schema version (string). Only "v1" is supported.
-name: "your-service"          # Friendly name for your enclave/application (string).
-target: "repo/name:tag"       # Release image tag to produce on build (string, e.g., ECR/ Docker Hub tag).
+version: "v1"                 # [BUILD] Schema version (string). Only "v1" is supported.
+name: "your-service"          # [BUILD] Friendly name for your enclave/application (string).
+target: "repo/name:tag"       # [BUILD] Release image tag to produce on build (string).
 
 # Source images used during build
 sources:
-  app: "repo/app:tag"         # REQUIRED. The application image to run inside the enclave.
+  app: "repo/app:tag"         # [BUILD] REQUIRED. The application image to run inside the enclave.
   # odyn and sleeve may be overridden. If omitted, well-known defaults are pulled.
   # Default odyn:   public.ecr.aws/d4t4u8d2/sparsity-ai/odyn:latest
   # Default sleeve: public.ecr.aws/d4t4u8d2/sparsity-ai/enclaver-wrapper-base:latest
-  #odyn: "repo/odyn:tag"
-  #sleeve: "repo/sleeve:tag"
+  #odyn: "repo/odyn:tag"      # [BUILD] Odyn supervisor image (binary is extracted and added to EIF).
+  #sleeve: "repo/sleeve:tag"  # [BUILD] Sleeve base image (used as base for release image).
 
 # Optional: sign the EIF at build time (keys are read on the host during build)
 signature:
   # Paths are resolved relative to the manifest file location.
-  certificate: ./path/to/cert.pem   # Required. Path (string) to X.509 certificate in PEM format
-  key: ./path/to/key.pem            # Required. Path (string) to private key in PEM format matching the certificate
+  certificate: ./path/to/cert.pem   # [BUILD] Required. Path to X.509 certificate in PEM format
+  key: ./path/to/key.pem            # [BUILD] Required. Path to private key in PEM format
 
 # Optional defaults used by `enclaver run` when flags are not provided
 # If omitted, the runtime defaults are cpu_count=2, memory_mb=4096
 defaults:
-  cpu_count: 2               # Optional. Number of vCPUs (i32) to assign to the enclave
-  memory_mb: 4096            # Optional. Enclave memory in MiB (i32)
+  cpu_count: 2               # [SLEEVE] Optional. Number of vCPUs (i32) to assign to the enclave
+  memory_mb: 4096            # [SLEEVE] Optional. Enclave memory in MiB (i32)
 
 # Ingress: host->enclave TCP/TLS listeners exposed by odyn inside the enclave
 # Each entry binds inside the enclave on the given listen_port and is proxied via host localhost.
 # At run time, the host-side runner publishes the same port to the host network as needed.
 ingress:
-  - listen_port: 8080        # Required. TCP port (u16, 0-65535) inside the enclave for your app to listen on
+  - listen_port: 8080        # [ODYN + SLEEVE] Required. TCP port (u16) inside the enclave.
+                             # ODYN: binds EnclaveProxy on this port inside enclave.
+                             # SLEEVE: binds HostProxy on host to forward to enclave vsock.
     # Optional TLS for the VSOCK leg (host<->enclave). The app still receives plain TCP on localhost.
     # Runtime expects PEM files at: <config_dir>/tls/server/<listen_port>/{cert.pem,key.pem}
     # By default odyn uses config_dir=/etc/enclaver inside the enclave.
-    # The tls fields below exist in the schema but are currently NOT used by odyn at runtime.
-    # Odyn always reads from the fixed paths above. These fields may be used by external tooling.
     tls:
-      key_file: key.pem      # Optional. Filename hint (string, not used by odyn runtime)
-      cert_file: cert.pem    # Optional. Filename hint (string, not used by odyn runtime)
+      key_file: key.pem      # [ODYN] Optional. TLS key file for ingress listener.
+      cert_file: cert.pem    # [ODYN] Optional. TLS cert file for ingress listener.
 
 # Egress: enable a local HTTP(S) proxy inside the enclave with allow/deny policy
 # When enabled, odyn sets http_proxy/https_proxy env vars to http://127.0.0.1:<proxy_port>
 # and `no_proxy=localhost,127.0.0.1` for the entrypoint process.
 egress:
-  proxy_port: 10000          # Optional. TCP port (u16) inside the enclave for the local proxy (default: 10000)
+  proxy_port: 10000          # [ODYN] Optional. TCP port (u16) for local egress proxy (default: 10000).
+                             # ODYN: binds EnclaveHttpProxy on this port, sets http_proxy env var.
   # Allow and deny take a list of patterns. A request host is allowed iff it matches at least
   # one allow pattern AND does not match any deny pattern. If `allow` is empty/missing, egress is disabled.
   allow:
     # Domain patterns (case-insensitive):
     # - Exact: "example.com" (matches only example.com, not subdomains)
     # - Single-label wildcard: "*.example.com" (matches foo.example.com but NOT bar.foo.example.com)
-    # - Multi-label suffix: "**.amazonaws.com" (matches s3.amazonaws.com and a.b.c.amazonaws.com, NOT amazonaws.com apex)
+    # - Multi-label suffix: "**.amazonaws.com" (matches s3.amazonaws.com and a.b.c.amazonaws.com)
     # IP/CIDR patterns:
     # - Exact IP: "66.254.33.22" (implicit /32)
     # - IPv4 CIDR: "66.254.33.0/24"
     # - IPv6 CIDR: "::/0" (all IPv6)
-    - "news.ycombinator.com"
-    #- "**"                 # Allow all domains (not recommended for production)
-    #- "169.254.169.254"   # IMDS (needed if kms_proxy is enabled)
+    - "news.ycombinator.com" # [ODYN] Domain/IP patterns for egress allow list.
+    #- "**"                   # Allow all domains (not recommended for production)
+    #- "169.254.169.254"      # IMDS (needed if kms_proxy is enabled)
   deny:
     # Optional block list evaluated after allow. Same grammar as allow.
-    #- "*.example.net"
+    #- "*.example.net"        # [ODYN] Domain/IP patterns for egress deny list.
     #- "10.0.0.0/8"
 
 # Optional: local KMS-compatible proxy inside the enclave
@@ -84,16 +92,52 @@ egress:
 # - Sets AWS_KMS_ENDPOINT=http://127.0.0.1:<listen_port> for the entrypoint process.
 # - Requires egress.allow to include 169.254.169.254 (IMDS) and the KMS endpoints used.
 kms_proxy:
-  listen_port: 9000          # Required. TCP port (u16) inside the enclave for the local KMS proxy
+  listen_port: 9000          # [ODYN] Required. TCP port (u16) for local KMS proxy.
+                             # ODYN: binds KmsProxyService, sets AWS_KMS_ENDPOINT env var.
   # Optional per-region endpoint overrides (value is host only; scheme/path are set by the proxy)
   # If omitted, defaults to kms.<region>.amazonaws.com
-  endpoints:                 # Optional. Map of region name (string) to KMS endpoint hostname (string)
+  endpoints:                 # [ODYN] Optional. Map of region name to KMS endpoint hostname.
     us-east-1: kms.us-east-1.amazonaws.com
     #eu-west-1: kms.eu-west-1.amazonaws.com
 
-# Optional: internal API exposed inside the enclave for attestation/health/etc.
+# Optional: internal API exposed inside the enclave for attestation/encryption/signing
 api:
-  listen_port: 8000          # Required. TCP port (u16) inside the enclave for the internal API server
+  listen_port: 8000          # [ODYN] Required. TCP port (u16) for internal API server.
+                             # ODYN: binds ApiService providing /v1/attestation, /v1/eth/*, etc.
+
+# Optional: auxiliary API for restricted external access (e.g., sidecars)
+# If not specified, defaults to api.listen_port + 1 when api is configured.
+aux_api:
+  listen_port: 8001          # [ODYN] Optional. TCP port (u16) for auxiliary API server.
+                             # ODYN: binds AuxApiService with sanitized attestation endpoint.
+
+# ============================================================================
+# Summary: Parameter -> Module Mapping
+# ============================================================================
+#
+# | Parameter              | Module      | Description                                    |
+# |------------------------|-------------|------------------------------------------------|
+# | version                | BUILD       | Manifest schema version                        |
+# | name                   | BUILD       | Application name for tagging                   |
+# | target                 | BUILD       | Output release image tag                       |
+# | sources.app            | BUILD       | User application Docker image                  |
+# | sources.odyn           | BUILD       | Odyn supervisor image (binary extraction)      |
+# | sources.sleeve         | BUILD       | Sleeve base image for release packaging        |
+# | signature.certificate  | BUILD       | EIF signing certificate path                   |
+# | signature.key          | BUILD       | EIF signing private key path                   |
+# | defaults.cpu_count     | SLEEVE      | Enclave vCPU allocation                        |
+# | defaults.memory_mb     | SLEEVE      | Enclave memory allocation                      |
+# | ingress[].listen_port  | ODYN+SLEEVE | Ingress port (both sides bind proxies)         |
+# | ingress[].tls.*        | ODYN        | TLS configuration for ingress                  |
+# | egress.proxy_port      | ODYN        | Local HTTP proxy port inside enclave           |
+# | egress.allow           | ODYN        | Egress allow list (domain/IP patterns)         |
+# | egress.deny            | ODYN        | Egress deny list (domain/IP patterns)          |
+# | kms_proxy.listen_port  | ODYN        | Local KMS proxy port inside enclave            |
+# | kms_proxy.endpoints    | ODYN        | Regional KMS endpoint overrides                |
+# | api.listen_port        | ODYN        | Internal API port (attestation, signing, etc.) |
+# | aux_api.listen_port    | ODYN        | Auxiliary API port (restricted access)         |
+#
+# ============================================================================
 
 # Examples and tips
 # - To expose your app on host port 8080, add an ingress entry with listen_port: 8080 and have your app
