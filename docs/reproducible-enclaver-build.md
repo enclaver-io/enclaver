@@ -60,7 +60,7 @@ flowchart TB
 |------------|--------|---------------|
 | **app** | `manifest.sources.app` | User specified (required) |
 | **odyn** | `manifest.sources.odyn` | `public.ecr.aws/d4t4u8d2/sparsity-ai/odyn:latest` |
-| **sleeve** | `manifest.sources.sleeve` | `public.ecr.aws/d4t4u8d2/sparsity-ai/enclaver-wrapper-base:latest` |
+| **sleeve** | `manifest.sources.sleeve` | `public.ecr.aws/d4t4u8d2/sparsity-ai/sleeve:latest` |
 | **nitro-cli** | Hardcoded internally | `public.ecr.aws/s2t1d4c6/enclaver-io/nitro-cli:latest` |
 
 #### Step 3: Amend App Image
@@ -164,7 +164,7 @@ sources:
   # Use digest instead of tag
   app: "my-app@sha256:abc123..."
   odyn: "public.ecr.aws/d4t4u8d2/sparsity-ai/odyn@sha256:def456..."
-  sleeve: "public.ecr.aws/d4t4u8d2/sparsity-ai/enclaver-wrapper-base@sha256:ghi789..."
+  sleeve: "public.ecr.aws/d4t4u8d2/sparsity-ai/sleeve@sha256:ghi789..."
 ```
 
 > [!TIP]
@@ -178,7 +178,7 @@ Build and pin images locally:
 sources:
   app: "my-app:v1.0.0-fixed"
   odyn: "odyn-dev:latest"
-  sleeve: "enclaver-wrapper-base:latest"
+  sleeve: "sleeve:latest"
 ```
 
 Then ensure these local images are not updated.

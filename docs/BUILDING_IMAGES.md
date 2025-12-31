@@ -1,6 +1,6 @@
 ## Building the base images (nitro-cli/runtimebase, odyn, sleeve)
 
-This document shows the exact local steps used by the repository to build the development base images used by Enclaver: the `odyn` supervisor image and the `enclaver-wrapper-base` (sleeve) dev image. It also explains how the release Dockerfiles are intended to be used in a multi-stage pipeline.
+This document shows the exact local steps used by the repository to build the development base images used by Enclaver: the `odyn` supervisor image and the `sleeve` dev image. It also explains how the release Dockerfiles are intended to be used in a multi-stage pipeline.
 
 Prerequisites
 - Docker with BuildKit / buildx enabled (or an alternative builder that supports multi-arch and build stages).
@@ -56,7 +56,7 @@ What the script does
 After running the helper, you will have these images locally:
 
 - `odyn-dev:latest` — development odyn image that contains the compiled `odyn` binary at `/usr/local/bin/odyn`.
-- `enclaver-wrapper-base:latest` — development sleeve image that contains `enclaver-run` as the container entrypoint and uses the upstream `nitro-cli` image as the source for runtime libs and `/usr/bin/nitro-cli`.
+- `sleeve:latest` — development sleeve image that contains `enclaver-run` as the container entrypoint and uses the upstream `nitro-cli` image as the source for runtime libs and `/usr/bin/nitro-cli`.
 
 Manual steps (if you want to run each step yourself)
 
@@ -99,7 +99,7 @@ docker buildx build \
 rm -rf "${docker_build_dir}"
 ```
 
-3) Build `enclaver-wrapper-base` (dev):
+3) Build `sleeve` (dev):
 
 Debug binaries:
 
@@ -108,7 +108,7 @@ docker_build_dir=$(mktemp -d)
 cp ./target/x86_64-unknown-linux-musl/debug/enclaver-run "${docker_build_dir}/"
 docker buildx build \
   -f dockerfiles/runtimebase-dev.dockerfile \
-  -t enclaver-wrapper-base:latest \
+  -t sleeve:latest \
   "${docker_build_dir}"
 rm -rf "${docker_build_dir}"
 ```
@@ -120,7 +120,7 @@ docker_build_dir=$(mktemp -d)
 cp ./target/x86_64-unknown-linux-musl/release/enclaver-run "${docker_build_dir}/"
 docker buildx build \
   -f dockerfiles/runtimebase-dev.dockerfile \
-  -t enclaver-wrapper-base:latest \
+  -t sleeve:latest \
   "${docker_build_dir}"
 rm -rf "${docker_build_dir}"
 ```

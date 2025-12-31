@@ -51,7 +51,7 @@ The diagram below shows how the release Docker image runs as a single container,
 │  Image layers (top -> bottom):                                               │
 │    [L3] /enclave/application.eif                                             │
 │    [L2] /enclave/enclaver.yaml                                               │
-│    [L1] Sleeve / wrapper base image (contains enclaver-run, nitro-cli)       │
+│    [L1] Sleeve image (contains enclaver-run, nitro-cli)       │
 │                                                                              │
 │  Runtime control flow:                                                       │
 │    enclaver-run --> nitro-cli run-enclave --eif /enclave/application.eif     │

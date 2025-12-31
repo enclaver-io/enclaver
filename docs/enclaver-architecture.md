@@ -140,7 +140,7 @@ Docker images and layer structure (build-time & runtime)
 Important base images (defaults in `src/build.rs`):
 - Nitro CLI image: `public.ecr.aws/s2t1d4c6/enclaver-io/nitro-cli:latest` — provides `nitro-cli` binary and runtime libs used during EIF creation and runtime base.
 - ODYN image: `public.ecr.aws/d4t4u8d2/sparsity-ai/odyn:latest` — supervisor binary inserted into enclave image overlay.
-- Sleeve/release base: `public.ecr.aws/d4t4u8d2/sparsity-ai/enclaver-wrapper-base:latest` — runtime wrapper base image that receives `application.eif` and `enclaver.yaml`.
+- Sleeve: `public.ecr.aws/d4t4u8d2/sparsity-ai/sleeve:latest` — runtime base image that receives `application.eif` and `enclaver.yaml`.
 
 Layer sequence when building a release image:
 

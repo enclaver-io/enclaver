@@ -43,7 +43,7 @@ aux_api:
 
 sources:
   odyn: "public.ecr.aws/d4t4u8d2/sparsity-ai/odyn:latest"
-  sleeve: "public.ecr.aws/d4t4u8d2/sparsity-ai/enclaver-wrapper-base:latest"
+  sleeve: "public.ecr.aws/d4t4u8d2/sparsity-ai/sleeve:latest"
 ```
 
 Notes:

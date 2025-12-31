@@ -33,8 +33,8 @@ show_help() {
     echo "Note: Images must be built first using build-docker-images.sh"
     echo ""
     echo "Options:"
-    echo "  --release    Deploy release images (odyn:latest, enclaver-wrapper-base:latest)"
-    echo "  --debug      Deploy debug images (odyn-dev:latest, enclaver-wrapper-base-dev:latest) (default)"
+    echo "  --release    Deploy release images (odyn:latest, sleeve:latest)"
+    echo "  --debug      Deploy debug images (odyn-dev:latest, sleeve-dev:latest) (default)"
     echo "  --help       Show this help message"
     echo ""
     echo "Environment variables:"
@@ -106,10 +106,10 @@ echo ""
 # Determine image tags based on build mode
 if [ "$BUILD_MODE" = "release" ]; then
     ODYN_TAG="odyn:latest"
-    WRAPPER_TAG="enclaver-wrapper-base:latest"
+    SLEEVE_TAG="sleeve:latest"
 else
     ODYN_TAG="odyn-dev:latest"
-    WRAPPER_TAG="enclaver-wrapper-base-dev:latest"
+    SLEEVE_TAG="sleeve-dev:latest"
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -122,14 +122,14 @@ if ! docker image inspect "$ODYN_TAG" >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! docker image inspect "$WRAPPER_TAG" >/dev/null 2>&1; then
-    echo "Error: Image $WRAPPER_TAG not found"
+if ! docker image inspect "$SLEEVE_TAG" >/dev/null 2>&1; then
+    echo "Error: Image $SLEEVE_TAG not found"
     echo "Please build images first using: BUILD_MODE=$BUILD_MODE ./scripts/build-docker-images.sh"
     exit 1
 fi
 
 echo "  ✓ Found $ODYN_TAG"
-echo "  ✓ Found $WRAPPER_TAG"
+echo "  ✓ Found $SLEEVE_TAG"
 
 # Step 2: Save images to tar files
 echo ""
@@ -138,7 +138,7 @@ TEMP_DIR=$(mktemp -d)
 trap "rm -rf $TEMP_DIR" EXIT
 
 ODYN_TAR="$TEMP_DIR/odyn.tar"
-WRAPPER_TAR="$TEMP_DIR/enclaver-wrapper-base.tar"
+SLEEVE_TAR="$TEMP_DIR/sleeve.tar"
 
 echo "  Saving $ODYN_TAG to $ODYN_TAR"
 docker save "$ODYN_TAG" -o "$ODYN_TAR" || {
@@ -146,16 +146,16 @@ docker save "$ODYN_TAG" -o "$ODYN_TAR" || {
     exit 1
 }
 
-echo "  Saving $WRAPPER_TAG to $WRAPPER_TAR"
-docker save "$WRAPPER_TAG" -o "$WRAPPER_TAR" || {
-    echo "Error: Failed to save $WRAPPER_TAG"
+echo "  Saving $SLEEVE_TAG to $SLEEVE_TAR"
+docker save "$SLEEVE_TAG" -o "$SLEEVE_TAR" || {
+    echo "Error: Failed to save $SLEEVE_TAG"
     exit 1
 }
 
 # Get file sizes for progress indication
 ODYN_SIZE=$(du -h "$ODYN_TAR" | cut -f1)
-WRAPPER_SIZE=$(du -h "$WRAPPER_TAR" | cut -f1)
-echo "  Images saved: odyn ($ODYN_SIZE), wrapper ($WRAPPER_SIZE)"
+SLEEVE_SIZE=$(du -h "$SLEEVE_TAR" | cut -f1)
+echo "  Images saved: odyn ($ODYN_SIZE), sleeve ($SLEEVE_SIZE)"
 
 # Step 3: Copy files to remote node
 echo ""
@@ -173,9 +173,9 @@ scp -i $APPNODE_KEY "$ODYN_TAR" "$APP_USER@$APP_HOST:$REMOTE_TEMP_DIR/" || {
     exit 1
 }
 
-echo "  Copying wrapper.tar ($WRAPPER_SIZE)..."
-scp -i $APPNODE_KEY "$WRAPPER_TAR" "$APP_USER@$APP_HOST:$REMOTE_TEMP_DIR/" || {
-    echo "Error: Failed to copy wrapper.tar"
+echo "  Copying sleeve.tar ($SLEEVE_SIZE)..."
+scp -i $APPNODE_KEY "$SLEEVE_TAR" "$APP_USER@$APP_HOST:$REMOTE_TEMP_DIR/" || {
+    echo "Error: Failed to copy sleeve.tar"
     exit 1
 }
 
@@ -190,9 +190,9 @@ ssh -i $APPNODE_KEY "$APP_USER@$APP_HOST" <<EOF
         exit 1
     }
     
-    echo "  Loading $WRAPPER_TAG..."
-    docker load -i $REMOTE_TEMP_DIR/enclaver-wrapper-base.tar || {
-        echo "Error: Failed to load wrapper image"
+    echo "  Loading $SLEEVE_TAG..."
+    docker load -i $REMOTE_TEMP_DIR/sleeve.tar || {
+        echo "Error: Failed to load sleeve image"
         exit 1
     }
     
@@ -201,7 +201,7 @@ ssh -i $APPNODE_KEY "$APP_USER@$APP_HOST" <<EOF
     
     echo ""
     echo "Successfully loaded images:"
-    docker images | grep -E "($ODYN_TAG|$WRAPPER_TAG)" | head -2
+    docker images | grep -E "($ODYN_TAG|$SLEEVE_TAG)" | head -2
 EOF
 
 if [ $? -eq 0 ]; then
@@ -210,7 +210,7 @@ if [ $? -eq 0 ]; then
     echo ""
     echo "Images available on $APP_USER@$APP_HOST:"
     echo "  - $ODYN_TAG"
-    echo "  - $WRAPPER_TAG"
+    echo "  - $SLEEVE_TAG"
 else
     echo ""
     echo "✗ Deployment failed during image loading"

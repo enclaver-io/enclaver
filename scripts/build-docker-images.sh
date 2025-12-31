@@ -36,7 +36,7 @@ set -eu
 #         rust_target_dir    -> ./target/${rust_target}/{debug|release}
 #         docker_build_dir   -> temporary directory used for docker build context
 #         odyn_tag           -> odyn-dev:latest
-#         wrapper_base_tag   -> enclaver-wrapper-base:latest
+#         sleeve_tag   -> sleeve:latest
 #
 #  3) Build Rust artifacts for the target (required: `cross`)
 #     - The script invokes `cross build --target ${rust_target} --features run_enclave,odyn`.
@@ -53,11 +53,11 @@ set -eu
 #  5) Build Docker images using docker buildx
 #     - Example commands used by the script:
 #         docker buildx build -f ../dockerfiles/odyn-dev.dockerfile -t ${odyn_tag} ${docker_build_dir}
-#         docker buildx build -f ../dockerfiles/runtimebase-dev.dockerfile -t ${wrapper_base_tag} ${docker_build_dir}
+#         docker buildx build -f ../dockerfiles/runtimebase-dev.dockerfile -t ${sleeve_tag} ${docker_build_dir}
 #
 #  6) Output
 #     - The script prints a snippet to merge into `enclaver.yaml` that references
-#       the built dev images (odyn-dev:latest and enclaver-wrapper-base:latest)
+#       the built dev images (odyn-dev:latest and sleeve:latest)
 #
 # Troubleshooting & tips
 #  - Missing protoc/protobuf errors (prost-build):
@@ -145,7 +145,7 @@ esac
 enclaver_dir="$(dirname $(dirname ${BASH_SOURCE[0]}))/enclaver"
 
 odyn_tag="odyn-dev:latest"
-wrapper_base_tag="enclaver-wrapper-base-dev:latest"
+sleeve_tag="sleeve-dev:latest"
 
 # Dockerfile names (set per BUILD_MODE below)
 odyn_dockerfile="odyn-dev.dockerfile"
@@ -158,7 +158,7 @@ if [ "$BUILD_MODE" = "release" ]; then
 
     # update variables for release images
     odyn_tag="odyn:latest"
-    wrapper_base_tag="enclaver-wrapper-base:latest"
+    sleeve_tag="sleeve:latest"
     odyn_dockerfile="odyn-release.dockerfile"
     runtimebase_dockerfile="runtimebase-release.dockerfile"
     echo "Build mode: RELEASE (optimized)"
@@ -202,11 +202,11 @@ docker buildx build \
 
 docker buildx build \
     -f ../dockerfiles/${runtimebase_dockerfile} \
-    -t ${wrapper_base_tag} \
+    -t ${sleeve_tag} \
     ${docker_build_dir}
 
 echo "To use dev images, merge the following into enclaver.yaml:"
 echo ""
 echo "sources:"
 echo "   supervisor: \"${odyn_tag}\""
-echo "   wrapper: \"${wrapper_base_tag}\""
+echo "   sleeve: \"${sleeve_tag}\""

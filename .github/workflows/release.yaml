@@ -109,7 +109,7 @@ jobs:
 
     env:
       ODYN_IMAGE: public.ecr.aws/d4t4u8d2/sparsity-ai/odyn
-      RUNTIME_BASE_IMAGE: public.ecr.aws/d4t4u8d2/sparsity-ai/enclaver-wrapper-base
+      RUNTIME_BASE_IMAGE: public.ecr.aws/d4t4u8d2/sparsity-ai/sleeve
 
     steps:
       - name: Download Binaries

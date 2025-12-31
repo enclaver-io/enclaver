@@ -36,6 +36,8 @@ impl Sleeve {
         image_name: &str,
         port_forwards: Vec<String>,
         debug_mode: bool,
+        cpu_count: Option<i32>,
+        memory_mb: Option<i32>,
     ) -> Result<()> {
         if self.container_id.is_some() {
             return Err(anyhow!("container already running"));
@@ -71,10 +73,25 @@ impl Sleeve {
                 None::<CreateContainerOptions>,
                 ContainerCreateBody {
                     image: Some(image_name.to_string()),
-                    cmd: match debug_mode {
-                        // TODO(russell_h): pass through additional args
-                        true => Some(vec!["--debug-mode".into()]),
-                        false => None,
+                    cmd: {
+                        let mut cmd = Vec::new();
+                        if debug_mode {
+                            cmd.push("--debug-mode".into());
+                        }
+                        if let Some(cpu_count) = cpu_count {
+                            cmd.push("--cpu-count".into());
+                            cmd.push(cpu_count.to_string());
+                        }
+                        if let Some(memory_mb) = memory_mb {
+                            cmd.push("--memory-mb".into());
+                            cmd.push(memory_mb.to_string());
+                        }
+
+                        if cmd.is_empty() {
+                            None
+                        } else {
+                            Some(cmd)
+                        }
                     },
                     attach_stderr: Some(true),
                     attach_stdout: Some(true),

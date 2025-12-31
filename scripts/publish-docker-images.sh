@@ -6,10 +6,10 @@
 aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws
 
 aws ecr-public create-repository --repository-name sparsity-ai/odyn --region us-east-1
-aws ecr-public create-repository --repository-name sparsity-ai/enclaver-wrapper-base --region us-east-1
+aws ecr-public create-repository --repository-name sparsity-ai/sleeve --region us-east-1
 
 # Push each image
-for REPO in odyn enclaver-wrapper-base; do
+for REPO in odyn sleeve; do
   REPO_URI=$(aws ecr-public describe-repositories \
     --repository-names sparsity-ai/$REPO \
     --region us-east-1 \

@@ -4,7 +4,7 @@ target: "hn-fetcher-enclave:latest"
 sources:
   app: "hn-fetcher:latest"
   #odyn: "odyn-dev:latest"
-  #sleeve: "enclaver-wrapper-base:latest"
+  #sleeve: "sleeve:latest"
 defaults:
   memory_mb: 1500
 ingress:
