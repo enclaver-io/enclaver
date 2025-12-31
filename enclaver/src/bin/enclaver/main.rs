@@ -71,6 +71,14 @@ enum Commands {
         #[clap(short, long)]
         /// Run the enclave supervisor in debug mode
         debug_mode: bool,
+
+        #[clap(long)]
+        /// Number of vCPUs to assign to the enclave
+        cpu_count: Option<i32>,
+
+        #[clap(long)]
+        /// Enclave memory in MiB
+        memory_mb: Option<i32>,
     },
 }
 
@@ -122,6 +130,8 @@ async fn run(args: Cli) -> Result<()> {
             image_name,
             port_forwards,
             debug_mode,
+            cpu_count,
+            memory_mb,
         } => {
             let image_name = match (manifest_file, image_name) {
                 // If an image was specified, use it
@@ -147,7 +157,7 @@ async fn run(args: Cli) -> Result<()> {
             let shutdown_signal = enclaver::utils::register_shutdown_signal_handler().await?;
 
             tokio::select! {
-                res = runner.run_enclaver_image(&image_name, port_forwards, debug_mode) => {
+                res = runner.run_enclaver_image(&image_name, port_forwards, debug_mode, cpu_count, memory_mb) => {
                     debug!("enclave exited");
                     match res {
                         Ok(_) => debug!("enclave exited successfully"),

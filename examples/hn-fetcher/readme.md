@@ -41,7 +41,7 @@ target: "hn-fetcher-enclave:latest"
 sources:
   app: "hn-fetcher:latest"
   #odyn: "odyn-dev:latest"
-  #sleeve: "enclaver-wrapper-base:latest"
+  #sleeve: "sleeve:latest"
 defaults:
   memory_mb: 1500
 ingress:
@@ -96,8 +96,8 @@ $ enclaver build -f enclaver.yaml
     },
     "Sleeve": {
       "ID": "sha256:1545dc67f60a477e737b1cf2c563717f5c27ffb356a906fa6bf77936f34bf5b2",
-      "Name": "public.ecr.aws/d4t4u8d2/sparsity-ai/enclaver-wrapper-base:latest",
-      "RepoDigest": "public.ecr.aws/d4t4u8d2/sparsity-ai/enclaver-wrapper-base@sha256:d0114166eb5d885ad2bb449a1811aa2e32233e51322548676533890559b8e803"
+      "Name": "public.ecr.aws/d4t4u8d2/sparsity-ai/sleeve:latest",
+      "RepoDigest": "public.ecr.aws/d4t4u8d2/sparsity-ai/sleeve@sha256:d0114166eb5d885ad2bb449a1811aa2e32233e51322548676533890559b8e803"
     }
   },
   "Measurements": {

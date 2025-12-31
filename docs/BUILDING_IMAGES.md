@@ -1,6 +1,6 @@
-## Building the base images (nitro-cli/runtimebase, odyn, sleeve)
+## Building the base images (nitro-cli/sleeve, odyn, sleeve)
 
-This document shows the exact local steps used by the repository to build the development base images used by Enclaver: the `odyn` supervisor image and the `enclaver-wrapper-base` (sleeve) dev image. It also explains how the release Dockerfiles are intended to be used in a multi-stage pipeline.
+This document shows the exact local steps used by the repository to build the development base images used by Enclaver: the `odyn` supervisor image and the `sleeve` dev image. It also explains how the release Dockerfiles are intended to be used in a multi-stage pipeline.
 
 Prerequisites
 - Docker with BuildKit / buildx enabled (or an alternative builder that supports multi-arch and build stages).
@@ -51,12 +51,12 @@ What the script does
 - Creates a temporary docker build context containing the compiled binaries.
 - Builds the dev images using these Dockerfiles:
   - `dockerfiles/odyn-dev.dockerfile`
-  - `dockerfiles/runtimebase-dev.dockerfile`
+  - `dockerfiles/sleeve-dev.dockerfile`
 
 After running the helper, you will have these images locally:
 
 - `odyn-dev:latest` — development odyn image that contains the compiled `odyn` binary at `/usr/local/bin/odyn`.
-- `enclaver-wrapper-base:latest` — development sleeve image that contains `enclaver-run` as the container entrypoint and uses the upstream `nitro-cli` image as the source for runtime libs and `/usr/bin/nitro-cli`.
+- `sleeve:latest` — development sleeve image that contains `enclaver-run` as the container entrypoint and uses the upstream `nitro-cli` image as the source for runtime libs and `/usr/bin/nitro-cli`.
 
 Manual steps (if you want to run each step yourself)
 
@@ -99,7 +99,7 @@ docker buildx build \
 rm -rf "${docker_build_dir}"
 ```
 
-3) Build `enclaver-wrapper-base` (dev):
+3) Build `sleeve` (dev):
 
 Debug binaries:
 
@@ -107,8 +107,8 @@ Debug binaries:
 docker_build_dir=$(mktemp -d)
 cp ./target/x86_64-unknown-linux-musl/debug/enclaver-run "${docker_build_dir}/"
 docker buildx build \
-  -f dockerfiles/runtimebase-dev.dockerfile \
-  -t enclaver-wrapper-base:latest \
+  -f dockerfiles/sleeve-dev.dockerfile \
+  -t sleeve:latest \
   "${docker_build_dir}"
 rm -rf "${docker_build_dir}"
 ```
@@ -119,15 +119,15 @@ Release binaries:
 docker_build_dir=$(mktemp -d)
 cp ./target/x86_64-unknown-linux-musl/release/enclaver-run "${docker_build_dir}/"
 docker buildx build \
-  -f dockerfiles/runtimebase-dev.dockerfile \
-  -t enclaver-wrapper-base:latest \
+  -f dockerfiles/sleeve-dev.dockerfile \
+  -t sleeve:latest \
   "${docker_build_dir}"
 rm -rf "${docker_build_dir}"
 ```
 
 Notes about release Dockerfiles
 - The release Dockerfiles are written for multi-stage CI builds where an `artifacts` stage provides `${TARGETARCH}/odyn` and `${TARGETARCH}/enclaver-run`.
-  - `dockerfiles/runtimebase-release.dockerfile` uses `FROM public.ecr.aws/.../nitro-cli:latest AS nitro_cli` to copy necessary runtime libraries and `/usr/bin/nitro-cli` into the final image stage. It then expects an `artifacts` stage with `${TARGETARCH}/enclaver-run`.
+  - `dockerfiles/sleeve-release.dockerfile` uses `FROM public.ecr.aws/.../nitro-cli:latest AS nitro_cli` to copy necessary runtime libraries and `/usr/bin/nitro-cli` into the final image stage. It then expects an `artifacts` stage with `${TARGETARCH}/enclaver-run`.
   - `dockerfiles/odyn-release.dockerfile` similarly expects `${TARGETARCH}/odyn` from the `artifacts` stage.
 
 If you want to produce release images locally, you need to create a multi-stage build that defines the `artifacts` stage (for example, using a small Dockerfile or `docker buildx build` with an appropriate context and stages).

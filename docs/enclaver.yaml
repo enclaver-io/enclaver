@@ -32,7 +32,7 @@ sources:
   app: "repo/app:tag"         # [BUILD] REQUIRED. The application image to run inside the enclave.
   # odyn and sleeve may be overridden. If omitted, well-known defaults are pulled.
   # Default odyn:   public.ecr.aws/d4t4u8d2/sparsity-ai/odyn:latest
-  # Default sleeve: public.ecr.aws/d4t4u8d2/sparsity-ai/enclaver-wrapper-base:latest
+  # Default sleeve: public.ecr.aws/d4t4u8d2/sparsity-ai/sleeve:latest
   #odyn: "repo/odyn:tag"      # [BUILD] Odyn supervisor image (binary is extracted and added to EIF).
   #sleeve: "repo/sleeve:tag"  # [BUILD] Sleeve base image (used as base for release image).
 

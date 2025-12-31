@@ -10,7 +10,7 @@ Enclaver uses three primary base images in its build and runtime flow. The repos
 
 - Nitro CLI image: `public.ecr.aws/s2t1d4c6/enclaver-io/nitro-cli:latest`
 - ODYN image (supervisor): `public.ecr.aws/d4t4u8d2/sparsity-ai/odyn:latest`
-- Sleeve / wrapper base image: `public.ecr.aws/d4t4u8d2/sparsity-ai/enclaver-wrapper-base:latest`
+- Sleeve image: `public.ecr.aws/d4t4u8d2/sparsity-ai/sleeve:latest`
 
 Where these are referenced in the repository
 -----------------------------------------
@@ -19,12 +19,12 @@ Where these are referenced in the repository
 ```rust
   const NITRO_CLI_IMAGE: &str = "public.ecr.aws/s2t1d4c6/enclaver-io/nitro-cli:latest";
   const ODYN_IMAGE: &str = "public.ecr.aws/d4t4u8d2/sparsity-ai/odyn:latest";
-  const SLEEVE_IMAGE: &str = "public.ecr.aws/d4t4u8d2/sparsity-ai/enclaver-wrapper-base:latest";
+  const SLEEVE_IMAGE: &str = "public.ecr.aws/d4t4u8d2/sparsity-ai/sleeve:latest";
 ```
 
-- The multi-stage Dockerfile `dockerfiles/runtimebase-release.dockerfile` uses the `nitro-cli` image as a build source and copies runtime libraries and `/usr/bin/nitro-cli` from it into the runtime image.
+- The multi-stage Dockerfile `dockerfiles/sleeve-release.dockerfile` uses the `nitro-cli` image as a build source and copies runtime libraries and `/usr/bin/nitro-cli` from it into the runtime image.
 
-- The dev helper `scripts/build-docker-images.sh` builds local dev images `odyn-dev:latest` and `enclaver-wrapper-base:latest` for local development.
+- The dev helper `scripts/build-docker-images.sh` builds local dev images `odyn-dev:latest` and `sleeve:latest` for local development.
 
 What each image is for (summary)
 --------------------------------
@@ -32,20 +32,20 @@ What each image is for (summary)
 1. Nitro CLI image (`nitro-cli`)
    - Purpose: Provides the `nitro-cli` binary and the system libraries required to run it.
    - In the build pipeline the repo runs `nitro-cli build-enclave` inside a container based on this image to convert a Docker image into an EIF.
-  - In the runtime Dockerfile (`runtimebase-release.dockerfile`) the image is used as a source stage to extract runtime libraries and the `nitro-cli` executable into the final container image.
+  - In the runtime Dockerfile (`sleeve-release.dockerfile`) the image is used as a source stage to extract runtime libraries and the `nitro-cli` executable into the final container image.
 
 2. ODYN image (`odyn`)
    - Purpose: Contains the `odyn` supervisor binary (the supervisor that is inserted into the amended app image and executed inside the enclave).
    - `build::amend_source_image` copies the supervisor binary from this image into the amended app image at `/sbin/odyn`.
    - Dev Dockerfile `odyn-dev.dockerfile` is a minimal image that simply copies a built local `odyn` binary into `/usr/local/bin/odyn` (development flow).
 
-3. Sleeve / wrapper base image (`enclaver-wrapper-base`)
+3. Sleeve image (`sleeve`)
    - Purpose: The release base image which receives the `application.eif` and `enclaver.yaml` files as appended layers. The runtime entrypoint (`enclaver-run`) lives in this image and orchestrates enclave start/stop when the sleeve container runs.
    - The final release image layout is: base sleeve image + layer with `RELEASE_BUNDLE_DIR/enclaver.yaml` + layer with `RELEASE_BUNDLE_DIR/application.eif`.
 
 Notes derived from repository files
 ----------------------------------
-- `runtimebase-release.dockerfile` copies the following from the `nitro-cli` image into the runtime:
+- `sleeve-release.dockerfile` copies the following from the `nitro-cli` image into the runtime:
   - runtime libraries such as `libssl.so.3`, `libcrypto.so.3`, `libgcc_s.so.1`, `libm.so.6`, `libc.so.6`, `libz.so.1`
   - the `nitro-cli` binary into `/bin/nitro-cli`
   - it also ensures certain paths exist for Nitro Enclaves (`/var/log/nitro_enclaves/`, `/run/nitro_enclaves/`).
@@ -65,7 +65,7 @@ Use these commands to pull and inspect the published images locally. Replace `<i
 ```bash
 docker pull public.ecr.aws/s2t1d4c6/enclaver-io/nitro-cli:latest || true
 docker pull public.ecr.aws/d4t4u8d2/sparsity-ai/odyn:latest || true
-docker pull public.ecr.aws/d4t4u8d2/sparsity-ai/enclaver-wrapper-base:latest || true
+docker pull public.ecr.aws/d4t4u8d2/sparsity-ai/sleeve:latest || true
 ```
 
 2) Inspect image metadata and config
@@ -104,7 +104,7 @@ docker run --rm --entrypoint ls my-release:latest -la /enclave
 7) Use `dive` to examine layers interactively (recommended)
 
 ```bash
-dive public.ecr.aws/d4t4u8d2/sparsity-ai/enclaver-wrapper-base:latest
+dive public.ecr.aws/d4t4u8d2/sparsity-ai/sleeve:latest
 ```
 
 Inspecting the EIF conversion step
@@ -115,7 +115,7 @@ Dev / local images
 -------------------
 `scripts/build-docker-images.sh` builds local dev images to avoid pulling the remote published images during development. It builds multi-arch crate binaries (via cargo cross-compile target selection) and then builds two dev images:
   - `odyn-dev:latest`
-  - `enclaver-wrapper-base:latest` (local sleeve base tag)
+  - `sleeve:latest` (local sleeve base tag)
 
 Helper: a simple inspection script (optional)
 -------------------------------------------
@@ -127,7 +127,7 @@ set -euo pipefail
 images=(
   public.ecr.aws/s2t1d4c6/enclaver-io/nitro-cli:latest
   public.ecr.aws/d4t4u8d2/sparsity-ai/odyn:latest
-  public.ecr.aws/d4t4u8d2/sparsity-ai/enclaver-wrapper-base:latest
+  public.ecr.aws/d4t4u8d2/sparsity-ai/sleeve:latest
 )
 
 for img in "${images[@]}"; do
