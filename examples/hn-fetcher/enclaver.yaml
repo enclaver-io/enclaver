@@ -3,7 +3,7 @@ name: "hn-fetcher"
 target: "hn-fetcher-enclave:latest"
 sources:
   app: "hn-fetcher:latest"
-  #odyn: "odyn-dev:latest"
+  #odyn: "odyn:latest"
   #sleeve: "sleeve:latest"
 defaults:
   memory_mb: 1500
