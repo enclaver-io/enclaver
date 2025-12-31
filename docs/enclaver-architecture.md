@@ -157,7 +157,7 @@ Layer sequence when building a release image:
    Result: final release image containing the EIF and manifest.
 
 Notes about Dockerfiles in `dockerfiles/`
--- `runtimebase-release.dockerfile` / `runtimebase-dev.dockerfile` are multi-stage Dockerfiles that extract the `nitro-cli` binary and necessary system libraries from the `nitro-cli` image and add the `enclaver-run` binary. The final runtime image entrypoint is `enclaver-run`.
+-- `sleeve-release.dockerfile` / `sleeve-dev.dockerfile` are multi-stage Dockerfiles that extract the `nitro-cli` binary and necessary system libraries from the `nitro-cli` image and add the `enclaver-run` binary. The final runtime image entrypoint is `enclaver-run`.
 - `odyn-dev.dockerfile` and `odyn-release.dockerfile` place the `odyn` binary into `/usr/local/bin/odyn` for dev/release flows.
 
 CLI entrypoints

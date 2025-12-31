@@ -53,7 +53,7 @@ set -eu
 #  5) Build Docker images using docker buildx
 #     - Example commands used by the script:
 #         docker buildx build -f ../dockerfiles/odyn-dev.dockerfile -t ${odyn_tag} ${docker_build_dir}
-#         docker buildx build -f ../dockerfiles/runtimebase-dev.dockerfile -t ${sleeve_tag} ${docker_build_dir}
+#         docker buildx build -f ../dockerfiles/sleeve-dev.dockerfile -t ${sleeve_tag} ${docker_build_dir}
 #
 #  6) Output
 #     - The script prints a snippet to merge into `enclaver.yaml` that references
@@ -149,7 +149,7 @@ sleeve_tag="sleeve-dev:latest"
 
 # Dockerfile names (set per BUILD_MODE below)
 odyn_dockerfile="odyn-dev.dockerfile"
-runtimebase_dockerfile="runtimebase-dev.dockerfile"
+sleeve_dockerfile="sleeve-dev.dockerfile"
 
 # Set build mode-specific variables
 if [ "$BUILD_MODE" = "release" ]; then
@@ -160,7 +160,7 @@ if [ "$BUILD_MODE" = "release" ]; then
     odyn_tag="odyn:latest"
     sleeve_tag="sleeve:latest"
     odyn_dockerfile="odyn-release.dockerfile"
-    runtimebase_dockerfile="runtimebase-release.dockerfile"
+    sleeve_dockerfile="sleeve-release.dockerfile"
     echo "Build mode: RELEASE (optimized)"
 else
     rust_target_dir="./target/${rust_target}/debug"
@@ -194,14 +194,14 @@ echo "Copying built artifacts from: ${rust_target_dir}"
 cp $rust_target_dir/odyn $docker_build_dir/
 cp $rust_target_dir/enclaver-run $docker_build_dir/
 
-echo "Building images using Dockerfiles: ${odyn_dockerfile}, ${runtimebase_dockerfile}"
+echo "Building images using Dockerfiles: ${odyn_dockerfile}, ${sleeve_dockerfile}"
 docker buildx build \
     -f ../dockerfiles/${odyn_dockerfile} \
     -t ${odyn_tag} \
     ${docker_build_dir}
 
 docker buildx build \
-    -f ../dockerfiles/${runtimebase_dockerfile} \
+    -f ../dockerfiles/${sleeve_dockerfile} \
     -t ${sleeve_tag} \
     ${docker_build_dir}
 

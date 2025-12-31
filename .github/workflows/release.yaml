@@ -189,7 +189,7 @@ jobs:
         with:
           context: "{{defaultContext}}:dockerfiles"
           build-contexts: artifacts=.
-          file: runtimebase-release.dockerfile
+          file: sleeve-release.dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.wrapper-base-metadata.outputs.tags }}

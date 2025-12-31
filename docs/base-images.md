@@ -22,7 +22,7 @@ Where these are referenced in the repository
   const SLEEVE_IMAGE: &str = "public.ecr.aws/d4t4u8d2/sparsity-ai/sleeve:latest";
 ```
 
-- The multi-stage Dockerfile `dockerfiles/runtimebase-release.dockerfile` uses the `nitro-cli` image as a build source and copies runtime libraries and `/usr/bin/nitro-cli` from it into the runtime image.
+- The multi-stage Dockerfile `dockerfiles/sleeve-release.dockerfile` uses the `nitro-cli` image as a build source and copies runtime libraries and `/usr/bin/nitro-cli` from it into the runtime image.
 
 - The dev helper `scripts/build-docker-images.sh` builds local dev images `odyn-dev:latest` and `sleeve:latest` for local development.
 
@@ -32,7 +32,7 @@ What each image is for (summary)
 1. Nitro CLI image (`nitro-cli`)
    - Purpose: Provides the `nitro-cli` binary and the system libraries required to run it.
    - In the build pipeline the repo runs `nitro-cli build-enclave` inside a container based on this image to convert a Docker image into an EIF.
-  - In the runtime Dockerfile (`runtimebase-release.dockerfile`) the image is used as a source stage to extract runtime libraries and the `nitro-cli` executable into the final container image.
+  - In the runtime Dockerfile (`sleeve-release.dockerfile`) the image is used as a source stage to extract runtime libraries and the `nitro-cli` executable into the final container image.
 
 2. ODYN image (`odyn`)
    - Purpose: Contains the `odyn` supervisor binary (the supervisor that is inserted into the amended app image and executed inside the enclave).
@@ -45,7 +45,7 @@ What each image is for (summary)
 
 Notes derived from repository files
 ----------------------------------
-- `runtimebase-release.dockerfile` copies the following from the `nitro-cli` image into the runtime:
+- `sleeve-release.dockerfile` copies the following from the `nitro-cli` image into the runtime:
   - runtime libraries such as `libssl.so.3`, `libcrypto.so.3`, `libgcc_s.so.1`, `libm.so.6`, `libc.so.6`, `libz.so.1`
   - the `nitro-cli` binary into `/bin/nitro-cli`
   - it also ensures certain paths exist for Nitro Enclaves (`/var/log/nitro_enclaves/`, `/run/nitro_enclaves/`).
