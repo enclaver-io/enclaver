@@ -109,7 +109,7 @@ jobs:
 
     env:
       ODYN_IMAGE: public.ecr.aws/d4t4u8d2/sparsity-ai/odyn
-      RUNTIME_BASE_IMAGE: public.ecr.aws/d4t4u8d2/sparsity-ai/sleeve
+      SLEEVE_IMAGE: public.ecr.aws/d4t4u8d2/sparsity-ai/sleeve
 
     steps:
       - name: Download Binaries
@@ -171,11 +171,11 @@ jobs:
           subject-digest: ${{ steps.odyn-build-image.outputs.digest }}
           push-to-registry: true
 
-      - name: Generate Runtime Base Image Metadata
-        id: wrapper-base-metadata
+      - name: Generate Sleeve Image Metadata
+        id: sleeve-metadata
         uses: docker/metadata-action@v4
         with:
-          images: ${{ env.RUNTIME_BASE_IMAGE }}
+          images: ${{ env.SLEEVE_IMAGE }}
           tags: |
             type=sha,
             type=semver,pattern=v{{major}},enable=${{ github.ref_type == 'tag' }}
@@ -183,22 +183,22 @@ jobs:
             type=semver,pattern=v{{major}}.{{minor}}.{{patch}},enable=${{ github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
 
-      - name: Build Runtime Base Image
-        id: runtime-base-build-image
-        uses: docker/build-push-action@v3
+      - name: Build Sleeve Image
+        id: sleeve-build-image
+        uses: docker/build-push-action@v5
         with:
           context: "{{defaultContext}}:dockerfiles"
           build-contexts: artifacts=.
           file: sleeve-release.dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.wrapper-base-metadata.outputs.tags }}
+          tags: ${{ steps.sleeve-metadata.outputs.tags }}
 
-      - name: Generate SLSA provenance for Runtime Base
+      - name: Generate SLSA provenance for Sleeve
         uses: actions/attest-build-provenance@v3
         with:
-          subject-name: ${{ env.RUNTIME_BASE_IMAGE }}
-          subject-digest: ${{ steps.runtime-base-build-image.outputs.digest }}
+          subject-name: ${{ env.SLEEVE_IMAGE }}
+          subject-digest: ${{ steps.sleeve-build-image.outputs.digest }}
           push-to-registry: true
 
   upload-release-artifact:
