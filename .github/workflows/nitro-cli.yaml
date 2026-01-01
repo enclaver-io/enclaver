@@ -14,6 +14,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      attestations: write
 
     env:
       NITRO_CLI_IMAGE: public.ecr.aws/d4t4u8d2/sparsity-ai/nitro-cli
