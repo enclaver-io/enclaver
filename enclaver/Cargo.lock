@@ -735,12 +735,6 @@ checksum = "4c7f02d4ea65f2c1853089ffd8d2787bdbc63de2f0d29dedbcf8ccdfa0ccd4cf"
 
 [[package]]
 name = "base64"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
-
-[[package]]
-name = "base64"
 version = "0.21.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
@@ -1347,7 +1341,7 @@ dependencies = [
 
 [[package]]
 name = "enclaver"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1363,7 +1357,7 @@ dependencies = [
  "aws-smithy-runtime-api",
  "aws-smithy-types",
  "aws-types",
- "base64 0.13.1",
+ "base64 0.22.1",
  "bollard",
  "bytes",
  "cbc",

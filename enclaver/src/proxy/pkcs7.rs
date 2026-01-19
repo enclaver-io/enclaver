@@ -421,6 +421,7 @@ pub(crate) struct Attribute<'a> {
 pub(crate) mod tests {
     use super::ContentInfo;
     use assert2::assert;
+    use base64::{engine::general_purpose, Engine as _};
     use pkcs8::DecodePrivateKey;
     use rsa::RsaPrivateKey;
 
@@ -465,12 +466,12 @@ UBYkWlVgulDg28KBqahr9r04";
 
     #[test]
     fn test_content_info() {
-        let ber = base64::decode(INPUT).unwrap();
+        let ber = general_purpose::STANDARD.decode(INPUT).unwrap();
 
         let ci = ContentInfo::parse_ber(&ber).unwrap();
         ci.validate().unwrap();
 
-        let key_der = base64::decode(PRIVATE_KEY).unwrap();
+        let key_der = general_purpose::STANDARD.decode(PRIVATE_KEY).unwrap();
         let priv_key = RsaPrivateKey::from_pkcs8_der(&key_der).unwrap();
 
         let plaintext = ci.decrypt_content(&priv_key).unwrap();

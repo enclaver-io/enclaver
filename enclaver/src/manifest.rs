@@ -110,8 +110,12 @@ pub struct Storage {
 pub struct S3StorageConfig {
     #[serde(default)]
     pub enabled: bool,
+    /// S3 bucket name
     pub bucket: String,
+    /// S3 key prefix for isolation (e.g., "apps/my-app/"). 
+    /// Odyn will automatically ensure this ends with a trailing slash.
     pub prefix: String,
+    /// AWS region (optional, defaults to us-east-1 or IMDS-provided region)
     pub region: Option<String>,
 }
 

@@ -16,3 +16,10 @@ api:
   listen_port: 9000
 aux_api:
   listen_port: 9001
+
+# Optional S3 storage
+#storage:
+#  s3:
+#    enabled: true
+#    bucket: "hn-fetcher-bucket"
+#    prefix: "data/"

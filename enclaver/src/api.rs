@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use base64::{engine::general_purpose, Engine as _};
 use async_trait::async_trait;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
@@ -157,28 +158,28 @@ impl ApiHandler {
             "/v1/s3/get" => match head.method {
                 Method::POST => match &self.s3_proxy {
                     Some(proxy) => proxy.handle_get(body).await,
-                    None => Ok(http_util::bad_request("S3 storage not configured".to_string())),
+                    None => Self::s3_not_configured(),
                 },
                 _ => Ok(http_util::method_not_allowed()),
             },
             "/v1/s3/put" => match head.method {
                 Method::POST => match &self.s3_proxy {
                     Some(proxy) => proxy.handle_put(body).await,
-                    None => Ok(http_util::bad_request("S3 storage not configured".to_string())),
+                    None => Self::s3_not_configured(),
                 },
                 _ => Ok(http_util::method_not_allowed()),
             },
             "/v1/s3/delete" => match head.method {
                 Method::POST => match &self.s3_proxy {
                     Some(proxy) => proxy.handle_delete(body).await,
-                    None => Ok(http_util::bad_request("S3 storage not configured".to_string())),
+                    None => Self::s3_not_configured(),
                 },
                 _ => Ok(http_util::method_not_allowed()),
             },
             "/v1/s3/list" => match head.method {
                 Method::POST => match &self.s3_proxy {
                     Some(proxy) => proxy.handle_list(body).await,
-                    None => Ok(http_util::bad_request("S3 storage not configured".to_string())),
+                    None => Self::s3_not_configured(),
                 },
                 _ => Ok(http_util::method_not_allowed()),
             },
@@ -256,7 +257,7 @@ impl ApiHandler {
                 user_data: Some(user_data_bytes),
             })?;
 
-            Some(base64::encode(att_doc))
+            Some(general_purpose::STANDARD.encode(att_doc))
         } else {
             None
         };
@@ -310,7 +311,7 @@ impl ApiHandler {
                 public_key: Some(self.eth_key.public_key_as_der()?),
                 user_data: Some(user_data_bytes),
             })?;
-            Some(base64::encode(att_doc))
+            Some(general_purpose::STANDARD.encode(att_doc))
         } else {
             None
         };
@@ -477,6 +478,10 @@ impl ApiHandler {
             .header(CONTENT_TYPE, "application/json")
             .body(Full::new(Bytes::from(serde_json::to_string(&response)?)))?)
     }
+
+    fn s3_not_configured() -> Result<Response<Full<Bytes>>> {
+        Ok(http_util::bad_request("S3 storage not configured".to_string()))
+    }
 }
 
 #[async_trait]
@@ -498,7 +503,7 @@ struct AttestationRequest {
 
 impl AttestationRequest {
     fn into_params(self, eth_key: &EthKey, encryption_key: &EncryptionKey) -> Result<AttestationParams> {
-        let nonce = self.nonce.map(base64::decode).transpose()?;
+        let nonce = self.nonce.map(|n| general_purpose::STANDARD.decode(n)).transpose()?;
 
         // Use P-384 encryption key by default, or user-provided PEM
         let public_key = match self.public_key {

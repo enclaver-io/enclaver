@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use base64::{engine::general_purpose, Engine as _};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use aes_gcm::aead::Aead;
 use hkdf::Hkdf;
@@ -122,7 +123,7 @@ impl EncryptionKey {
     /// PEM-encoded public key for human-readable format
     pub fn public_key_as_pem(&self) -> Result<String> {
         let der = self.public_key_as_der()?;
-        let b64 = base64::encode(&der);
+        let b64 = general_purpose::STANDARD.encode(&der);
         
         // Split into 64-character lines
         let lines: Vec<&str> = b64.as_bytes()
