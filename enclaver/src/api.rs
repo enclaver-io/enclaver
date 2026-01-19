@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
+use crate::proxy::s3::S3Proxy;
 use crate::encryption_key::EncryptionKey;
 use crate::eth_key::EthKey;
 use crate::eth_tx::{self, AccessListEntry, TxSignature, UnsignedEip1559Tx};
@@ -23,12 +24,21 @@ pub struct ApiHandler {
     eth_key: Arc<EthKey>,
     encryption_key: Arc<EncryptionKey>,
     nsm: Option<Arc<Nsm>>,
+    s3_proxy: Option<Arc<S3Proxy>>,
 }
 
 impl ApiHandler {
     pub fn new(
         attester: Box<dyn AttestationProvider + Send + Sync>,
         nsm: Option<Arc<Nsm>>,
+    ) -> Result<Self> {
+        Self::with_s3(attester, nsm, None)
+    }
+
+    pub fn with_s3(
+        attester: Box<dyn AttestationProvider + Send + Sync>,
+        nsm: Option<Arc<Nsm>>,
+        s3_proxy: Option<Arc<S3Proxy>>,
     ) -> Result<Self> {
         let eth_key = match nsm.as_ref() {
             Some(nsm_ref) => match Self::collect_random_bytes(nsm_ref, 32).and_then(|bytes| {
@@ -84,6 +94,7 @@ impl ApiHandler {
             eth_key,
             encryption_key,
             nsm,
+            s3_proxy,
         })
     }
 
@@ -140,6 +151,35 @@ impl ApiHandler {
             },
             "/v1/encryption/encrypt" => match head.method {
                 Method::POST => self.handle_encryption_encrypt(body).await,
+                _ => Ok(http_util::method_not_allowed()),
+            },
+            // S3 Storage endpoints
+            "/v1/s3/get" => match head.method {
+                Method::POST => match &self.s3_proxy {
+                    Some(proxy) => proxy.handle_get(body).await,
+                    None => Ok(http_util::bad_request("S3 storage not configured".to_string())),
+                },
+                _ => Ok(http_util::method_not_allowed()),
+            },
+            "/v1/s3/put" => match head.method {
+                Method::POST => match &self.s3_proxy {
+                    Some(proxy) => proxy.handle_put(body).await,
+                    None => Ok(http_util::bad_request("S3 storage not configured".to_string())),
+                },
+                _ => Ok(http_util::method_not_allowed()),
+            },
+            "/v1/s3/delete" => match head.method {
+                Method::POST => match &self.s3_proxy {
+                    Some(proxy) => proxy.handle_delete(body).await,
+                    None => Ok(http_util::bad_request("S3 storage not configured".to_string())),
+                },
+                _ => Ok(http_util::method_not_allowed()),
+            },
+            "/v1/s3/list" => match head.method {
+                Method::POST => match &self.s3_proxy {
+                    Some(proxy) => proxy.handle_list(body).await,
+                    None => Ok(http_util::bad_request("S3 storage not configured".to_string())),
+                },
                 _ => Ok(http_util::method_not_allowed()),
             },
             _ => Ok(http_util::not_found()),

@@ -25,6 +25,7 @@ pub struct Manifest {
     pub api: Option<Api>,
     pub aux_api: Option<AuxApi>,
     pub vsock_ports: Option<VsockPorts>,
+    pub storage: Option<Storage>,
 }
 
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -96,6 +97,22 @@ pub struct VsockPorts {
     pub status_port: Option<u32>,
     pub app_log_port: Option<u32>,
     pub http_egress_port: Option<u32>,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Storage {
+    pub s3: Option<S3StorageConfig>,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct S3StorageConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    pub bucket: String,
+    pub prefix: String,
+    pub region: Option<String>,
 }
 
 fn parse_manifest(buf: &[u8]) -> Result<Manifest> {

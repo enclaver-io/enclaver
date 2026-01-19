@@ -95,3 +95,15 @@ pub fn not_found() -> Response<Full<Bytes>> {
         .body(Full::new(Bytes::new()))
         .unwrap()
 }
+
+pub fn json_response<T: serde::Serialize>(status: StatusCode, body: &T) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(status)
+        .header(hyper::header::CONTENT_TYPE, "application/json")
+        .body(Full::new(Bytes::from(serde_json::to_vec(body).unwrap())))
+        .unwrap()
+}
+
+pub fn ok_json<T: serde::Serialize>(body: &T) -> Response<Full<Bytes>> {
+    json_response(StatusCode::OK, body)
+}
