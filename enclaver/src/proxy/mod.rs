@@ -7,3 +7,6 @@ pub mod kms;
 
 #[cfg(feature = "odyn")]
 mod pkcs7;
+
+#[cfg(feature = "odyn")]
+pub mod s3;

@@ -111,6 +111,14 @@ aux_api:
   listen_port: 8001          # [ODYN] Optional. TCP port (u16) for auxiliary API server.
                              # ODYN: binds AuxApiService with sanitized attestation endpoint.
 
+# Optional: S3 storage configuration for persistent data
+storage:
+  s3:
+    enabled: true            # [ODYN] Whether to enable S3 storage integration.
+    bucket: "my-app-data"    # [ODYN] S3 bucket name for storage.
+    prefix: "apps/my-service/" # [ODYN] Key prefix for isolation. If it doesn't end with '/', it will be added.
+    region: "us-east-1"      # [ODYN] Optional. AWS region for the bucket.
+
 # ============================================================================
 # Summary: Parameter -> Module Mapping
 # ============================================================================
@@ -136,6 +144,10 @@ aux_api:
 # | kms_proxy.endpoints    | ODYN        | Regional KMS endpoint overrides                |
 # | api.listen_port        | ODYN        | Internal API port (attestation, signing, etc.) |
 # | aux_api.listen_port    | ODYN        | Auxiliary API port (restricted access)         |
+# | storage.s3.enabled     | ODYN        | Enable/disable S3 storage integration          |
+# | storage.s3.bucket      | ODYN        | S3 bucket for persistent storage               |
+# | storage.s3.prefix      | ODYN        | Prefix for S3 key isolation                    |
+# | storage.s3.region      | ODYN        | Regional override for S3 bucket                |
 #
 # ============================================================================
 

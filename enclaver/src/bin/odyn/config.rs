@@ -125,6 +125,14 @@ impl Configuration {
             .and_then(|a| a.listen_port)
             .or(Some(api_port + 1))
     }
+
+    pub fn s3_config(&self) -> Option<&enclaver::manifest::S3StorageConfig> {
+        self.manifest
+            .storage
+            .as_ref()
+            .and_then(|s| s.s3.as_ref())
+            .filter(|s3| s3.enabled)
+    }
 }
 
 impl KmsEndpointProvider for Configuration {

@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use base64::{engine::general_purpose, Engine as _};
 use async_trait::async_trait;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
@@ -10,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
+use crate::proxy::s3::S3Proxy;
 use crate::encryption_key::EncryptionKey;
 use crate::eth_key::EthKey;
 use crate::eth_tx::{self, AccessListEntry, TxSignature, UnsignedEip1559Tx};
@@ -23,12 +25,21 @@ pub struct ApiHandler {
     eth_key: Arc<EthKey>,
     encryption_key: Arc<EncryptionKey>,
     nsm: Option<Arc<Nsm>>,
+    s3_proxy: Option<Arc<S3Proxy>>,
 }
 
 impl ApiHandler {
     pub fn new(
         attester: Box<dyn AttestationProvider + Send + Sync>,
         nsm: Option<Arc<Nsm>>,
+    ) -> Result<Self> {
+        Self::with_s3(attester, nsm, None)
+    }
+
+    pub fn with_s3(
+        attester: Box<dyn AttestationProvider + Send + Sync>,
+        nsm: Option<Arc<Nsm>>,
+        s3_proxy: Option<Arc<S3Proxy>>,
     ) -> Result<Self> {
         let eth_key = match nsm.as_ref() {
             Some(nsm_ref) => match Self::collect_random_bytes(nsm_ref, 32).and_then(|bytes| {
@@ -84,6 +95,7 @@ impl ApiHandler {
             eth_key,
             encryption_key,
             nsm,
+            s3_proxy,
         })
     }
 
@@ -140,6 +152,35 @@ impl ApiHandler {
             },
             "/v1/encryption/encrypt" => match head.method {
                 Method::POST => self.handle_encryption_encrypt(body).await,
+                _ => Ok(http_util::method_not_allowed()),
+            },
+            // S3 Storage endpoints
+            "/v1/s3/get" => match head.method {
+                Method::POST => match &self.s3_proxy {
+                    Some(proxy) => proxy.handle_get(body).await,
+                    None => Self::s3_not_configured(),
+                },
+                _ => Ok(http_util::method_not_allowed()),
+            },
+            "/v1/s3/put" => match head.method {
+                Method::POST => match &self.s3_proxy {
+                    Some(proxy) => proxy.handle_put(body).await,
+                    None => Self::s3_not_configured(),
+                },
+                _ => Ok(http_util::method_not_allowed()),
+            },
+            "/v1/s3/delete" => match head.method {
+                Method::POST => match &self.s3_proxy {
+                    Some(proxy) => proxy.handle_delete(body).await,
+                    None => Self::s3_not_configured(),
+                },
+                _ => Ok(http_util::method_not_allowed()),
+            },
+            "/v1/s3/list" => match head.method {
+                Method::POST => match &self.s3_proxy {
+                    Some(proxy) => proxy.handle_list(body).await,
+                    None => Self::s3_not_configured(),
+                },
                 _ => Ok(http_util::method_not_allowed()),
             },
             _ => Ok(http_util::not_found()),
@@ -216,7 +257,7 @@ impl ApiHandler {
                 user_data: Some(user_data_bytes),
             })?;
 
-            Some(base64::encode(att_doc))
+            Some(general_purpose::STANDARD.encode(att_doc))
         } else {
             None
         };
@@ -270,7 +311,7 @@ impl ApiHandler {
                 public_key: Some(self.eth_key.public_key_as_der()?),
                 user_data: Some(user_data_bytes),
             })?;
-            Some(base64::encode(att_doc))
+            Some(general_purpose::STANDARD.encode(att_doc))
         } else {
             None
         };
@@ -437,6 +478,10 @@ impl ApiHandler {
             .header(CONTENT_TYPE, "application/json")
             .body(Full::new(Bytes::from(serde_json::to_string(&response)?)))?)
     }
+
+    fn s3_not_configured() -> Result<Response<Full<Bytes>>> {
+        Ok(http_util::bad_request("S3 storage not configured".to_string()))
+    }
 }
 
 #[async_trait]
@@ -458,7 +503,7 @@ struct AttestationRequest {
 
 impl AttestationRequest {
     fn into_params(self, eth_key: &EthKey, encryption_key: &EncryptionKey) -> Result<AttestationParams> {
-        let nonce = self.nonce.map(base64::decode).transpose()?;
+        let nonce = self.nonce.map(|n| general_purpose::STANDARD.decode(n)).transpose()?;
 
         // Use P-384 encryption key by default, or user-provided PEM
         let public_key = match self.public_key {
