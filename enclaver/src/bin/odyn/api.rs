@@ -23,9 +23,22 @@ impl ApiService {
             let s3_proxy = if let Some(s3_config) = config.s3_config() {
                 info!("S3 storage enabled: bucket={}, prefix={}", s3_config.bucket, s3_config.prefix);
                 
-                // Load AWS config from IMDS (EC2 instance metadata)
-                let aws_config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
-                let client = S3Client::new(&aws_config);
+                // Load AWS config from IMDS (EC2 instance metadata) via proxy if available
+                let (aws_config, http_client) = if let Some(proxy_uri) = config.egress_proxy_uri() {
+                    let http_client = enclaver::proxy::aws_util::new_proxied_client(proxy_uri.clone())?;
+                    let imds = enclaver::proxy::aws_util::imds_client_with_proxy(proxy_uri).await?;
+                    let sdk_config = enclaver::proxy::aws_util::load_config_from_imds(imds).await?;
+                    (sdk_config, Some(http_client))
+                } else {
+                    (aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await, None)
+                };
+
+                let mut s3_config_builder = aws_sdk_s3::config::Builder::from(&aws_config);
+                if let Some(hc) = http_client {
+                    s3_config_builder = s3_config_builder.http_client(hc);
+                }
+                
+                let client = S3Client::from_conf(s3_config_builder.build());
                 
                 Some(Arc::new(enclaver::proxy::s3::S3Proxy::new(
                     client,
