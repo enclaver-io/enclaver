@@ -24,10 +24,10 @@ use crate::http_client::HttpProxyClient;
 const IMDS_URL: &str = "http://169.254.169.254:80/";
 
 #[derive(Debug, Clone)]
-struct ProxiedHttpClient(Arc<HttpProxyClient<SdkBody>>);
+pub struct ProxiedHttpClient(pub Arc<HttpProxyClient<SdkBody>>);
 
 impl ProxiedHttpClient {
-    fn new(proxy_uri: Uri) -> Self {
+    pub fn new(proxy_uri: Uri) -> Self {
         Self(Arc::new(crate::http_client::new_http_proxy_client(
             proxy_uri,
         )))
@@ -70,7 +70,7 @@ fn into_aws_response(
         .map_err(|err| ConnectorError::user(err.into()))
 }
 
-fn new_proxied_client(proxy_uri: Uri) -> Result<SharedHttpClient> {
+pub fn new_proxied_client(proxy_uri: Uri) -> Result<SharedHttpClient> {
     let client = ProxiedHttpClient::new(proxy_uri);
     Ok(SharedHttpClient::new(client))
 }
