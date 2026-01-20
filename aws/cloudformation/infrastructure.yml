@@ -1,0 +1,124 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Enclaver - AWS Infrastructure for GitHub Actions CI/CD'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: enclaver
+    Description: Project name prefix for resources
+
+  GitHubOrg:
+    Type: String
+    Default: sparsity-xyz
+    Description: GitHub organization name
+
+  GitHubRepo:
+    Type: String
+    Default: enclaver
+    Description: GitHub repository name
+
+  ECRPublicAlias:
+    Type: String
+    Default: d4t4u8d2
+    Description: ECR Public registry alias
+
+Resources:
+  #############################################
+  # GitHub OIDC Identity Provider
+  #############################################
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        # GitHub Actions OIDC thumbprints
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  #############################################
+  # IAM Role for GitHub Actions (ECR Publish)
+  #############################################
+  GitHubActionsECRRole:
+    Type: AWS::IAM::Role
+    DependsOn: GitHubOIDCProvider
+    Properties:
+      RoleName: Github-Workflow-Publish-AWS-ECR
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub 'arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com'
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOrg}/${GitHubRepo}:*'
+      Policies:
+        - PolicyName: ECRPublicAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # ECR Public authentication
+              - Effect: Allow
+                Action:
+                  - ecr-public:GetAuthorizationToken
+                  - sts:GetServiceBearerToken
+                Resource: '*'
+              # ECR Public repository operations
+              - Effect: Allow
+                Action:
+                  - ecr-public:BatchCheckLayerAvailability
+                  - ecr-public:GetRepositoryPolicy
+                  - ecr-public:DescribeRepositories
+                  - ecr-public:DescribeImages
+                  - ecr-public:InitiateLayerUpload
+                  - ecr-public:UploadLayerPart
+                  - ecr-public:CompleteLayerUpload
+                  - ecr-public:PutImage
+                Resource:
+                  - !Sub 'arn:aws:ecr-public::${AWS::AccountId}:repository/sparsity-ai/*'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+Outputs:
+  GitHubOIDCProviderArn:
+    Description: GitHub OIDC Provider ARN
+    Value: !GetAtt GitHubOIDCProvider.Arn
+
+  GitHubActionsRoleArn:
+    Description: IAM Role ARN for GitHub Actions (use in workflow role-to-assume)
+    Value: !GetAtt GitHubActionsECRRole.Arn
+
+  ECRPublicRegistry:
+    Description: ECR Public registry URL
+    Value: !Sub 'public.ecr.aws/${ECRPublicAlias}'
+
+  OdynImageURI:
+    Description: Odyn container image URI
+    Value: !Sub 'public.ecr.aws/${ECRPublicAlias}/sparsity-ai/odyn'
+
+  SleeveImageURI:
+    Description: Sleeve container image URI
+    Value: !Sub 'public.ecr.aws/${ECRPublicAlias}/sparsity-ai/sleeve'
+
+  NitroCliImageURI:
+    Description: Nitro CLI container image URI
+    Value: !Sub 'public.ecr.aws/${ECRPublicAlias}/sparsity-ai/nitro-cli'
+
+  SetupInstructions:
+    Description: Setup instructions
+    Value: |
+      1. Deploy this stack in us-east-1 (required for ECR Public)
+      2. Create ECR Public repositories manually in console:
+         - sparsity-ai/odyn
+         - sparsity-ai/sleeve
+         - sparsity-ai/nitro-cli
+      3. Workflow will use GitHubActionsRoleArn via OIDC

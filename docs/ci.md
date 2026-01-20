@@ -144,10 +144,59 @@ Note: CI authenticates to AWS ECR by assuming a hard-coded role. To push to ECR 
 
 ---
 
+## AWS Infrastructure Setup
+
+The release workflow requires AWS resources for OIDC authentication and ECR access. These are defined in the CloudFormation template at `aws/cloudformation/infrastructure.yml`.
+
+### Required Resources
+
+| Resource | Purpose |
+|----------|---------|
+| **GitHubOIDCProvider** | Enables GitHub Actions to authenticate with AWS using OIDC (no long-lived credentials) |
+| **GitHubActionsECRRole** | IAM Role assumed by GitHub Actions to push images to ECR Public |
+
+### Deployment
+
+Deploy the CloudFormation stack in **us-east-1** (required for ECR Public):
+
+```bash
+aws cloudformation deploy \
+  --stack-name enclaver-ci \
+  --template-file aws/cloudformation/infrastructure.yml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region us-east-1
+```
+
+### ECR Public Repositories
+
+After deploying the stack, manually create the following ECR Public repositories in the AWS Console under the `sparsity-ai` namespace:
+
+- `sparsity-ai/odyn`
+- `sparsity-ai/sleeve`
+- `sparsity-ai/nitro-cli`
+
+### Workflow Configuration
+
+The workflows reference the IAM role by ARN:
+
+```yaml
+# In .github/workflows/release.yaml
+- name: Configure AWS credentials from OIDC
+  uses: aws-actions/configure-aws-credentials@v5
+  with:
+    aws-region: us-east-1
+    role-to-assume: arn:aws:iam::<ACCOUNT_ID>:role/Github-Workflow-Publish-AWS-ECR
+```
+
+The role ARN is output by the CloudFormation stack as `GitHubActionsRoleArn`.
+
+---
+
 ## References / locations
 
 - CI workflow: `.github/workflows/ci.yaml`
 - Release workflow: `.github/workflows/release.yaml`
+- AWS infrastructure: `aws/cloudformation/infrastructure.yml`
 - Local image build helper: `scripts/build-docker-images.sh`
 - Custom action used in Release: `./.github/actions/cargo-zigbuild`
 
