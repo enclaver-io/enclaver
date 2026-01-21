@@ -64,3 +64,24 @@ fn load_filters(opt_spec: &Option<Vec<String>>) -> (DomainFilter, IpFilter) {
 
     (domains, ips)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_allow_all_superwildcard() {
+        let spec = crate::manifest::Egress {
+            proxy_port: None,
+            allow: Some(vec!["**".to_string()]),
+            deny: None,
+        };
+        let policy = EgressPolicy::new(&spec);
+
+        assert!(policy.is_host_allowed("example.com"));
+        assert!(policy.is_host_allowed("foo.bar.example.com"));
+        assert!(!policy.is_host_allowed("169.254.169.254"));
+        assert!(!policy.is_host_allowed("1.1.1.1"));
+        assert!(!policy.is_host_allowed("[2001:db8::1]"));
+    }
+}

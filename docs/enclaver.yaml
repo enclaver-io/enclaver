@@ -72,15 +72,17 @@ egress:
   # one allow pattern AND does not match any deny pattern. If `allow` is empty/missing, egress is disabled.
   allow:
     # Domain patterns (case-insensitive):
-    # - Exact: "example.com" (matches only example.com, not subdomains)
-    # - Single-label wildcard: "*.example.com" (matches foo.example.com but NOT bar.foo.example.com)
     # - Multi-label suffix: "**.amazonaws.com" (matches s3.amazonaws.com and a.b.c.amazonaws.com)
+    # NOTE: Domain patterns (including wildcards) DO NOT match IP addresses.
+    # Use CIDR notation for IP filtering.
     # IP/CIDR patterns:
     # - Exact IP: "66.254.33.22" (implicit /32)
     # - IPv4 CIDR: "66.254.33.0/24"
     # - IPv6 CIDR: "::/0" (all IPv6)
     - "news.ycombinator.com" # [ODYN] Domain/IP patterns for egress allow list.
-    #- "**"                   # Allow all domains (not recommended for production)
+    #- "**"                   # Allow all domains (does not match IP addresses)
+    #- "0.0.0.0/0"           # Allow all IPv4 traffic
+    #- "::/0"                # Allow all IPv6 traffic
     #- "169.254.169.254"      # IMDS (needed if kms_proxy is enabled)
   deny:
     # Optional block list evaluated after allow. Same grammar as allow.
