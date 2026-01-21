@@ -60,10 +60,15 @@ async fn launch(args: &CliArgs) -> Result<launcher::ExitStatus> {
     }
 
     let egress = EgressService::start(&config).await?;
+
+    let (kms_proxy, api, aux_api) = tokio::try_join!(
+        KmsProxyService::start(config.clone(), nsm.clone()),
+        ApiService::start(&config, nsm.clone()),
+        AuxApiService::start(&config),
+    )?;
+
+    // Start ingress last, once all local services are bound and ready
     let ingress = IngressService::start(&config)?;
-    let kms_proxy = KmsProxyService::start(config.clone(), nsm.clone()).await?;
-    let api = ApiService::start(&config, nsm.clone()).await?;
-    let aux_api = AuxApiService::start(&config).await?;
 
     let creds = launcher::Credentials { uid: 0, gid: 0 };
 

@@ -26,11 +26,14 @@ impl KmsProxyService {
                 info!("Starting KMS proxy");
                 let attester = Box::new(NsmAttestationProvider::new(nsm));
 
-                // If a keypair will be needed elsewhere, this should be moved out
                 info!("Generating public/private keypair");
                 let keypair = Arc::new(KeyPair::generate()?);
 
+                info!("Egress proxy detected at {}, loading configuration from IMDS...", proxy_uri);
                 let imds = aws_util::imds_client_with_proxy(proxy_uri.clone()).await?;
+
+                // Small delay to ensure egress proxy is ready
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
                 info!("Fetching config from IMDSv2");
                 let sdk_config = aws_util::load_config_from_imds(imds).await?;
