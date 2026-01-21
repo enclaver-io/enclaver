@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use log::{debug, error, info};
 use http::Uri;
 use http_body_util::BodyExt;
 use hyper::body::Bytes;
@@ -48,8 +49,8 @@ impl HttpConnector for ProxiedHttpClient {
     fn call(&self, request: Request) -> HttpConnectorFuture {
         let client = self.0.clone();
         let result = async move {
-            let request = request.try_into_http1x().unwrap();
-            let response = client.request(request).await.unwrap();
+            let request = request.try_into_http1x().map_err(|err| ConnectorError::user(err.into()))?;
+            let response = client.request(request).await.map_err(|err| ConnectorError::user(err.into()))?;
             let (head, body) = response.into_parts();
             body.collect()
                 .await
@@ -90,21 +91,45 @@ pub async fn imds_client_with_proxy(proxy_uri: Uri) -> Result<imds::Client> {
 }
 
 pub async fn load_config_from_imds(imds_client: imds::Client) -> Result<SdkConfig> {
-    let region = ImdsRegionProvider::builder()
-        .imds_client(imds_client.clone())
-        .build()
-        .region()
-        .await
-        .ok_or(anyhow!("failed to fetch the region from IMDS"))?;
+    let mut last_err = anyhow!("failed to fetch the region from IMDS");
+    let mut retry_delay = std::time::Duration::from_millis(250);
+    let max_attempts = 15;
 
-    let cred_provider = ImdsCredentialsProvider::builder()
-        .imds_client(imds_client)
-        .build();
+    info!("Starting IMDS configuration fetch (max {} attempts)", max_attempts);
 
-    let config = SdkConfig::builder()
-        .region(Some(region))
-        .credentials_provider(SharedCredentialsProvider::new(cred_provider))
-        .build();
+    for attempt in 0..max_attempts {
+        if attempt > 0 {
+            debug!("IMDS fetch attempt {} failed, retrying in {:?}...", attempt, retry_delay);
+            tokio::time::sleep(retry_delay).await;
+            retry_delay *= 2;
+            if retry_delay > std::time::Duration::from_secs(3) {
+                retry_delay = std::time::Duration::from_secs(3);
+            }
+        }
 
-    Ok(config)
+        let region_result = ImdsRegionProvider::builder()
+            .imds_client(imds_client.clone())
+            .build()
+            .region()
+            .await;
+
+        if let Some(region) = region_result {
+            info!("Successfully fetched region from IMDS: {}", region);
+            let cred_provider = ImdsCredentialsProvider::builder()
+                .imds_client(imds_client)
+                .build();
+
+            let config = SdkConfig::builder()
+                .region(Some(region))
+                .credentials_provider(SharedCredentialsProvider::new(cred_provider))
+                .build();
+
+            return Ok(config);
+        } else {
+            last_err = anyhow!("IMDS region provider returned None (attempt {})", attempt + 1);
+        }
+    }
+
+    error!("Failed to fetch IMDS configuration after {} attempts: {}", max_attempts, last_err);
+    Err(last_err)
 }

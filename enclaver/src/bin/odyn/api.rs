@@ -23,20 +23,24 @@ impl ApiService {
             let s3_proxy = if let Some(s3_config) = config.s3_config() {
                 info!("S3 storage enabled: bucket={}, prefix={}", s3_config.bucket, s3_config.prefix);
                 
-                // Load AWS config from IMDS (EC2 instance metadata) via proxy if available
-                let (aws_config, http_client) = if let Some(proxy_uri) = config.egress_proxy_uri() {
-                    let http_client = enclaver::proxy::aws_util::new_proxied_client(proxy_uri.clone())?;
-                    let imds = enclaver::proxy::aws_util::imds_client_with_proxy(proxy_uri).await?;
-                    let sdk_config = enclaver::proxy::aws_util::load_config_from_imds(imds).await?;
-                    (sdk_config, Some(http_client))
-                } else {
-                    (aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await, None)
-                };
+                // Load AWS config from IMDS (EC2 instance metadata) via proxy
+                // inside an enclave, we MUST use a proxy to reach IMDS
+                let proxy_uri = config.egress_proxy_uri().ok_or_else(|| {
+                    anyhow::anyhow!("Egress proxy is not configured, but is required for AWS IMDS access inside the enclave.")
+                })?;
+
+                info!("Enclave environment detected: using egress proxy at {} for AWS configuration", proxy_uri);
+                
+                let http_client = enclaver::proxy::aws_util::new_proxied_client(proxy_uri.clone())?;
+                let imds = enclaver::proxy::aws_util::imds_client_with_proxy(proxy_uri).await?;
+                
+                // Small delay to ensure egress proxy is fully up and ready to handle vsock requests
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                
+                let aws_config = enclaver::proxy::aws_util::load_config_from_imds(imds).await?;
 
                 let mut s3_config_builder = aws_sdk_s3::config::Builder::from(&aws_config);
-                if let Some(hc) = http_client {
-                    s3_config_builder = s3_config_builder.http_client(hc);
-                }
+                s3_config_builder = s3_config_builder.http_client(http_client);
                 
                 let client = S3Client::from_conf(s3_config_builder.build());
                 
