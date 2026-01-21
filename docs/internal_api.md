@@ -277,3 +277,106 @@ The following endpoints are **NOT** available on the Auxiliary API:
 - `/v1/encryption/encrypt`
 
 Attempts to access these endpoints on the Auxiliary API port will result in a 404 Not Found error.
++
++## S3 Storage API Endpoints
++
++The Internal API provides an S3-compatible interface for persistent storage. These endpoints use the enclave's AWS credentials (obtained via IMDS) and enforce key isolation and path traversal protection.
++
++### Get Object
++
++Retrieve a base64-encoded object from S3.
++
++- **URL:** `/v1/s3/get`
++- **Method:** `POST`
++- **Content-Type:** `application/json`
++- **Request Body:**
++  ```json
++  {
++    "key": "relative/path/to/object"
++  }
++  ```
++- **Success Response:**
++  - **Code:** 200 OK
++  - **Content-Type:** `application/json`
++  - **Body:**
++    ```json
++    {
++      "value": "base64_encoded_data"
++    }
++    ```
++
++### Put Object
++
++Upload a base64-encoded object to S3.
++
++- **URL:** `/v1/s3/put`
++- **Method:** `POST`
++- **Content-Type:** `application/json`
++- **Request Body:**
++  ```json
++  {
++    "key": "relative/path/to/object",
++    "value": "base64_encoded_data",
++    "content_type": "text/plain" // Optional
++  }
++  ```
++- **Success Response:**
++  - **Code:** 200 OK
++  - **Content-Type:** `application/json`
++  - **Body:**
++    ```json
++    {
++      "success": true
++    }
++    ```
++
++### Delete Object
++
++Delete an object from S3.
++
++- **URL:** `/v1/s3/delete`
++- **Method:** `POST`
++- **Content-Type:** `application/json`
++- **Request Body:**
++  ```json
++  {
++    "key": "relative/path/to/object"
++  }
++  ```
++- **Success Response:**
++  - **Code:** 200 OK
++  - **Content-Type:** `application/json`
++  - **Body:**
++    ```json
++    {
++      "success": true
++    }
++    ```
++
++### List Objects
++
++List objects in the app's persistent storage.
++
++- **URL:** `/v1/s3/list`
++- **Method:** `POST`
++- **Content-Type:** `application/json`
++- **Request Body:**
++  ```json
++  {
++    "prefix": "optional/subdirectory/",
++    "continuation_token": "token_from_previous_response", // Optional
++    "max_keys": 100 // Optional
++  }
++  ```
++- **Success Response:**
++  - **Code:** 200 OK
++  - **Content-Type:** `application/json`
++  - **Body:**
++    ```json
++    {
++      "keys": ["file1.txt", "file2.txt"],
++      "continuation_token": "next_token", // Null if no more pages
++      "is_truncated": false
++    }
++    ```
++

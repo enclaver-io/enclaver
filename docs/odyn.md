@@ -22,10 +22,10 @@ Odyn is the supervisor process that runs inside the AWS Nitro Enclave. It acts a
 │   │                 Odyn Supervisor                     │   │
 │   │                    (PID 1)                          │   │
 │   │                                                     │   │
-│   │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌──────────┐  │   │
-│   │  │ Ingress │ │ Egress  │ │   API   │ │   KMS    │  │   │
-│   │  │  Proxy  │ │  Proxy  │ │ Server  │ │  Proxy   │  │   │
-│   │  └─────────┘ └─────────┘ └─────────┘ └──────────┘  │   │
+│   │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌──────────┐ ┌─────────┐  │   │
+│   │  │ Ingress │ │ Egress  │ │   API   │ │   KMS    │ │ Storage │  │   │
+│   │  │  Proxy  │ │  Proxy  │ │ Server  │ │  Proxy   │ │  (S3)   │  │   │
+│   │  └─────────┘ └─────────┘ └─────────┘ └──────────┘ └─────────┘  │   │
 │   │                      │                              │   │
 │   │                      ▼                              │   │
 │   │  ┌─────────────────────────────────────────────┐   │   │
@@ -172,6 +172,10 @@ api:
 | `/v1/encryption/public_key` | GET | Get P-384 encryption public key |
 | `/v1/encryption/encrypt` | POST | Encrypt data for client |
 | `/v1/encryption/decrypt` | POST | Decrypt data from client |
+| `/v1/s3/get` | POST | Get object from S3 storage |
+| `/v1/s3/put` | POST | Put object to S3 storage |
+| `/v1/s3/list` | POST | List objects in S3 storage |
+| `/v1/s3/delete` | POST | Delete object from S3 storage |
 
 **For your app**: Make HTTP requests to `http://127.0.0.1:<api_port>/v1/...`
 
@@ -232,7 +236,31 @@ kms_proxy:
 
 ---
 
-### 6. Console & Log Streaming
+### 6. S3 Storage
+
+**Purpose**: Provides automated persistent storage for enclave applications.
+
+**How it works**:
+- Proxies S3 requests to a dedicated S3 bucket
+- Enforces key isolation (app-specific prefix)
+- Retries on transient errors and handles IMDS-based credentials
+- Accessible via the Internal API
+
+**Configuration**:
+```yaml
+storage:
+  s3:
+    enabled: true
+    bucket: "my-app-data"
+    prefix: "apps/my-service/"
+    region: "us-east-1"
+```
+
+**For your app**: Use the Internal API `/v1/s3/...` endpoints.
+
+---
+
+### 7. Console & Log Streaming
 
 **Purpose**: Captures your application's stdout/stderr and streams it to the host.
 
@@ -287,6 +315,13 @@ aux_api:
 # KMS Proxy with attestation (optional)
 kms_proxy:
   listen_port: 9000
+
+# S3 Storage (optional)
+storage:
+  s3:
+    enabled: true
+    bucket: "my-app-data"
+    prefix: "apps/my-service/"
 ```
 
 ---
@@ -300,6 +335,7 @@ kms_proxy:
 | **Internal API** | `api.listen_port` | Attestation, signing, encryption | HTTP to `http://127.0.0.1:<port>` |
 | **Aux API** | `aux_api.listen_port` | Restricted API for sidecars | HTTP to `http://127.0.0.1:<port>` |
 | **KMS Proxy** | `kms_proxy.listen_port` | AWS KMS with attestation | Use AWS SDK normally |
+| **Storage** | N/A (Internal API) | Persistent S3 storage | HTTP to `/v1/s3/...` |
 | **Console** | N/A (automatic) | Log streaming | Print to stdout/stderr |
 
 ---

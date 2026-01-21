@@ -2,7 +2,7 @@
 
 Enclaver is an open source toolkit that simplifies packaging and running applications inside [AWS Nitro Enclaves](https://aws.amazon.com/ec2/nitro/nitro-enclaves/). It handles the complexity of enclave networking (ingress/egress proxies), cryptographic attestation, secure key management (KMS integration), and application lifecycle management — so you can focus on building your application.
 
-This is the **Sparsity edition** of Enclaver, which adds support for Ethereum signing, P-384 ECDH encryption, and an Internal API for enclave-based applications. See [enclaver-io/enclaver](https://github.com/enclaver-io/enclaver) for the original project.
+This is the **Sparsity edition** of Enclaver, which adds support for Ethereum signing, P-384 ECDH encryption, S3 persistent storage, and an Internal API for enclave-based applications. See [enclaver-io/enclaver](https://github.com/enclaver-io/enclaver) for the original project.
 
 ## Installation
 
@@ -69,8 +69,9 @@ The diagram below shows how the release Docker image runs as a single container,
 │   - egress:   App --> outbound traffic                                       │
 │   - kms-proxy: talk to external KMS over network                             │
 │   - encryption: ECDH (P-384) encrypt/decrypt for secure client communication │
+│   - storage:  S3 persistent storage integration via Internal API             │
 │   - console:  collect App stdout/stderr --> container logs                   │
-│   - api:      internal API for attestation, signing, encryption              │
+│   - api:      internal API for attestation, signing, encryption, storage     │
 │                                                                              │
 │ [User Application] (started and supervised by odyn)                          │
 └──────────────────────────────────────────────────────────────────────────────┘
