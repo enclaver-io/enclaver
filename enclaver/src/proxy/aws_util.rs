@@ -120,6 +120,7 @@ pub async fn load_config_from_imds(imds_client: imds::Client) -> Result<SdkConfi
                 .build();
 
             let config = SdkConfig::builder()
+                .behavior_version(aws_config::BehaviorVersion::latest())
                 .region(Some(region))
                 .credentials_provider(SharedCredentialsProvider::new(cred_provider))
                 .build();
