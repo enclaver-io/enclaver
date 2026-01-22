@@ -277,14 +277,19 @@ The following endpoints are **NOT** available on the Auxiliary API:
 - `/v1/encryption/encrypt`
 
 Attempts to access these endpoints on the Auxiliary API port will result in a 404 Not Found error.
-+
-+## S3 Storage API Endpoints
-+
-+The Internal API provides an S3-compatible interface for persistent storage. These endpoints use the enclave's AWS credentials (obtained via IMDS) and enforce key isolation and path traversal protection.
-+
-+### Get Object
-+
-+Retrieve a base64-encoded object from S3.
+The following endpoints are also **NOT** available on the Auxiliary API:
+- `/v1/s3/get`
+- `/v1/s3/put`
+- `/v1/s3/delete`
+- `/v1/s3/list`
+
+## S3 Storage API Endpoints
+
+The Internal API provides an S3-compatible interface for persistent storage. These endpoints use the enclave's AWS credentials (obtained via IMDS) and enforce key isolation and path traversal protection. If S3 storage is not enabled in `enclaver.yaml`, these endpoints return `400 Bad Request` with `S3 storage not configured`.
+
+### Get Object
+
+Retrieve a base64-encoded object from S3.
 +
 +- **URL:** `/v1/s3/get`
 +- **Method:** `POST`
@@ -305,9 +310,9 @@ Attempts to access these endpoints on the Auxiliary API port will result in a 40
 +    }
 +    ```
 +
-+### Put Object
-+
-+Upload a base64-encoded object to S3.
+### Put Object
+
+Upload a base64-encoded object to S3.
 +
 +- **URL:** `/v1/s3/put`
 +- **Method:** `POST`
@@ -330,9 +335,9 @@ Attempts to access these endpoints on the Auxiliary API port will result in a 40
 +    }
 +    ```
 +
-+### Delete Object
-+
-+Delete an object from S3.
+### Delete Object
+
+Delete an object from S3.
 +
 +- **URL:** `/v1/s3/delete`
 +- **Method:** `POST`
@@ -353,9 +358,9 @@ Attempts to access these endpoints on the Auxiliary API port will result in a 40
 +    }
 +    ```
 +
-+### List Objects
-+
-+List objects in the app's persistent storage.
+### List Objects
+
+List objects in the app's persistent storage.
 +
 +- **URL:** `/v1/s3/list`
 +- **Method:** `POST`
@@ -373,10 +378,9 @@ Attempts to access these endpoints on the Auxiliary API port will result in a 40
 +  - **Content-Type:** `application/json`
 +  - **Body:**
 +    ```json
-+    {
-+      "keys": ["file1.txt", "file2.txt"],
-+      "continuation_token": "next_token", // Null if no more pages
-+      "is_truncated": false
-+    }
-+    ```
-+
+    {
+      "keys": ["file1.txt", "file2.txt"],
+      "continuation_token": "next_token", // Null if no more pages
+      "is_truncated": false
+    }
+    ```

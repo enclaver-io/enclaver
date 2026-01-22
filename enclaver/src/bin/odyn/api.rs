@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use aws_sdk_s3::Client as S3Client;
+use aws_sdk_s3::config::Region;
 use log::info;
 use tokio::task::JoinHandle;
 
@@ -41,6 +42,10 @@ impl ApiService {
 
                 let mut s3_config_builder = aws_sdk_s3::config::Builder::from(&aws_config);
                 s3_config_builder = s3_config_builder.http_client(http_client);
+
+                if let Some(region) = &s3_config.region {
+                    s3_config_builder = s3_config_builder.region(Region::new(region.clone()));
+                }
                 
                 let client = S3Client::from_conf(s3_config_builder.build());
                 

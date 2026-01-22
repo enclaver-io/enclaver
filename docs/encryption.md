@@ -25,7 +25,7 @@ User (Browser/Client)
 │  ┌─────────────────────────────────────────────────────────┐│
 │  │              Nitro Enclave (Trusted Zone)                ││
 │  │  - Isolated memory & CPU                                 ││
-│  │  - No persistent storage, no direct network              ││
+│  │  - No local persistent storage; optional S3 via Internal API ││
 │  │  - Communicates with Host only via VSOCK                 ││
 │  │  - Odyn Supervisor + Your Application                    ││
 │  └─────────────────────────────────────────────────────────┘│

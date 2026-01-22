@@ -119,7 +119,9 @@ storage:
     enabled: true            # [ODYN] Whether to enable S3 storage integration.
     bucket: "my-app-data"    # [ODYN] S3 bucket name for storage.
     prefix: "apps/my-service/" # [ODYN] Key prefix for isolation. If it doesn't end with '/', it will be added.
-    region: "us-east-1"      # [ODYN] Optional. AWS region for the bucket.
+    region: "us-east-1"      # [ODYN] Optional. AWS region override for the bucket.
+                             # If omitted, the region is resolved via IMDS.
+                             # Requires egress allow for IMDS (169.254.169.254) and the S3 endpoint.
 
 # ============================================================================
 # Summary: Parameter -> Module Mapping

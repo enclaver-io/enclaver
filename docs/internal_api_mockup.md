@@ -67,6 +67,7 @@ import json
 import requests
 from typing import Dict, Any, Optional, Tuple
 import os
+import base64
 
 
 class Odyn:
@@ -267,9 +268,102 @@ class Odyn:
         if nonce.startswith("0x"): nonce = nonce[2:]
 
         return encrypted_data, enclave_public_key, nonce
+
+    # -----------------------
+    # S3 Storage Helpers
+    # -----------------------
+
+    def s3_get(self, key: str) -> bytes:
+        """
+        Fetch an object from S3 storage via the Internal API.
+
+        Args:
+            key: Object key relative to the configured prefix.
+
+        Returns:
+            Raw bytes of the object.
+        """
+        res = requests.post(
+            f"{self.endpoint}/v1/s3/get",
+            json={"key": key},
+            timeout=10
+        )
+        res.raise_for_status()
+        encoded = res.json()["value"]
+        return base64.b64decode(encoded)
+
+    def s3_put(self, key: str, data: bytes, content_type: Optional[str] = None) -> None:
+        """
+        Upload an object to S3 storage via the Internal API.
+
+        Args:
+            key: Object key relative to the configured prefix.
+            data: Raw bytes to store.
+            content_type: Optional content type metadata.
+        """
+        payload = {
+            "key": key,
+            "value": base64.b64encode(data).decode("utf-8"),
+        }
+        if content_type:
+            payload["content_type"] = content_type
+
+        res = requests.post(
+            f"{self.endpoint}/v1/s3/put",
+            json=payload,
+            timeout=10
+        )
+        res.raise_for_status()
+
+    def s3_delete(self, key: str) -> None:
+        """
+        Delete an object from S3 storage via the Internal API.
+
+        Args:
+            key: Object key relative to the configured prefix.
+        """
+        res = requests.post(
+            f"{self.endpoint}/v1/s3/delete",
+            json={"key": key},
+            timeout=10
+        )
+        res.raise_for_status()
+
+    def s3_list(self, prefix: Optional[str] = None, continuation_token: Optional[str] = None,
+                max_keys: Optional[int] = None) -> Dict[str, Any]:
+        """
+        List objects under the configured prefix.
+
+        Args:
+            prefix: Optional sub-prefix within the app namespace.
+            continuation_token: Token from a previous list response.
+            max_keys: Optional maximum number of keys to return.
+
+        Returns:
+            Response dict with keys, continuation_token, and is_truncated.
+        """
+        payload: Dict[str, Any] = {}
+        if prefix is not None:
+            payload["prefix"] = prefix
+        if continuation_token is not None:
+            payload["continuation_token"] = continuation_token
+        if max_keys is not None:
+            payload["max_keys"] = max_keys
+
+        res = requests.post(
+            f"{self.endpoint}/v1/s3/list",
+            json=payload,
+            timeout=10
+        )
+        res.raise_for_status()
+        return res.json()
 ```
 
 ---
+
+## S3 Storage (Optional)
+
+S3 storage endpoints are available only when `storage.s3` is enabled in `enclaver.yaml` and the enclave has egress access to IMDS and S3. The public mock service may not provide persistent S3 storage.
 
 ## Usage Examples
 
@@ -296,6 +390,11 @@ print(f"Random: {random_bytes.hex()}")
 # Get attestation document
 attestation = odyn.get_attestation()
 print(f"Attestation size: {len(attestation)} bytes")
+
+# Store and load a blob (requires S3 enabled)
+odyn.s3_put("data/example.bin", b"hello", content_type="application/octet-stream")
+blob = odyn.s3_get("data/example.bin")
+print(f"Blob: {blob}")
 ```
 
 ### Encryption/Decryption Example
@@ -352,7 +451,7 @@ print(f"Response: {client_decrypted.decode()}")
 
 ## API Endpoints Reference
 
-The mock service implements all endpoints from the [Internal API](internal_api.md):
+The mock service implements endpoints from the [Internal API](internal_api.md). S3 endpoints are available only when storage is configured:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -364,6 +463,10 @@ The mock service implements all endpoints from the [Internal API](internal_api.m
 | `/v1/encryption/public_key` | GET | Get P-384 encryption public key |
 | `/v1/encryption/encrypt` | POST | Encrypt data for client |
 | `/v1/encryption/decrypt` | POST | Decrypt data from client |
+| `/v1/s3/get` | POST | Get object from S3 storage |
+| `/v1/s3/put` | POST | Put object to S3 storage |
+| `/v1/s3/delete` | POST | Delete object from S3 storage |
+| `/v1/s3/list` | POST | List objects in S3 storage |
 
 ---
 
