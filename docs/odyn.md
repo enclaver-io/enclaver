@@ -243,7 +243,7 @@ kms_proxy:
 **How it works**:
 - Proxies S3 requests to a dedicated S3 bucket
 - Enforces key isolation (app-specific prefix)
-- Retries on transient errors and handles IMDS-based credentials
+- Uses IMDS-based credentials via the egress proxy
 - Accessible via the Internal API
 
 **Configuration**:
@@ -257,6 +257,10 @@ storage:
 ```
 
 **For your app**: Use the Internal API `/v1/s3/...` endpoints.
+
+**Requirements**:
+- Egress must allow `169.254.169.254` (IMDS)
+- Egress must allow your S3 endpoint (e.g., `s3.us-east-1.amazonaws.com` or `s3.amazonaws.com`)
 
 ---
 
