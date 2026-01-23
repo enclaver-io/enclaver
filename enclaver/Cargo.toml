@@ -82,6 +82,10 @@ hex = "0.4"
 rlp = "0.5"
 aes-gcm = "0.10"
 hkdf = "0.12"
+url = "2.5"
+
+# Helios light client for trustless Ethereum RPC (optional, only for odyn)
+helios = { git = "https://github.com/sparsity-xyz/helios", branch = "master", optional = true }
 
 [dev-dependencies]
 assert2 = "0.3"
@@ -91,7 +95,7 @@ aws-credential-types = { version = "1.2.6", features = ["hardcoded-credentials"]
 
 [features]
 run_enclave = ["proxy"]
-odyn = ["vsock", "proxy"]
+odyn = ["vsock", "proxy", "dep:helios"]
 proxy = ["vsock"]
 vsock = ["dep:tokio-vsock", "dep:rtnetlink"]
 tracing = ["dep:console-subscriber", "tokio/tracing"]
