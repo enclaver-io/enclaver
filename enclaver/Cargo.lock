@@ -3294,7 +3294,6 @@ dependencies = [
  "tokio-tar",
  "tokio-util",
  "tokio-vsock",
- "url",
  "uuid",
 ]
 

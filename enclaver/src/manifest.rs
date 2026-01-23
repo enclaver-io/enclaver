@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::pin::Pin;
@@ -130,10 +130,10 @@ pub struct HeliosRpc {
     /// Port for JSON-RPC server (default: 8545)
     #[serde(default = "default_helios_port")]
     pub listen_port: u16,
-    /// Network: "mainnet", "sepolia", "holesky", "op-mainnet", "base", "linea"
-    pub network: String,
-    /// Untrusted execution RPC URL (required)
-    pub execution_rpc: String,
+    /// Network: "mainnet", "sepolia", "holesky" (required when enabled)
+    pub network: Option<String>,
+    /// Untrusted execution RPC URL (required when enabled)
+    pub execution_rpc: Option<String>,
     /// Consensus RPC URL (optional, defaults to lightclientdata.org)
     pub consensus_rpc: Option<String>,
     /// Weak subjectivity checkpoint (optional, auto-fetched if not provided)
@@ -144,8 +144,42 @@ fn default_helios_port() -> u16 {
     8545
 }
 
+impl HeliosRpc {
+    fn validate(&self) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+
+        if self
+            .network
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            bail!("helios_rpc.network is required when helios_rpc.enabled is true");
+        }
+
+        if self
+            .execution_rpc
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            bail!("helios_rpc.execution_rpc is required when helios_rpc.enabled is true");
+        }
+
+        Ok(())
+    }
+}
+
 fn parse_manifest(buf: &[u8]) -> Result<Manifest> {
     let manifest: Manifest = serde_yaml::from_slice(buf)?;
+
+    if let Some(helios) = manifest.helios_rpc.as_ref() {
+        helios.validate()?;
+    }
 
     Ok(manifest)
 }
@@ -224,8 +258,11 @@ helios_rpc:
         let helios = manifest.helios_rpc.expect("helios_rpc should be present");
         assert!(helios.enabled);
         assert_eq!(helios.listen_port, 8545);
-        assert_eq!(helios.network, "mainnet");
-        assert_eq!(helios.execution_rpc, "https://eth-mainnet.g.alchemy.com/v2/KEY");
+        assert_eq!(helios.network.as_deref(), Some("mainnet"));
+        assert_eq!(
+            helios.execution_rpc.as_deref(),
+            Some("https://eth-mainnet.g.alchemy.com/v2/KEY")
+        );
         assert_eq!(helios.consensus_rpc, Some("https://www.lightclientdata.org".to_string()));
         assert_eq!(helios.checkpoint, Some("0x1234567890abcdef".to_string()));
     }
@@ -249,8 +286,11 @@ helios_rpc:
         let helios = manifest.helios_rpc.expect("helios_rpc should be present");
         assert!(helios.enabled);
         assert_eq!(helios.listen_port, 8545); // default port
-        assert_eq!(helios.network, "sepolia");
-        assert_eq!(helios.execution_rpc, "https://eth-sepolia.g.alchemy.com/v2/KEY");
+        assert_eq!(helios.network.as_deref(), Some("sepolia"));
+        assert_eq!(
+            helios.execution_rpc.as_deref(),
+            Some("https://eth-sepolia.g.alchemy.com/v2/KEY")
+        );
         assert!(helios.consensus_rpc.is_none());
         assert!(helios.checkpoint.is_none());
     }
@@ -265,15 +305,30 @@ sources:
   app: "app-image:latest"
 helios_rpc:
   enabled: false
-  network: mainnet
-  execution_rpc: "https://eth-mainnet.g.alchemy.com/v2/KEY"
 "#;
 
         let manifest = parse_manifest(raw_manifest).unwrap();
 
         let helios = manifest.helios_rpc.expect("helios_rpc should be present");
         assert!(!helios.enabled);
+        assert!(helios.network.is_none());
+        assert!(helios.execution_rpc.is_none());
     }
+
+        #[test]
+        fn test_parse_helios_rpc_enabled_missing_required_fields() {
+                let raw_manifest = br#"
+version: v1
+name: "test-helios-invalid"
+target: "target-image:latest"
+sources:
+    app: "app-image:latest"
+helios_rpc:
+    enabled: true
+"#;
+
+                assert!(parse_manifest(raw_manifest).is_err());
+        }
 
     #[test]
     fn test_parse_manifest_without_helios_rpc() {

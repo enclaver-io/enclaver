@@ -82,7 +82,6 @@ hex = "0.4"
 rlp = "0.5"
 aes-gcm = "0.10"
 hkdf = "0.12"
-url = "2.5"
 
 # Helios light client for trustless Ethereum RPC (optional, only for odyn)
 helios = { git = "https://github.com/sparsity-xyz/helios", branch = "master", optional = true }

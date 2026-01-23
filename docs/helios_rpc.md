@@ -57,9 +57,6 @@ Helios verifies all execution data using Light Client proofs from the Ethereum c
 | Ethereum Mainnet | `mainnet` | ✅ Supported |
 | Ethereum Sepolia | `sepolia` | ✅ Supported |
 | Ethereum Holesky | `holesky` | ✅ Supported |
-| Optimism Mainnet | `op-mainnet` | ✅ Supported |
-| Base | `base` | ✅ Supported |
-| Linea | `linea` | ✅ Supported |
 
 ---
 

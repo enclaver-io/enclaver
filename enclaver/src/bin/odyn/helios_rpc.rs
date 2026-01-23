@@ -4,8 +4,10 @@
 //! All execution data is cryptographically verified using Light Client proofs.
 
 use std::net::SocketAddr;
+use std::str::FromStr;
 use std::time::Duration;
 
+use alloy::primitives::B256;
 use anyhow::{Result, anyhow};
 use helios::ethereum::{EthereumClient, EthereumClientBuilder};
 use helios::ethereum::config::networks::Network;
@@ -35,20 +37,40 @@ impl HeliosRpcService {
             }
         };
 
+        let network = helios_config
+            .network
+            .as_ref()
+            .ok_or_else(|| anyhow!("helios_rpc.network is required when helios_rpc.enabled is true"))?
+            .clone();
+        let execution_rpc = helios_config
+            .execution_rpc
+            .as_ref()
+            .ok_or_else(|| {
+                anyhow!("helios_rpc.execution_rpc is required when helios_rpc.enabled is true")
+            })?
+            .clone();
+
         info!(
             "Starting Helios RPC on port {} for network {}",
-            helios_config.listen_port, helios_config.network
+            helios_config.listen_port, network
         );
 
         let port = helios_config.listen_port;
-        let network = helios_config.network.clone();
-        let execution_rpc = helios_config.execution_rpc.clone();
         let consensus_rpc = helios_config.consensus_rpc.clone();
+        let checkpoint = helios_config.checkpoint.clone();
 
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
         let task = tokio::task::spawn(async move {
-            match Self::run_helios(port, &network, &execution_rpc, consensus_rpc.as_deref()).await {
+            match Self::run_helios(
+                port,
+                &network,
+                &execution_rpc,
+                consensus_rpc.as_deref(),
+                checkpoint.as_deref(),
+            )
+            .await
+            {
                 Ok(_client) => {
                     info!("Helios synced and ready on port {}", port);
                     let _ = ready_tx.send(true);
@@ -76,6 +98,7 @@ impl HeliosRpcService {
         network: &str,
         execution_rpc: &str,
         consensus_rpc: Option<&str>,
+        checkpoint: Option<&str>,
     ) -> Result<EthereumClient> {
         let net = match network.to_lowercase().as_str() {
             "mainnet" => Network::Mainnet,
@@ -109,8 +132,16 @@ impl HeliosRpcService {
             .network(net)
             .execution_rpc(execution_rpc)
             .map_err(|e| anyhow!("Invalid execution RPC: {}", e))?
-            .rpc_address(addr)
-            .load_external_fallback(); // Auto-fetch checkpoint from fallback services
+            .rpc_address(addr);
+
+        if let Some(checkpoint) = checkpoint {
+            let parsed = B256::from_str(checkpoint)
+                .map_err(|e| anyhow!("Invalid checkpoint '{}': {}", checkpoint, e))?;
+            builder = builder.checkpoint(parsed);
+        } else {
+            // Auto-fetch checkpoint from fallback services when not provided
+            builder = builder.load_external_fallback();
+        }
 
         if let Some(consensus) = consensus_rpc {
             builder = builder
