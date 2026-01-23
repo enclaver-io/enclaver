@@ -315,9 +315,9 @@ helios_rpc:
         assert!(helios.execution_rpc.is_none());
     }
 
-        #[test]
-        fn test_parse_helios_rpc_enabled_missing_required_fields() {
-                let raw_manifest = br#"
+    #[test]
+    fn test_parse_helios_rpc_enabled_missing_required_fields() {
+        let raw_manifest = br#"
 version: v1
 name: "test-helios-invalid"
 target: "target-image:latest"
@@ -327,8 +327,8 @@ helios_rpc:
     enabled: true
 "#;
 
-                assert!(parse_manifest(raw_manifest).is_err());
-        }
+        assert!(parse_manifest(raw_manifest).is_err());
+    }
 
     #[test]
     fn test_parse_manifest_without_helios_rpc() {

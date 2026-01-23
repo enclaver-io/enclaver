@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::time::Duration;
 
-use alloy::primitives::B256;
+use alloy_primitives::B256;
 use anyhow::{Result, anyhow};
 use helios::ethereum::{EthereumClient, EthereumClientBuilder};
 use helios::ethereum::config::networks::Network;

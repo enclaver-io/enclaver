@@ -65,10 +65,10 @@ impl S3Proxy {
                 Ok(http_util::ok_json(&response)?)
             }
             Err(err) => {
-                if let Some(s3_err) = err.as_service_error() {
-                    if s3_err.is_no_such_key() {
-                        return Ok(http_util::not_found());
-                    }
+                if let Some(s3_err) = err.as_service_error()
+                    && s3_err.is_no_such_key()
+                {
+                    return Ok(http_util::not_found());
                 }
                 Ok(http_util::bad_request(format!("S3 error: {}", err)))
             }

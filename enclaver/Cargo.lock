@@ -3230,6 +3230,7 @@ version = "1.2.2"
 dependencies = [
  "aes",
  "aes-gcm",
+ "alloy-primitives",
  "anyhow",
  "asn1-rs 0.7.1",
  "assert2",

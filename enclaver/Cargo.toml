@@ -52,6 +52,7 @@ form_urlencoded = "1.2"
 hyper = { version = "1.7", features = ["http1", "server"] }
 hyper-util = "0.1.17"
 hyper-proxy2 = { version = "0.1.0", features = ["rustls-webpki"], default-features = false }
+alloy-primitives = "1.5.2"
 uuid = { version = "1.18", features = ["v4"] }
 rtnetlink = { version = "0.11", optional = true }
 circbuf = "0.2"
