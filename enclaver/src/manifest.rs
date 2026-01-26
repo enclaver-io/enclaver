@@ -126,7 +126,7 @@ pub struct S3StorageConfig {
 pub enum HeliosRpcKind {
     /// Ethereum L1 light client (mainnet, sepolia, holesky)
     Ethereum,
-    /// OP Stack L2 light client (base, optimism, etc.)
+    /// OP Stack L2 light client (op-mainnet, base, etc.)
     Opstack,
 }
 
@@ -144,11 +144,13 @@ pub struct HeliosRpc {
     pub listen_port: u16,
     /// Network name (required when enabled):
     /// - ethereum: "mainnet", "sepolia", "holesky"
-    /// - opstack: "base", "base-sepolia", "optimism", "optimism-sepolia", etc.
+    /// - opstack: "op-mainnet", "base", "base-sepolia", "worldchain", "zora", "unichain"
     pub network: Option<String>,
     /// Untrusted execution RPC URL (required when enabled)
     pub execution_rpc: Option<String>,
-    /// Consensus RPC URL (optional, defaults to lightclientdata.org for ethereum)
+    /// Consensus RPC URL (optional):
+    /// - ethereum: defaults to lightclientdata.org
+    /// - opstack: defaults per-network (operationsolarstorm.org)
     pub consensus_rpc: Option<String>,
     /// Weak subjectivity checkpoint (optional, auto-fetched if not provided; ethereum only)
     pub checkpoint: Option<String>,
@@ -184,15 +186,29 @@ impl HeliosRpc {
             bail!("helios_rpc.execution_rpc is required when helios_rpc.enabled is true");
         }
 
-        // Validate network name for ethereum kind
-        if self.kind == HeliosRpcKind::Ethereum {
-            let net = network.unwrap().to_lowercase();
-            if !matches!(net.as_str(), "mainnet" | "sepolia" | "holesky") {
-                bail!(
-                    "helios_rpc.network '{}' is invalid for kind=ethereum. \
-                     Supported: mainnet, sepolia, holesky",
-                    net
-                );
+        // Validate network name per kind
+        let net = network.unwrap().to_lowercase();
+        match self.kind {
+            HeliosRpcKind::Ethereum => {
+                if !matches!(net.as_str(), "mainnet" | "sepolia" | "holesky") {
+                    bail!(
+                        "helios_rpc.network '{}' is invalid for kind=ethereum. \
+                         Supported: mainnet, sepolia, holesky",
+                        net
+                    );
+                }
+            }
+            HeliosRpcKind::Opstack => {
+                if !matches!(
+                    net.as_str(),
+                    "op-mainnet" | "base" | "base-sepolia" | "worldchain" | "zora" | "unichain"
+                ) {
+                    bail!(
+                        "helios_rpc.network '{}' is invalid for kind=opstack. \
+                         Supported: op-mainnet, base, base-sepolia, worldchain, zora, unichain",
+                        net
+                    );
+                }
             }
         }
 

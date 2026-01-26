@@ -64,14 +64,12 @@ Helios verifies all execution data using Light Client proofs from the Ethereum c
 
 | Network | Config Value | Status |
 |---------|--------------|--------|
+| OP Mainnet | `op-mainnet` | ✅ Supported |
 | Base Mainnet | `base` | ✅ Supported |
 | Base Sepolia | `base-sepolia` | ✅ Supported |
-| Optimism Mainnet | `optimism` | ✅ Supported |
-| Optimism Sepolia | `optimism-sepolia` | ✅ Supported |
 | Worldchain Mainnet | `worldchain` | ✅ Supported |
-| Worldchain Sepolia | `worldchain-sepolia` | ✅ Supported |
 | Zora Mainnet | `zora` | ✅ Supported |
-| Zora Sepolia | `zora-sepolia` | ✅ Supported |
+| Unichain Mainnet | `unichain` | ✅ Supported |
 
 ---
 
@@ -130,6 +128,7 @@ helios_rpc:
 egress:
   allow:
     - "rpc.ankr.com"
+    - "*.operationsolarstorm.org"   # Default OP Stack consensus RPC
 
 api:
   listen_port: 9000
@@ -144,7 +143,7 @@ api:
 | `listen_port` | No | `8545` | Port for JSON-RPC server (internal only) |
 | `network` | Yes | — | Network to connect to (see tables above) |
 | `execution_rpc` | Yes | — | Untrusted execution RPC URL |
-| `consensus_rpc` | No | `lightclientdata.org` | Consensus RPC URL (ethereum only) |
+| `consensus_rpc` | No | Depends on `kind` | Consensus RPC URL (ethereum: `lightclientdata.org`; opstack: per-network `operationsolarstorm.org`) |
 | `checkpoint` | No | Auto-fetched | Weak subjectivity checkpoint (ethereum only) |
 
 ---

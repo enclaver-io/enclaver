@@ -15,6 +15,7 @@ use helios::ethereum::config::networks::Network;
 use helios::ethereum::database::ConfigDB;
 use helios::opstack::{OpStackClient, OpStackClientBuilder};
 use helios::opstack::config::Network as OpNetwork;
+use helios::opstack::config::NetworkConfig as OpNetworkConfig;
 use log::{info, warn};
 use tokio::task::JoinHandle;
 
@@ -79,7 +80,14 @@ impl HeliosRpcService {
                     .map(|_| ())
                 }
                 HeliosRpcKind::Opstack => {
-                    Self::run_helios_opstack(port, &network, &execution_rpc).await.map(|_| ())
+                    Self::run_helios_opstack(
+                        port,
+                        &network,
+                        &execution_rpc,
+                        consensus_rpc.as_deref(),
+                    )
+                    .await
+                    .map(|_| ())
                 }
             };
 
@@ -180,21 +188,19 @@ impl HeliosRpcService {
         port: u16,
         network: &str,
         execution_rpc: &str,
+        consensus_rpc: Option<&str>,
     ) -> Result<OpStackClient> {
         let net = match network.to_lowercase().as_str() {
+            "op-mainnet" => OpNetwork::OpMainnet,
             "base" => OpNetwork::Base,
             "base-sepolia" => OpNetwork::BaseSepolia,
-            "optimism" => OpNetwork::Optimism,
-            "optimism-sepolia" => OpNetwork::OptimismSepolia,
             "worldchain" => OpNetwork::Worldchain,
-            "worldchain-sepolia" => OpNetwork::WorldchainSepolia,
             "zora" => OpNetwork::Zora,
-            "zora-sepolia" => OpNetwork::ZoraSepolia,
+            "unichain" => OpNetwork::Unichain,
             other => {
                 return Err(anyhow!(
-                    "Unsupported opstack network '{}'. Supported: base, base-sepolia, \
-                     optimism, optimism-sepolia, worldchain, worldchain-sepolia, \
-                     zora, zora-sepolia.",
+                    "Unsupported opstack network '{}'. Supported: op-mainnet, base, base-sepolia, \
+                     worldchain, zora, unichain.",
                     other
                 ));
             }
@@ -208,15 +214,26 @@ impl HeliosRpcService {
         info!("Building Helios OP Stack client for {} network", network);
         info!("Execution RPC: {}", execution_rpc);
 
-        let builder = OpStackClientBuilder::new()
-            .network(net)
-            .execution_rpc(execution_rpc)
-            .map_err(|e| anyhow!("Invalid execution RPC: {}", e))?
-            .rpc_address(addr);
+        let consensus_rpc = if let Some(value) = consensus_rpc {
+            value.to_string()
+        } else {
+            OpNetworkConfig::from(net)
+                .consensus_rpc
+                .as_ref()
+                .map(|url| url.as_str().to_string())
+                .ok_or_else(|| {
+                    anyhow!("Helios OP Stack network '{}' missing default consensus RPC", net)
+                })?
+        };
 
-        let client = builder
+        info!("Consensus RPC: {}", consensus_rpc);
+
+        let client = OpStackClientBuilder::new()
+            .network(net)
+            .consensus_rpc(consensus_rpc.as_str())
+            .execution_rpc(execution_rpc)
+            .rpc_socket(addr)
             .build()
-            .await
             .map_err(|e| anyhow!("Failed to build Helios OP Stack client: {}", e))?;
 
         info!("Helios OP Stack client built, waiting for sync...");

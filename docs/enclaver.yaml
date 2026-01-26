@@ -127,8 +127,7 @@ helios_rpc:
   listen_port: 8545          # [ODYN] Optional. TCP port (u16) for Helios JSON-RPC (default: 8545).
   # Network name (required when enabled):
   #   ethereum: mainnet, sepolia, holesky
-  #   opstack:  base, base-sepolia, optimism, optimism-sepolia,
-  #             worldchain, worldchain-sepolia, zora, zora-sepolia
+  #   opstack:  op-mainnet, base, base-sepolia, worldchain, zora, unichain
   network: mainnet           # [ODYN] Required when enabled.
   execution_rpc: "https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY" # [ODYN] Required when enabled.
   #consensus_rpc: "https://www.lightclientdata.org" # [ODYN] Optional. Consensus RPC URL (ethereum only).
