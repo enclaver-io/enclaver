@@ -121,17 +121,7 @@ impl HeliosRpcService {
         consensus_rpc: Option<&str>,
         checkpoint: Option<&str>,
     ) -> Result<EthereumClient> {
-        let net = match network.to_lowercase().as_str() {
-            "mainnet" => Network::Mainnet,
-            "sepolia" => Network::Sepolia,
-            "holesky" => Network::Holesky,
-            other => {
-                return Err(anyhow!(
-                    "Unsupported ethereum network '{}'. Supported: mainnet, sepolia, holesky.",
-                    other
-                ));
-            }
-        };
+        let net = Self::parse_ethereum_network(network)?;
 
         // Bind only to localhost — internal enclave access only
         let addr: SocketAddr = format!("127.0.0.1:{}", port)
@@ -190,21 +180,7 @@ impl HeliosRpcService {
         execution_rpc: &str,
         consensus_rpc: Option<&str>,
     ) -> Result<OpStackClient> {
-        let net = match network.to_lowercase().as_str() {
-            "op-mainnet" => OpNetwork::OpMainnet,
-            "base" => OpNetwork::Base,
-            "base-sepolia" => OpNetwork::BaseSepolia,
-            "worldchain" => OpNetwork::Worldchain,
-            "zora" => OpNetwork::Zora,
-            "unichain" => OpNetwork::Unichain,
-            other => {
-                return Err(anyhow!(
-                    "Unsupported opstack network '{}'. Supported: op-mainnet, base, base-sepolia, \
-                     worldchain, zora, unichain.",
-                    other
-                ));
-            }
-        };
+        let net = Self::parse_opstack_network(network)?;
 
         // Bind only to localhost — internal enclave access only
         let addr: SocketAddr = format!("127.0.0.1:{}", port)
@@ -249,6 +225,33 @@ impl HeliosRpcService {
         Ok(client)
     }
 
+    fn parse_ethereum_network(network: &str) -> Result<Network> {
+        match network.to_lowercase().as_str() {
+            "mainnet" => Ok(Network::Mainnet),
+            "sepolia" => Ok(Network::Sepolia),
+            "holesky" => Ok(Network::Holesky),
+            other => Err(anyhow!(
+                "Unsupported ethereum network '{}'. Supported: mainnet, sepolia, holesky.",
+                other
+            )),
+        }
+    }
+
+    fn parse_opstack_network(network: &str) -> Result<OpNetwork> {
+        match network.to_lowercase().as_str() {
+            "op-mainnet" => Ok(OpNetwork::OpMainnet),
+            "base" => Ok(OpNetwork::Base),
+            "base-sepolia" => Ok(OpNetwork::BaseSepolia),
+            "worldchain" => Ok(OpNetwork::Worldchain),
+            "zora" => Ok(OpNetwork::Zora),
+            "unichain" => Ok(OpNetwork::Unichain),
+            other => Err(anyhow!(
+                "Unsupported opstack network '{}'. Supported: op-mainnet, base, base-sepolia, worldchain, zora, unichain.",
+                other
+            )),
+        }
+    }
+
     /// Check if Helios is ready (synced).
     /// Returns true if synced, false if failed, or true if Helios is not configured.
     #[allow(dead_code)]
@@ -289,56 +292,61 @@ mod tests {
         assert!(service.wait_ready().await);
     }
 
-    /// Test network name parsing - mainnet
+    /// Test ethereum network name parsing - mainnet
     #[test]
-    fn test_network_name_mainnet() {
-        let network = "mainnet";
-        let result = match network.to_lowercase().as_str() {
-            "mainnet" => Some(Network::Mainnet),
-            "sepolia" => Some(Network::Sepolia),
-            "holesky" => Some(Network::Holesky),
-            _ => None,
-        };
-        assert!(matches!(result, Some(Network::Mainnet)));
+    fn test_ethereum_network_name_mainnet() {
+        assert!(matches!(
+            HeliosRpcService::parse_ethereum_network("mainnet").unwrap(),
+            Network::Mainnet
+        ));
     }
 
-    /// Test network name parsing - sepolia
+    /// Test ethereum network name parsing - sepolia
     #[test]
-    fn test_network_name_sepolia() {
-        let network = "Sepolia"; // Test case insensitivity
-        let result = match network.to_lowercase().as_str() {
-            "mainnet" => Some(Network::Mainnet),
-            "sepolia" => Some(Network::Sepolia),
-            "holesky" => Some(Network::Holesky),
-            _ => None,
-        };
-        assert!(matches!(result, Some(Network::Sepolia)));
+    fn test_ethereum_network_name_sepolia() {
+        assert!(matches!(
+            HeliosRpcService::parse_ethereum_network("Sepolia").unwrap(),
+            Network::Sepolia
+        ));
     }
 
-    /// Test network name parsing - holesky
+    /// Test ethereum network name parsing - holesky
     #[test]
-    fn test_network_name_holesky() {
-        let network = "HOLESKY"; // Test case insensitivity
-        let result = match network.to_lowercase().as_str() {
-            "mainnet" => Some(Network::Mainnet),
-            "sepolia" => Some(Network::Sepolia),
-            "holesky" => Some(Network::Holesky),
-            _ => None,
-        };
-        assert!(matches!(result, Some(Network::Holesky)));
+    fn test_ethereum_network_name_holesky() {
+        assert!(matches!(
+            HeliosRpcService::parse_ethereum_network("HOLESKY").unwrap(),
+            Network::Holesky
+        ));
     }
 
-    /// Test network name parsing - unsupported network
+    /// Test ethereum network name parsing - unsupported network
     #[test]
-    fn test_network_name_unsupported() {
-        let network = "op-mainnet";
-        let result = match network.to_lowercase().as_str() {
-            "mainnet" => Some(Network::Mainnet),
-            "sepolia" => Some(Network::Sepolia),
-            "holesky" => Some(Network::Holesky),
-            _ => None,
-        };
-        assert!(result.is_none());
+    fn test_ethereum_network_name_unsupported() {
+        assert!(HeliosRpcService::parse_ethereum_network("op-mainnet").is_err());
+    }
+
+    #[test]
+    fn test_opstack_network_supported_values() {
+        let supported = [
+            "op-mainnet",
+            "base",
+            "base-sepolia",
+            "worldchain",
+            "zora",
+            "unichain",
+        ];
+
+        for value in supported {
+            assert!(HeliosRpcService::parse_opstack_network(value).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_opstack_network_rejects_unsupported_values() {
+        // Previously documented, but not supported by the vendored Helios OP Stack implementation.
+        assert!(HeliosRpcService::parse_opstack_network("optimism").is_err());
+        assert!(HeliosRpcService::parse_opstack_network("worldchain-sepolia").is_err());
+    }
     }
 
     /// Test address parsing
