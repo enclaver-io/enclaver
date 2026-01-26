@@ -41,7 +41,8 @@ detect_platform() {
             os="linux"
             ;;
         Darwin*)
-            os="macos"
+            log_error "macOS is not supported by current releases (Linux-only artifacts)"
+            exit 1
             ;;
         *)
             log_error "Unsupported operating system: $(uname -s)"

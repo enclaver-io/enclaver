@@ -38,10 +38,6 @@ jobs:
             host: 'ubuntu-latest'
             uses_musl: true
             extra_cargo_args: '--features=run_enclave,odyn'
-          - target: 'x86_64-apple-darwin'
-            host: 'macos-latest'
-          - target: 'aarch64-apple-darwin'
-            host: 'macos-latest'
 
     runs-on: ${{ matrix.host }}
 
@@ -220,12 +216,6 @@ jobs:
           - target: 'aarch64-unknown-linux-musl'
             release_name: 'enclaver-linux-aarch64'
             delay: 120
-          - target: 'x86_64-apple-darwin'
-            release_name: 'enclaver-macos-x86_64'
-            delay: 180
-          - target: 'aarch64-apple-darwin'
-            release_name: 'enclaver-macos-aarch64'
-            delay: 240
 
     steps:
       - name: Download Binaries
