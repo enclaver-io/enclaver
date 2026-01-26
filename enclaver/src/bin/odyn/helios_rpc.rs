@@ -44,16 +44,20 @@ impl HeliosRpcService {
         let kind = helios_config.kind.clone();
         let network = helios_config
             .network
-            .as_ref()
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
             .ok_or_else(|| anyhow!("helios_rpc.network is required when helios_rpc.enabled is true"))?
-            .clone();
+            .to_string();
         let execution_rpc = helios_config
             .execution_rpc
-            .as_ref()
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
             .ok_or_else(|| {
                 anyhow!("helios_rpc.execution_rpc is required when helios_rpc.enabled is true")
             })?
-            .clone();
+            .to_string();
 
         info!(
             "Starting Helios RPC ({:?}) on port {} for network {}",

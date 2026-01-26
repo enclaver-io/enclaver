@@ -318,11 +318,7 @@ name: "test-helios-minimal"
 target: "target-image:latest"
 sources:
   app: "app-image:latest"
-helios_rpc:
-  enabled: true
-    kind: ethereum
-  network: sepolia
-  execution_rpc: "https://eth-sepolia.g.alchemy.com/v2/KEY"
+helios_rpc: { enabled: true, kind: ethereum, network: sepolia, execution_rpc: "https://eth-sepolia.g.alchemy.com/v2/KEY" }
 "#;
 
         let manifest = parse_manifest(raw_manifest).unwrap();
@@ -347,9 +343,7 @@ name: "test-helios-disabled"
 target: "target-image:latest"
 sources:
   app: "app-image:latest"
-helios_rpc:
-  enabled: false
-    kind: ethereum
+helios_rpc: { enabled: false, kind: ethereum }
 "#;
 
         let manifest = parse_manifest(raw_manifest).unwrap();
@@ -391,42 +385,75 @@ api:
         assert!(manifest.helios_rpc.is_none());
     }
 
-        #[test]
-        fn test_parse_helios_rpc_opstack_valid_network() {
-                let raw_manifest = br#"
+    #[test]
+    fn test_parse_helios_rpc_opstack_valid_network() {
+        let raw_manifest = br#"
 version: v1
 name: "test-helios-opstack"
 target: "target-image:latest"
 sources:
-    app: "app-image:latest"
+  app: "app-image:latest"
 helios_rpc:
-    enabled: true
-    kind: opstack
-    network: op-mainnet
-    execution_rpc: "https://example.invalid"
+  enabled: true
+  kind: opstack
+  network: op-mainnet
+  execution_rpc: "https://example.invalid"
 "#;
 
-                let manifest = parse_manifest(raw_manifest).unwrap();
-                let helios = manifest.helios_rpc.expect("helios_rpc should be present");
-                assert!(helios.enabled);
-                assert_eq!(helios.network.as_deref(), Some("op-mainnet"));
-        }
+        let manifest = parse_manifest(raw_manifest).unwrap();
+        let helios = manifest.helios_rpc.expect("helios_rpc should be present");
+        assert!(helios.enabled);
+        assert_eq!(helios.network.as_deref(), Some("op-mainnet"));
+    }
 
-        #[test]
-        fn test_parse_helios_rpc_opstack_rejects_unknown_network() {
-                let raw_manifest = br#"
+    #[test]
+    fn test_parse_helios_rpc_opstack_rejects_unknown_network() {
+        let raw_manifest = br#"
 version: v1
 name: "test-helios-opstack-invalid"
 target: "target-image:latest"
 sources:
-    app: "app-image:latest"
+  app: "app-image:latest"
 helios_rpc:
-    enabled: true
-    kind: opstack
-    network: optimism
-    execution_rpc: "https://example.invalid"
+  enabled: true
+  kind: opstack
+  network: optimism
+  execution_rpc: "https://example.invalid"
 "#;
 
-                assert!(parse_manifest(raw_manifest).is_err());
-        }
+        assert!(parse_manifest(raw_manifest).is_err());
+    }
+
+    #[test]
+    fn test_parse_helios_rpc_rejects_cross_kind_networks() {
+        // ethereum kind with opstack network
+        let raw_manifest = br#"
+version: v1
+name: "test-helios-cross-kind-1"
+target: "target-image:latest"
+sources:
+  app: "app-image:latest"
+helios_rpc:
+  enabled: true
+  kind: ethereum
+  network: op-mainnet
+  execution_rpc: "https://example.invalid"
+"#;
+        assert!(parse_manifest(raw_manifest).is_err());
+
+        // opstack kind with ethereum network
+        let raw_manifest = br#"
+version: v1
+name: "test-helios-cross-kind-2"
+target: "target-image:latest"
+sources:
+  app: "app-image:latest"
+helios_rpc:
+  enabled: true
+  kind: opstack
+  network: mainnet
+  execution_rpc: "https://example.invalid"
+"#;
+        assert!(parse_manifest(raw_manifest).is_err());
+    }
 }
