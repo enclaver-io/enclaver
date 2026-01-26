@@ -347,7 +347,6 @@ mod tests {
         assert!(HeliosRpcService::parse_opstack_network("optimism").is_err());
         assert!(HeliosRpcService::parse_opstack_network("worldchain-sepolia").is_err());
     }
-    }
 
     /// Test address parsing
     #[test]
