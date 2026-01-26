@@ -340,6 +340,7 @@ storage:
 | **Aux API** | `aux_api.listen_port` | Restricted API for sidecars | HTTP to `http://127.0.0.1:<port>` |
 | **KMS Proxy** | `kms_proxy.listen_port` | AWS KMS with attestation | Use AWS SDK normally |
 | **Storage** | N/A (Internal API) | Persistent S3 storage | HTTP to `/v1/s3/...` |
+| **Helios RPC** | `helios_rpc.listen_port` | Trustless Ethereum RPC | HTTP to `http://127.0.0.1:8545` |
 | **Console** | N/A (automatic) | Log streaming | Print to stdout/stderr |
 
 ---
@@ -348,6 +349,7 @@ storage:
 
 - [Internal API Reference](internal_api.md) — Complete API endpoint documentation
 - [Internal API Mock Service](internal_api_mockup.md) — Local development without an enclave
+- [Helios RPC Integration](helios_rpc.md) — Trustless Ethereum light client
 - [enclaver.yaml Reference](enclaver.yaml) — Complete manifest configuration
 - [Architecture Overview](architecture.md) — System architecture and component relationships
 - [Odyn Implementation Details](odyn_details.md) — Deep dive into code structure (for contributors)

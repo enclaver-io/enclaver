@@ -126,13 +126,14 @@ impl KmsRequestIncoming {
     }
 
     fn is_attesting_action(&self) -> bool {
-        if self.head.method == Method::POST && self.head.uri.path() == "/" {
-            if let Some(target) = self.target() {
-                let action = target.to_str().unwrap();
-                return ATTESTING_ACTIONS
-                    .iter()
-                    .any(|a| a.eq_ignore_ascii_case(action));
-            }
+        if self.head.method == Method::POST
+            && self.head.uri.path() == "/"
+            && let Some(target) = self.target()
+        {
+            let action = target.to_str().unwrap();
+            return ATTESTING_ACTIONS
+                .iter()
+                .any(|a| a.eq_ignore_ascii_case(action));
         }
 
         false

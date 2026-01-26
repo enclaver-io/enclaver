@@ -133,6 +133,13 @@ impl Configuration {
             .and_then(|s| s.s3.as_ref())
             .filter(|s3| s3.enabled)
     }
+
+    pub fn helios_config(&self) -> Option<&enclaver::manifest::HeliosRpc> {
+        self.manifest
+            .helios_rpc
+            .as_ref()
+            .filter(|h| h.enabled)
+    }
 }
 
 impl KmsEndpointProvider for Configuration {

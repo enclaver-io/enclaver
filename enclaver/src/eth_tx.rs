@@ -168,7 +168,7 @@ fn parse_hex_bytes(input: &str) -> Result<Vec<u8>> {
     if without_prefix.is_empty() {
         return Ok(Vec::new());
     }
-    if without_prefix.len() % 2 != 0 {
+    if !without_prefix.len().is_multiple_of(2) {
         let mut padded = String::with_capacity(without_prefix.len() + 1);
         padded.push('0');
         padded.push_str(without_prefix);

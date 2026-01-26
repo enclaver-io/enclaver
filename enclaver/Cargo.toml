@@ -2,7 +2,7 @@
 name = "enclaver"
 version = "1.2.2"
 edition = "2024"
-rust-version = "1.86"
+rust-version = "1.92"
 default-run = "enclaver"
 
 [[bin]]
@@ -52,6 +52,7 @@ form_urlencoded = "1.2"
 hyper = { version = "1.7", features = ["http1", "server"] }
 hyper-util = "0.1.17"
 hyper-proxy2 = { version = "0.1.0", features = ["rustls-webpki"], default-features = false }
+alloy-primitives = "1.5.2"
 uuid = { version = "1.18", features = ["v4"] }
 rtnetlink = { version = "0.11", optional = true }
 circbuf = "0.2"
@@ -83,6 +84,9 @@ rlp = "0.5"
 aes-gcm = "0.10"
 hkdf = "0.12"
 
+# Helios light client for trustless Ethereum RPC (optional, only for odyn)
+helios = { git = "https://github.com/sparsity-xyz/helios", branch = "master", optional = true }
+
 [dev-dependencies]
 assert2 = "0.3"
 tls-listener = { version = "0.11", features = ["rustls-core"] }
@@ -91,7 +95,7 @@ aws-credential-types = { version = "1.2.6", features = ["hardcoded-credentials"]
 
 [features]
 run_enclave = ["proxy"]
-odyn = ["vsock", "proxy"]
+odyn = ["vsock", "proxy", "dep:helios"]
 proxy = ["vsock"]
 vsock = ["dep:tokio-vsock", "dep:rtnetlink"]
 tracing = ["dep:console-subscriber", "tokio/tracing"]
