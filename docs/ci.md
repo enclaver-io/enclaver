@@ -75,12 +75,9 @@ There are three main responsibilities in this workflow:
 - Uses a matrix that includes:
   - `x86_64-unknown-linux-musl` (Ubuntu, musl)
   - `aarch64-unknown-linux-musl` (Ubuntu, musl)
-  - `x86_64-apple-darwin` (macOS)
-  - `aarch64-apple-darwin` (macOS)
 - Steps:
   - Install the target toolchain (`actions-rs/toolchain@v1`).
   - Use `Swatinem/rust-cache@v2` to cache `target` artifacts per target.
-  - For non-musl targets (macOS): run native `cargo build --release --target ...`.
   - For musl targets: use the repo's `./.github/actions/cargo-zigbuild` (a wrapper around `cargo-zigbuild`) to produce static musl binaries.
   - Generate SLSA provenance and upload the built binaries as artifacts: `enclaver`, `enclaver-run`, `odyn`.
 
