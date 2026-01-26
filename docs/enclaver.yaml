@@ -52,6 +52,7 @@ defaults:
 # Each entry binds inside the enclave on the given listen_port and is proxied via host localhost.
 # At run time, the host-side runner publishes the same port to the host network as needed.
 ingress:
+  - listen_port: 18001       # aux API (for attestation)
   - listen_port: 8080        # [ODYN + SLEEVE] Required. TCP port (u16) inside the enclave.
                              # ODYN: binds EnclaveProxy on this port inside enclave.
                              # SLEEVE: binds HostProxy on host to forward to enclave vsock.
@@ -61,6 +62,12 @@ ingress:
     tls:
       key_file: key.pem      # [ODYN] Optional. TLS key file for ingress listener.
       cert_file: cert.pem    # [ODYN] Optional. TLS cert file for ingress listener.
+
+  # Example (NOT for production): expose internal API, and Helios RPC externally.
+  # WARNING: Do not expose these endpoints in production environments.
+  # Production note: do NOT expose internal API or Helios RPC via ingress.
+  # - listen_port: 18000       # internal API (full capabilities)
+  # - listen_port: 8545        # Helios RPC
 
 # Egress: enable a local HTTP(S) proxy inside the enclave with allow/deny policy
 # When enabled, odyn sets http_proxy/https_proxy env vars to http://127.0.0.1:<proxy_port>
@@ -104,14 +111,23 @@ kms_proxy:
 
 # Optional: internal API exposed inside the enclave for attestation/encryption/signing
 api:
-  listen_port: 8000          # [ODYN] Required. TCP port (u16) for internal API server.
+  listen_port: 18000         # [ODYN] Required. TCP port (u16) for internal API server.
                              # ODYN: binds ApiService providing /v1/attestation, /v1/eth/*, etc.
 
 # Optional: auxiliary API for restricted external access (e.g., sidecars)
 # If not specified, defaults to api.listen_port + 1 when api is configured.
 aux_api:
-  listen_port: 8001          # [ODYN] Optional. TCP port (u16) for auxiliary API server.
+  listen_port: 18001         # [ODYN] Optional. TCP port (u16) for auxiliary API server.
                              # ODYN: binds AuxApiService with sanitized attestation endpoint.
+
+# Optional: Helios Ethereum light client RPC (trustless ETH JSON-RPC)
+helios_rpc:
+  enabled: false             # [ODYN] Optional. Enable/disable Helios RPC service.
+  listen_port: 8545          # [ODYN] Optional. TCP port (u16) for Helios JSON-RPC (default: 8545).
+  network: mainnet           # [ODYN] Required when enabled. One of: mainnet, sepolia, holesky.
+  execution_rpc: "https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY" # [ODYN] Required when enabled.
+  #consensus_rpc: "https://www.lightclientdata.org" # [ODYN] Optional. Consensus RPC URL override.
+  #checkpoint: "0x..."       # [ODYN] Optional. Weak subjectivity checkpoint override.
 
 # Optional: S3 storage configuration for persistent data
 storage:
@@ -148,16 +164,15 @@ storage:
 # | kms_proxy.endpoints    | ODYN        | Regional KMS endpoint overrides                |
 # | api.listen_port        | ODYN        | Internal API port (attestation, signing, etc.) |
 # | aux_api.listen_port    | ODYN        | Auxiliary API port (restricted access)         |
+# | helios_rpc.enabled     | ODYN        | Enable/disable Helios RPC service              |
+# | helios_rpc.listen_port | ODYN        | Helios JSON-RPC port inside enclave            |
+# | helios_rpc.network     | ODYN        | Helios network selection                       |
+# | helios_rpc.execution_rpc | ODYN      | Execution RPC URL (untrusted, required)        |
+# | helios_rpc.consensus_rpc | ODYN      | Consensus RPC URL override                     |
+# | helios_rpc.checkpoint  | ODYN        | Weak subjectivity checkpoint override          |
 # | storage.s3.enabled     | ODYN        | Enable/disable S3 storage integration          |
 # | storage.s3.bucket      | ODYN        | S3 bucket for persistent storage               |
 # | storage.s3.prefix      | ODYN        | Prefix for S3 key isolation                    |
 # | storage.s3.region      | ODYN        | Regional override for S3 bucket                |
 #
 # ============================================================================
-
-# Examples and tips
-# - To expose your app on host port 8080, add an ingress entry with listen_port: 8080 and have your app
-#   bind to 127.0.0.1:8080 inside the enclave. The host runner will proxy host:8080 to the enclave.
-# - The special hostname "host" can be used by the egress bridge to refer to the host's 127.0.0.1
-#   (use with care; this is not a config field, just a runtime behavior of the host bridge).
-# - Keep your allow list as narrow as possible. Prefer exact hosts or minimal wildcards.
