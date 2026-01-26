@@ -120,14 +120,19 @@ aux_api:
   listen_port: 18001         # [ODYN] Optional. TCP port (u16) for auxiliary API server.
                              # ODYN: binds AuxApiService with sanitized attestation endpoint.
 
-# Optional: Helios Ethereum light client RPC (trustless ETH JSON-RPC)
+# Optional: Helios Ethereum/OP Stack light client RPC (trustless JSON-RPC)
 helios_rpc:
   enabled: false             # [ODYN] Optional. Enable/disable Helios RPC service.
+  kind: ethereum             # [ODYN] Required. Client type: "ethereum" or "opstack".
   listen_port: 8545          # [ODYN] Optional. TCP port (u16) for Helios JSON-RPC (default: 8545).
-  network: mainnet           # [ODYN] Required when enabled. One of: mainnet, sepolia, holesky.
+  # Network name (required when enabled):
+  #   ethereum: mainnet, sepolia, holesky
+  #   opstack:  base, base-sepolia, optimism, optimism-sepolia,
+  #             worldchain, worldchain-sepolia, zora, zora-sepolia
+  network: mainnet           # [ODYN] Required when enabled.
   execution_rpc: "https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY" # [ODYN] Required when enabled.
-  #consensus_rpc: "https://www.lightclientdata.org" # [ODYN] Optional. Consensus RPC URL override.
-  #checkpoint: "0x..."       # [ODYN] Optional. Weak subjectivity checkpoint override.
+  #consensus_rpc: "https://www.lightclientdata.org" # [ODYN] Optional. Consensus RPC URL (ethereum only).
+  #checkpoint: "0x..."       # [ODYN] Optional. Weak subjectivity checkpoint (ethereum only).
 
 # Optional: S3 storage configuration for persistent data
 storage:
@@ -165,6 +170,7 @@ storage:
 # | api.listen_port        | ODYN        | Internal API port (attestation, signing, etc.) |
 # | aux_api.listen_port    | ODYN        | Auxiliary API port (restricted access)         |
 # | helios_rpc.enabled     | ODYN        | Enable/disable Helios RPC service              |
+# | helios_rpc.kind        | ODYN        | Helios client type (ethereum or opstack)       |
 # | helios_rpc.listen_port | ODYN        | Helios JSON-RPC port inside enclave            |
 # | helios_rpc.network     | ODYN        | Helios network selection                       |
 # | helios_rpc.execution_rpc | ODYN      | Execution RPC URL (untrusted, required)        |

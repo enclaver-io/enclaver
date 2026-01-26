@@ -52,17 +52,34 @@ Helios verifies all execution data using Light Client proofs from the Ethereum c
 
 ## Supported Networks
 
+### Ethereum (kind: ethereum)
+
 | Network | Config Value | Status |
 |---------|--------------|--------|
 | Ethereum Mainnet | `mainnet` | ✅ Supported |
 | Ethereum Sepolia | `sepolia` | ✅ Supported |
 | Ethereum Holesky | `holesky` | ✅ Supported |
 
+### OP Stack (kind: opstack)
+
+| Network | Config Value | Status |
+|---------|--------------|--------|
+| Base Mainnet | `base` | ✅ Supported |
+| Base Sepolia | `base-sepolia` | ✅ Supported |
+| Optimism Mainnet | `optimism` | ✅ Supported |
+| Optimism Sepolia | `optimism-sepolia` | ✅ Supported |
+| Worldchain Mainnet | `worldchain` | ✅ Supported |
+| Worldchain Sepolia | `worldchain-sepolia` | ✅ Supported |
+| Zora Mainnet | `zora` | ✅ Supported |
+| Zora Sepolia | `zora-sepolia` | ✅ Supported |
+
 ---
 
 ## Configuration
 
 Enable Helios in your `enclaver.yaml`:
+
+### Ethereum Example
 
 ```yaml
 version: v1
@@ -72,9 +89,10 @@ target: "my-defi-app:enclave"
 sources:
   app: "my-defi-app:latest"
 
-# Enable Helios light client
+# Enable Helios light client for Ethereum
 helios_rpc:
   enabled: true
+  kind: ethereum           # Required: "ethereum" or "opstack"
   listen_port: 8545
   network: mainnet
   execution_rpc: "https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY"
@@ -90,16 +108,44 @@ api:
   listen_port: 9000
 ```
 
+### OP Stack Example (Base Sepolia)
+
+```yaml
+version: v1
+name: "my-l2-app"
+target: "my-l2-app:enclave"
+
+sources:
+  app: "my-l2-app:latest"
+
+# Enable Helios light client for OP Stack
+helios_rpc:
+  enabled: true
+  kind: opstack            # Required: "ethereum" or "opstack"
+  listen_port: 8545
+  network: base-sepolia
+  execution_rpc: "https://rpc.ankr.com/base_sepolia"
+
+# Egress must allow Helios to reach external RPCs
+egress:
+  allow:
+    - "rpc.ankr.com"
+
+api:
+  listen_port: 9000
+```
+
 ### Configuration Options
 
 | Option | Required | Default | Description |
 |--------|----------|---------|-------------|
 | `enabled` | No | `false` | Enable/disable Helios |
+| `kind` | **Yes** | — | Client type: `ethereum` or `opstack` |
 | `listen_port` | No | `8545` | Port for JSON-RPC server (internal only) |
-| `network` | Yes | — | Network to connect to (see table above) |
+| `network` | Yes | — | Network to connect to (see tables above) |
 | `execution_rpc` | Yes | — | Untrusted execution RPC URL |
-| `consensus_rpc` | No | `lightclientdata.org` | Consensus RPC URL |
-| `checkpoint` | No | Auto-fetched | Weak subjectivity checkpoint |
+| `consensus_rpc` | No | `lightclientdata.org` | Consensus RPC URL (ethereum only) |
+| `checkpoint` | No | Auto-fetched | Weak subjectivity checkpoint (ethereum only) |
 
 ---
 

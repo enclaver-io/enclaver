@@ -1,6 +1,6 @@
 //! Helios Ethereum Light Client RPC Service
 //!
-//! Provides a trustless Ethereum JSON-RPC endpoint inside the enclave.
+//! Provides a trustless Ethereum/OP Stack JSON-RPC endpoint inside the enclave.
 //! All execution data is cryptographically verified using Light Client proofs.
 
 use std::net::SocketAddr;
@@ -9,15 +9,18 @@ use std::time::Duration;
 
 use alloy_primitives::B256;
 use anyhow::{Result, anyhow};
+use enclaver::manifest::HeliosRpcKind;
 use helios::ethereum::{EthereumClient, EthereumClientBuilder};
 use helios::ethereum::config::networks::Network;
 use helios::ethereum::database::ConfigDB;
+use helios::opstack::{OpStackClient, OpStackClientBuilder};
+use helios::opstack::config::Network as OpNetwork;
 use log::{info, warn};
 use tokio::task::JoinHandle;
 
 use crate::config::Configuration;
 
-/// Helios RPC Service for trustless Ethereum access
+/// Helios RPC Service for trustless Ethereum/OP Stack access
 pub struct HeliosRpcService {
     task: Option<JoinHandle<()>>,
     ready_rx: Option<tokio::sync::oneshot::Receiver<bool>>,
@@ -37,6 +40,7 @@ impl HeliosRpcService {
             }
         };
 
+        let kind = helios_config.kind.clone();
         let network = helios_config
             .network
             .as_ref()
@@ -51,8 +55,8 @@ impl HeliosRpcService {
             .clone();
 
         info!(
-            "Starting Helios RPC on port {} for network {}",
-            helios_config.listen_port, network
+            "Starting Helios RPC ({:?}) on port {} for network {}",
+            kind, helios_config.listen_port, network
         );
 
         let port = helios_config.listen_port;
@@ -62,16 +66,25 @@ impl HeliosRpcService {
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
         let task = tokio::task::spawn(async move {
-            match Self::run_helios(
-                port,
-                &network,
-                &execution_rpc,
-                consensus_rpc.as_deref(),
-                checkpoint.as_deref(),
-            )
-            .await
-            {
-                Ok(_client) => {
+            let result = match kind {
+                HeliosRpcKind::Ethereum => {
+                    Self::run_helios_ethereum(
+                        port,
+                        &network,
+                        &execution_rpc,
+                        consensus_rpc.as_deref(),
+                        checkpoint.as_deref(),
+                    )
+                    .await
+                    .map(|_| ())
+                }
+                HeliosRpcKind::Opstack => {
+                    Self::run_helios_opstack(port, &network, &execution_rpc).await.map(|_| ())
+                }
+            };
+
+            match result {
+                Ok(()) => {
                     info!("Helios synced and ready on port {}", port);
                     let _ = ready_tx.send(true);
 
@@ -93,7 +106,7 @@ impl HeliosRpcService {
         })
     }
 
-    async fn run_helios(
+    async fn run_helios_ethereum(
         port: u16,
         network: &str,
         execution_rpc: &str,
@@ -104,12 +117,9 @@ impl HeliosRpcService {
             "mainnet" => Network::Mainnet,
             "sepolia" => Network::Sepolia,
             "holesky" => Network::Holesky,
-            // Note: OP Stack and Linea require separate builders from helios-opstack/helios-linea
-            // For now, we support Ethereum networks only
             other => {
                 return Err(anyhow!(
-                    "Unsupported network '{}'. Supported: mainnet, sepolia, holesky. \
-                     OP Stack and Linea support coming soon.",
+                    "Unsupported ethereum network '{}'. Supported: mainnet, sepolia, holesky.",
                     other
                 ));
             }
@@ -120,7 +130,7 @@ impl HeliosRpcService {
             .parse()
             .map_err(|e| anyhow!("Invalid address: {}", e))?;
 
-        info!("Building Helios client for {} network", network);
+        info!("Building Helios Ethereum client for {} network", network);
         info!("Execution RPC: {}", execution_rpc);
         if let Some(consensus) = consensus_rpc {
             info!("Consensus RPC: {}", consensus);
@@ -153,7 +163,7 @@ impl HeliosRpcService {
             .build()
             .map_err(|e| anyhow!("Failed to build Helios client: {}", e))?;
 
-        info!("Helios client built, waiting for sync...");
+        info!("Helios Ethereum client built, waiting for sync...");
 
         // Wait for initial sync
         client
@@ -161,7 +171,63 @@ impl HeliosRpcService {
             .await
             .map_err(|e| anyhow!("Helios sync failed: {}", e))?;
 
-        info!("Helios sync complete");
+        info!("Helios Ethereum sync complete");
+
+        Ok(client)
+    }
+
+    async fn run_helios_opstack(
+        port: u16,
+        network: &str,
+        execution_rpc: &str,
+    ) -> Result<OpStackClient> {
+        let net = match network.to_lowercase().as_str() {
+            "base" => OpNetwork::Base,
+            "base-sepolia" => OpNetwork::BaseSepolia,
+            "optimism" => OpNetwork::Optimism,
+            "optimism-sepolia" => OpNetwork::OptimismSepolia,
+            "worldchain" => OpNetwork::Worldchain,
+            "worldchain-sepolia" => OpNetwork::WorldchainSepolia,
+            "zora" => OpNetwork::Zora,
+            "zora-sepolia" => OpNetwork::ZoraSepolia,
+            other => {
+                return Err(anyhow!(
+                    "Unsupported opstack network '{}'. Supported: base, base-sepolia, \
+                     optimism, optimism-sepolia, worldchain, worldchain-sepolia, \
+                     zora, zora-sepolia.",
+                    other
+                ));
+            }
+        };
+
+        // Bind only to localhost — internal enclave access only
+        let addr: SocketAddr = format!("127.0.0.1:{}", port)
+            .parse()
+            .map_err(|e| anyhow!("Invalid address: {}", e))?;
+
+        info!("Building Helios OP Stack client for {} network", network);
+        info!("Execution RPC: {}", execution_rpc);
+
+        let builder = OpStackClientBuilder::new()
+            .network(net)
+            .execution_rpc(execution_rpc)
+            .map_err(|e| anyhow!("Invalid execution RPC: {}", e))?
+            .rpc_address(addr);
+
+        let client = builder
+            .build()
+            .await
+            .map_err(|e| anyhow!("Failed to build Helios OP Stack client: {}", e))?;
+
+        info!("Helios OP Stack client built, waiting for sync...");
+
+        // Wait for initial sync
+        client
+            .wait_synced()
+            .await
+            .map_err(|e| anyhow!("Helios OP Stack sync failed: {}", e))?;
+
+        info!("Helios OP Stack sync complete");
 
         Ok(client)
     }

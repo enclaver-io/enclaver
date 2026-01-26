@@ -120,6 +120,16 @@ pub struct S3StorageConfig {
     pub region: Option<String>,
 }
 
+/// Helios client kind: ethereum or opstack
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HeliosRpcKind {
+    /// Ethereum L1 light client (mainnet, sepolia, holesky)
+    Ethereum,
+    /// OP Stack L2 light client (base, optimism, etc.)
+    Opstack,
+}
+
 /// Configuration for Helios Ethereum light client RPC
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -127,16 +137,20 @@ pub struct HeliosRpc {
     /// Enable/disable Helios RPC service
     #[serde(default)]
     pub enabled: bool,
+    /// Client kind: "ethereum" or "opstack" (required)
+    pub kind: HeliosRpcKind,
     /// Port for JSON-RPC server (default: 8545)
     #[serde(default = "default_helios_port")]
     pub listen_port: u16,
-    /// Network: "mainnet", "sepolia", "holesky" (required when enabled)
+    /// Network name (required when enabled):
+    /// - ethereum: "mainnet", "sepolia", "holesky"
+    /// - opstack: "base", "base-sepolia", "optimism", "optimism-sepolia", etc.
     pub network: Option<String>,
     /// Untrusted execution RPC URL (required when enabled)
     pub execution_rpc: Option<String>,
-    /// Consensus RPC URL (optional, defaults to lightclientdata.org)
+    /// Consensus RPC URL (optional, defaults to lightclientdata.org for ethereum)
     pub consensus_rpc: Option<String>,
-    /// Weak subjectivity checkpoint (optional, auto-fetched if not provided)
+    /// Weak subjectivity checkpoint (optional, auto-fetched if not provided; ethereum only)
     pub checkpoint: Option<String>,
 }
 
@@ -150,13 +164,13 @@ impl HeliosRpc {
             return Ok(());
         }
 
-        if self
+        let network = self
             .network
             .as_ref()
             .map(|value| value.trim())
-            .filter(|value| !value.is_empty())
-            .is_none()
-        {
+            .filter(|value| !value.is_empty());
+
+        if network.is_none() {
             bail!("helios_rpc.network is required when helios_rpc.enabled is true");
         }
 
@@ -168,6 +182,18 @@ impl HeliosRpc {
             .is_none()
         {
             bail!("helios_rpc.execution_rpc is required when helios_rpc.enabled is true");
+        }
+
+        // Validate network name for ethereum kind
+        if self.kind == HeliosRpcKind::Ethereum {
+            let net = network.unwrap().to_lowercase();
+            if !matches!(net.as_str(), "mainnet" | "sepolia" | "holesky") {
+                bail!(
+                    "helios_rpc.network '{}' is invalid for kind=ethereum. \
+                     Supported: mainnet, sepolia, holesky",
+                    net
+                );
+            }
         }
 
         Ok(())
