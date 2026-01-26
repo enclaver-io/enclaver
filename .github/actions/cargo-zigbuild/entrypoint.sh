@@ -3,7 +3,16 @@
 set -euo pipefail
 
 target=""
-args=("$@")
+
+# In GitHub Actions docker actions, `with.args: |` is passed as ONE argument
+# containing newlines. Locally you might pass multiple argv items.
+if [[ $# -eq 1 ]]; then
+	args_string="$1"
+	args_string="${args_string//$'\n'/ }"
+	read -r -a args <<< "$args_string"
+else
+	args=("$@")
+fi
 
 for ((i=0; i<${#args[@]}; i++)); do
 	case "${args[$i]}" in
@@ -24,4 +33,4 @@ if [[ -n "$target" ]]; then
 	rustup target add "$target" --toolchain "$toolchain"
 fi
 
-exec cargo zigbuild "$@"
+exec cargo zigbuild "${args[@]}"
