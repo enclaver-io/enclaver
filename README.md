@@ -70,6 +70,7 @@ The diagram below shows how the release Docker image runs as a single container,
 │   - kms-proxy: talk to external KMS over network                             │
 │   - encryption: ECDH (P-384) encrypt/decrypt for secure client communication │
 │   - storage:  S3 persistent storage integration via Internal API             │
+│   - helios:   trustless Ethereum/OP Stack light client RPC                   │
 │   - console:  collect App stdout/stderr --> container logs                   │
 │   - api:      internal API for attestation, signing, encryption, storage     │
 │                                                                              │

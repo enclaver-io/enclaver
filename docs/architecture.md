@@ -179,6 +179,7 @@ sequenceDiagram
   - Start enclave-side egress proxy (intercept app's outbound traffic)
   - Start KMS proxy (handle AWS KMS requests with attestation)
   - Start internal API server (attestation, encryption, Ethereum endpoints)
+  - Start Helios RPC service (trustless Ethereum/OP Stack light client)
   - Launch and supervise the user application
   - Capture app stdout/stderr and expose via vsock
   - Report application status to host via vsock
@@ -203,6 +204,7 @@ sequenceDiagram
 │  │  │  • Egress Proxy (app HTTP → vsock)         │  │  │
 │  │  │  • KMS Proxy (AWS KMS with attestation)    │  │  │
 │  │  │  • API Server (attestation, encryption)    │  │  │
+│  │  │  • Helios RPC (trustless Ethereum/OP Stack light client)  │  │  │
 │  │  │  • Console (log capture & streaming)       │  │  │
 │  │  │  • Launcher (app process management)       │  │  │
 │  │  └────────────────────────────────────────────┘  │  │
@@ -284,6 +286,7 @@ sequenceDiagram
 | Sleeve (enclaver-run) | | ✓ |
 | nitro-cli | | ✓ |
 | application.eif | | ✓ |
+| Helios RPC Service | ✓ | |
 | Host-side Proxies | | ✓ |
 | Enclave-side Proxies | ✓ | |
 
@@ -393,6 +396,7 @@ graph TB
             ENCLAVE_EGRESS["Egress Proxy"]
             KMS_PROXY["KMS Proxy"]
             API["API Server"]
+            HELIOS["Helios RPC"]
             CONSOLE["Console<br/>(Log Capture)"]
             LAUNCHER["Launcher"]
         end
@@ -412,6 +416,7 @@ graph TB
     ODYN --> ENCLAVE_EGRESS
     ODYN --> KMS_PROXY
     ODYN --> API
+    ODYN --> HELIOS
     ODYN --> CONSOLE
     ODYN --> LAUNCHER
     
