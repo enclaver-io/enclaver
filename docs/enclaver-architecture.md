@@ -22,7 +22,7 @@ Repository layout (important files)
 - `enclaver/src/manifest.rs` — `enclaver.yaml` schema and loader.
 - `enclaver/src/run.rs` — enclave runtime orchestration (feature `run_enclave`).
 - `enclaver/src/run_container.rs` — start and stream the sleeve container image on the host.
-- `enclaver/src/bin/odyn/helios_rpc.rs` — Helios Ethereum light client RPC service.
+- `enclaver/src/bin/odyn/helios_rpc.rs` — Helios Ethereum/OP Stack light client RPC service.
 - `enclaver/src/proxy/` — network proxy implementations: `ingress`, `egress_http`, (optionally) `kms`, `pkcs7`.
 - `enclaver/src/policy/` — egress allow/deny (domain/ip pattern filters).
 - `enclaver/src/vsock.rs` — vsock helper wrappers and TLS-on-vsock helpers.
@@ -76,7 +76,7 @@ Top-level modules and responsibilities
   - Small HTTP handler exposing `/v1/attestation` (POST) to return attestation docs, `/v1/encryption/*` endpoints for ECDH-based encryption/decryption, and `/v1/eth/*` for Ethereum key operations.
 
 - helios_rpc (`src/bin/odyn/helios_rpc.rs`)
-  - Trustless Ethereum light client RPC service that runs inside the enclave and verifies execution data via consensus proofs.
+  - Trustless Ethereum/OP Stack light client RPC service that runs inside the enclave and verifies execution data via consensus proofs.
 
 - encryption_key (`src/encryption_key.rs`) (feature `odyn`)
   - P-384 ECDH key pair management for secure client-enclave encryption. Provides DER/PEM encoding, shared key derivation via ECDH + HKDF, and AES-256-GCM encrypt/decrypt operations.

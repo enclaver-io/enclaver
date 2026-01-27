@@ -1,4 +1,4 @@
-//! Helios Ethereum Light Client RPC Service
+//! Helios Ethereum/OP Stack Light Client RPC Service
 //!
 //! Provides a trustless Ethereum/OP Stack JSON-RPC endpoint inside the enclave.
 //! All execution data is cryptographically verified using Light Client proofs.
