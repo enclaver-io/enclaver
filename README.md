@@ -16,6 +16,15 @@ Run this command to install the latest version of the `enclaver` CLI tool:
 
 See [examples/hn-fetcher/readme.md](examples/hn-fetcher/readme.md) for a quick start example of building and running an enclave application with Enclaver.
 
+## Important: HTTP(S) Proxy Support for Enclave Apps
+
+Applications running **inside the enclave** have no direct outbound network access. Any external HTTP/HTTPS traffic must go through Enclaver/Odyn's egress proxy.
+
+- Your application (and the HTTP client library it uses) **must** support proxy routing via `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` (or be explicitly configured to use a proxy).
+- Some popular client APIs intentionally **ignore** these environment variables by default (e.g. Node.js `fetch` / undici without a proxy agent). In that case the app may work outside the enclave but **fail inside**.
+
+See [docs/http_proxy_support_guidance_for_enclave_applications.md](docs/http_proxy_support_guidance_for_enclave_applications.md) for language/library-specific guidance and common pitfalls.
+
 ## Documentation
 
 ### Architecture
