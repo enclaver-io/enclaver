@@ -6,9 +6,20 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use enclaver::constants::{HTTP_EGRESS_PROXY_PORT, MANIFEST_FILE_NAME};
-use enclaver::manifest::{self, Manifest};
+use enclaver::manifest::{self, HeliosRpcKind, Manifest};
 use enclaver::proxy::kms::KmsEndpointProvider;
 use enclaver::tls;
+
+#[derive(Clone, Debug)]
+pub struct HeliosRuntimeConfig {
+    pub kind: HeliosRpcKind,
+    pub network: String,
+    pub execution_rpc: String,
+    pub consensus_rpc: Option<String>,
+    pub checkpoint: Option<String>,
+    pub listen_port: u16,
+    pub chain_id: Option<String>,
+}
 
 pub struct Configuration {
     pub config_dir: PathBuf,
@@ -134,11 +145,78 @@ impl Configuration {
             .filter(|s3| s3.enabled)
     }
 
-    pub fn helios_config(&self) -> Option<&enclaver::manifest::HeliosRpc> {
+    pub fn kms_integration_config(&self) -> Option<&enclaver::manifest::KmsIntegration> {
         self.manifest
-            .helios_rpc
+            .kms_integration
             .as_ref()
-            .filter(|h| h.enabled)
+            .filter(|kms| kms.enabled)
+    }
+
+    pub fn helios_configs(&self) -> Vec<HeliosRuntimeConfig> {
+        // New multi-chain manifest shape.
+        if let Some(chain_access) = self.manifest.chain_access.as_ref() {
+            let mut configs = Vec::new();
+            if let Some(registry_chain) = chain_access.registry_chain.as_ref() {
+                configs.push(HeliosRuntimeConfig {
+                    kind: registry_chain.kind.clone(),
+                    network: registry_chain.network.clone(),
+                    execution_rpc: registry_chain.execution_rpc.clone(),
+                    consensus_rpc: registry_chain.consensus_rpc.clone(),
+                    checkpoint: registry_chain.checkpoint.clone(),
+                    listen_port: registry_chain.local_rpc_port,
+                    chain_id: Some("registry".to_string()),
+                });
+            }
+
+            if let Some(providers) = chain_access.app_rpc_providers.as_ref() {
+                let mut keys: Vec<&String> = providers.keys().collect();
+                keys.sort();
+                for key in keys {
+                    if let Some(provider) = providers.get(key) {
+                        configs.push(HeliosRuntimeConfig {
+                            kind: provider.kind.clone(),
+                            network: provider.network.clone(),
+                            execution_rpc: provider.execution_rpc.clone(),
+                            consensus_rpc: provider.consensus_rpc.clone(),
+                            checkpoint: provider.checkpoint.clone(),
+                            listen_port: provider.local_rpc_port,
+                            chain_id: Some((*key).clone()),
+                        });
+                    }
+                }
+            }
+
+            if !configs.is_empty() {
+                return configs;
+            }
+        }
+
+        // Backward-compatible single Helios shape.
+        if let Some(legacy) = self.manifest.helios_rpc.as_ref().filter(|h| h.enabled) {
+            let network = legacy
+                .network
+                .as_ref()
+                .map(|n| n.trim().to_string())
+                .unwrap_or_default();
+            let execution_rpc = legacy
+                .execution_rpc
+                .as_ref()
+                .map(|v| v.trim().to_string())
+                .unwrap_or_default();
+            if !network.is_empty() && !execution_rpc.is_empty() {
+                return vec![HeliosRuntimeConfig {
+                    kind: legacy.kind.clone(),
+                    network,
+                    execution_rpc,
+                    consensus_rpc: legacy.consensus_rpc.clone(),
+                    checkpoint: legacy.checkpoint.clone(),
+                    listen_port: legacy.listen_port,
+                    chain_id: None,
+                }];
+            }
+        }
+
+        Vec::new()
     }
 }
 

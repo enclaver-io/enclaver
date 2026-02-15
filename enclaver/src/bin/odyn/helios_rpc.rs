@@ -19,103 +19,96 @@ use helios::opstack::config::NetworkConfig as OpNetworkConfig;
 use log::{info, warn};
 use tokio::task::JoinHandle;
 
-use crate::config::Configuration;
+use crate::config::{Configuration, HeliosRuntimeConfig};
 
 /// Helios RPC Service for trustless Ethereum/OP Stack access
 pub struct HeliosRpcService {
-    task: Option<JoinHandle<()>>,
-    ready_rx: Option<tokio::sync::oneshot::Receiver<bool>>,
+    tasks: Vec<JoinHandle<()>>,
+    ready_rxs: Vec<tokio::sync::oneshot::Receiver<bool>>,
 }
 
 impl HeliosRpcService {
     /// Start Helios RPC service in background (non-blocking).
     /// App can start immediately while Helios syncs.
     pub async fn start(config: &Configuration) -> Result<Self> {
-        let helios_config = match config.helios_config() {
-            Some(cfg) => cfg,
-            None => {
-                return Ok(Self {
-                    task: None,
-                    ready_rx: None,
-                });
-            }
-        };
+        let helios_configs = config.helios_configs();
+        if helios_configs.is_empty() {
+            return Ok(Self {
+                tasks: Vec::new(),
+                ready_rxs: Vec::new(),
+            });
+        }
 
-        let kind = helios_config.kind.clone();
-        let network = helios_config
-            .network
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| anyhow!("helios_rpc.network is required when helios_rpc.enabled is true"))?
-            .to_string();
-        let execution_rpc = helios_config
-            .execution_rpc
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                anyhow!("helios_rpc.execution_rpc is required when helios_rpc.enabled is true")
-            })?
-            .to_string();
+        let mut tasks = Vec::with_capacity(helios_configs.len());
+        let mut ready_rxs = Vec::with_capacity(helios_configs.len());
 
-        info!(
-            "Starting Helios RPC ({:?}) on port {} for network {}",
-            kind, helios_config.listen_port, network
-        );
+        for helios_config in helios_configs {
+            let HeliosRuntimeConfig {
+                kind,
+                network,
+                execution_rpc,
+                consensus_rpc,
+                checkpoint,
+                listen_port: port,
+                chain_id,
+            } = helios_config;
 
-        let port = helios_config.listen_port;
-        let consensus_rpc = helios_config.consensus_rpc.clone();
-        let checkpoint = helios_config.checkpoint.clone();
+            info!(
+                "Starting Helios RPC ({:?}) on port {} for network {} ({})",
+                kind,
+                port,
+                network,
+                chain_id.unwrap_or_else(|| "legacy".to_string())
+            );
 
-        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+            let task = tokio::task::spawn(async move {
+                let result = match kind {
+                    HeliosRpcKind::Ethereum => {
+                        Self::run_helios_ethereum(
+                            port,
+                            &network,
+                            &execution_rpc,
+                            consensus_rpc.as_deref(),
+                            checkpoint.as_deref(),
+                        )
+                        .await
+                        .map(|_| ())
+                    }
+                    HeliosRpcKind::Opstack => {
+                        Self::run_helios_opstack(
+                            port,
+                            &network,
+                            &execution_rpc,
+                            consensus_rpc.as_deref(),
+                        )
+                        .await
+                        .map(|_| ())
+                    }
+                };
 
-        let task = tokio::task::spawn(async move {
-            let result = match kind {
-                HeliosRpcKind::Ethereum => {
-                    Self::run_helios_ethereum(
-                        port,
-                        &network,
-                        &execution_rpc,
-                        consensus_rpc.as_deref(),
-                        checkpoint.as_deref(),
-                    )
-                    .await
-                    .map(|_| ())
-                }
-                HeliosRpcKind::Opstack => {
-                    Self::run_helios_opstack(
-                        port,
-                        &network,
-                        &execution_rpc,
-                        consensus_rpc.as_deref(),
-                    )
-                    .await
-                    .map(|_| ())
-                }
-            };
+                match result {
+                    Ok(()) => {
+                        info!("Helios synced and ready on port {}", port);
+                        let _ = ready_tx.send(true);
 
-            match result {
-                Ok(()) => {
-                    info!("Helios synced and ready on port {}", port);
-                    let _ = ready_tx.send(true);
-
-                    // Keep task alive — Helios client owns the RPC server
-                    loop {
-                        tokio::time::sleep(Duration::from_secs(3600)).await;
+                        // Keep task alive — Helios client owns the RPC server
+                        loop {
+                            tokio::time::sleep(Duration::from_secs(3600)).await;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Helios failed to start on {}: {}", port, e);
+                        let _ = ready_tx.send(false);
                     }
                 }
-                Err(e) => {
-                    warn!("Helios failed to start: {}", e);
-                    let _ = ready_tx.send(false);
-                }
-            }
-        });
+            });
 
-        Ok(Self {
-            task: Some(task),
-            ready_rx: Some(ready_rx),
-        })
+            tasks.push(task);
+            ready_rxs.push(ready_rx);
+        }
+
+        Ok(Self { tasks, ready_rxs })
     }
 
     async fn run_helios_ethereum(
@@ -260,16 +253,21 @@ impl HeliosRpcService {
     /// Returns true if synced, false if failed, or true if Helios is not configured.
     #[allow(dead_code)]
     pub async fn wait_ready(&mut self) -> bool {
-        if let Some(rx) = self.ready_rx.take() {
-            rx.await.unwrap_or(false)
-        } else {
-            true // No Helios configured, considered "ready"
+        if self.ready_rxs.is_empty() {
+            return true;
         }
+
+        let mut all_ready = true;
+        for rx in self.ready_rxs.drain(..) {
+            all_ready &= rx.await.unwrap_or(false);
+        }
+
+        all_ready
     }
 
     /// Stop the Helios service
     pub async fn stop(self) {
-        if let Some(task) = self.task {
+        for task in self.tasks {
             task.abort();
             let _ = task.await;
         }
@@ -287,8 +285,8 @@ mod tests {
         // Since we can't easily construct Configuration in tests, 
         // we test the service's behavior by checking the struct fields
         let service = HeliosRpcService {
-            task: None,
-            ready_rx: None,
+            tasks: Vec::new(),
+            ready_rxs: Vec::new(),
         };
         
         // Should be ready immediately since no Helios is configured
@@ -379,8 +377,8 @@ mod tests {
     #[tokio::test]
     async fn test_helios_service_stop_no_task() {
         let service = HeliosRpcService {
-            task: None,
-            ready_rx: None,
+            tasks: Vec::new(),
+            ready_rxs: Vec::new(),
         };
         
         // Should not panic

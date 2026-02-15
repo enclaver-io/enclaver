@@ -83,6 +83,8 @@ hex = "0.4"
 rlp = "0.5"
 aes-gcm = "0.10"
 hkdf = "0.12"
+reqwest = { version = "0.12.23", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
+ethabi = "18.0.0"
 
 # Helios light client for trustless Ethereum RPC (optional, only for odyn)
 helios = { git = "https://github.com/sparsity-xyz/helios", branch = "master", optional = true }
@@ -90,7 +92,6 @@ helios = { git = "https://github.com/sparsity-xyz/helios", branch = "master", op
 [dev-dependencies]
 assert2 = "0.3"
 tls-listener = { version = "0.11", features = ["rustls-core"] }
-reqwest = { version = "0.12.23", default-features = false, features = ["rustls-tls-webpki-roots"] }
 aws-credential-types = { version = "1.2.6", features = ["hardcoded-credentials"] }
 
 [features]

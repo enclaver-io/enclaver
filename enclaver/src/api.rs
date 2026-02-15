@@ -10,8 +10,10 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::proxy::s3::S3Proxy;
+use crate::proxy::nova_kms::NovaKmsProxy;
 use crate::encryption_key::EncryptionKey;
 use crate::eth_key::EthKey;
 use crate::eth_tx::{self, AccessListEntry, TxSignature, UnsignedEip1559Tx};
@@ -26,6 +28,7 @@ pub struct ApiHandler {
     encryption_key: Arc<EncryptionKey>,
     nsm: Option<Arc<Nsm>>,
     s3_proxy: Option<Arc<S3Proxy>>,
+    kms_proxy: Option<Arc<NovaKmsProxy>>,
 }
 
 impl ApiHandler {
@@ -33,13 +36,22 @@ impl ApiHandler {
         attester: Box<dyn AttestationProvider + Send + Sync>,
         nsm: Option<Arc<Nsm>>,
     ) -> Result<Self> {
-        Self::with_s3(attester, nsm, None)
+        Self::with_integrations(attester, nsm, None, None)
     }
 
     pub fn with_s3(
         attester: Box<dyn AttestationProvider + Send + Sync>,
         nsm: Option<Arc<Nsm>>,
         s3_proxy: Option<Arc<S3Proxy>>,
+    ) -> Result<Self> {
+        Self::with_integrations(attester, nsm, s3_proxy, None)
+    }
+
+    pub fn with_integrations(
+        attester: Box<dyn AttestationProvider + Send + Sync>,
+        nsm: Option<Arc<Nsm>>,
+        s3_proxy: Option<Arc<S3Proxy>>,
+        kms_proxy: Option<Arc<NovaKmsProxy>>,
     ) -> Result<Self> {
         let eth_key = match nsm.as_ref() {
             Some(nsm_ref) => match Self::collect_random_bytes(nsm_ref, 32).and_then(|bytes| {
@@ -96,6 +108,7 @@ impl ApiHandler {
             encryption_key,
             nsm,
             s3_proxy,
+            kms_proxy,
         })
     }
 
@@ -181,6 +194,50 @@ impl ApiHandler {
                     Some(proxy) => proxy.handle_list(body).await,
                     None => Self::s3_not_configured(),
                 },
+                _ => Ok(http_util::method_not_allowed()),
+            },
+            "/v1/kms/derive" => match head.method {
+                Method::POST => match &self.kms_proxy {
+                    Some(proxy) => proxy.handle_derive(body).await,
+                    None => Self::kms_not_configured(),
+                },
+                _ => Ok(http_util::method_not_allowed()),
+            },
+            "/v1/kms/kv/get" => match head.method {
+                Method::POST => match &self.kms_proxy {
+                    Some(proxy) => proxy.handle_kv_get(body).await,
+                    None => Self::kms_not_configured(),
+                },
+                _ => Ok(http_util::method_not_allowed()),
+            },
+            "/v1/kms/kv/put" => match head.method {
+                Method::POST => match &self.kms_proxy {
+                    Some(proxy) => proxy.handle_kv_put(body).await,
+                    None => Self::kms_not_configured(),
+                },
+                _ => Ok(http_util::method_not_allowed()),
+            },
+            "/v1/kms/kv/delete" => match head.method {
+                Method::POST => match &self.kms_proxy {
+                    Some(proxy) => proxy.handle_kv_delete(body).await,
+                    None => Self::kms_not_configured(),
+                },
+                _ => Ok(http_util::method_not_allowed()),
+            },
+            "/v1/app-wallet/address" => match head.method {
+                Method::GET => self.handle_app_wallet_address().await,
+                _ => Ok(http_util::method_not_allowed()),
+            },
+            "/v1/app-wallet/sign" => match head.method {
+                Method::POST => self.handle_app_wallet_sign(body).await,
+                _ => Ok(http_util::method_not_allowed()),
+            },
+            "/v1/app-wallet/proof" => match head.method {
+                Method::POST => self.handle_app_wallet_proof(body).await,
+                _ => Ok(http_util::method_not_allowed()),
+            },
+            "/v1/app-wallet/sign-tx" => match head.method {
+                Method::POST => self.handle_app_wallet_sign_tx(body).await,
                 _ => Ok(http_util::method_not_allowed()),
             },
             _ => Ok(http_util::not_found()),
@@ -328,6 +385,241 @@ impl ApiHandler {
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, "application/json")
             .body(Full::new(Bytes::from(serde_json::to_string(&response)?)))?)
+    }
+
+    async fn handle_app_wallet_address(&self) -> Result<Response<Full<Bytes>>> {
+        let proxy = match &self.kms_proxy {
+            Some(proxy) => proxy,
+            None => return Self::kms_not_configured(),
+        };
+
+        let authz = match proxy.ensure_app_wallet_authorized().await {
+            Ok(v) => v,
+            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+        };
+        let address = match proxy.app_wallet_address().await {
+            Ok(v) => v,
+            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+        };
+
+        let response = json::object! {
+            address: address,
+            app_id: authz.app_id,
+            instance_wallet: authz.instance_wallet,
+        };
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "application/json")
+            .body(Full::new(Bytes::from(json::stringify(response))))?)
+    }
+
+    async fn handle_app_wallet_sign(&self, body: Bytes) -> Result<Response<Full<Bytes>>> {
+        let proxy = match &self.kms_proxy {
+            Some(proxy) => proxy,
+            None => return Self::kms_not_configured(),
+        };
+
+        let req: EthSignRequest = match serde_json::from_slice(&body) {
+            Ok(req) => req,
+            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+        };
+
+        let msg_bytes = req.message.as_bytes();
+        if msg_bytes.is_empty() {
+            return Ok(http_util::bad_request("Message cannot be empty".to_string()));
+        }
+
+        let authz = match proxy.ensure_app_wallet_authorized().await {
+            Ok(v) => v,
+            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+        };
+
+        let app_wallet_key = match proxy.app_wallet_key().await {
+            Ok(v) => v,
+            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+        };
+
+        // Construct EIP-191 personal message prefix.
+        let prefix = format!("\u{0019}Ethereum Signed Message:\n{}", msg_bytes.len());
+        let mut prefixed_msg = prefix.into_bytes();
+        prefixed_msg.extend_from_slice(msg_bytes);
+        let signature = app_wallet_key.sign_message(&prefixed_msg);
+
+        let audit_payload = serde_json::json!({
+            "message_len": msg_bytes.len()
+        });
+        proxy
+            .audit_local_action("app_wallet_sign", Some(&audit_payload), "ok", None)
+            .await;
+
+        let response = json::object! {
+            signature: format!("0x{}", hex::encode(signature)),
+            address: app_wallet_key.address(),
+            app_id: authz.app_id,
+        };
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "application/json")
+            .body(Full::new(Bytes::from(json::stringify(response))))?)
+    }
+
+    async fn handle_app_wallet_proof(&self, body: Bytes) -> Result<Response<Full<Bytes>>> {
+        let proxy = match &self.kms_proxy {
+            Some(proxy) => proxy,
+            None => return Self::kms_not_configured(),
+        };
+
+        let req: AppWalletProofRequest = match serde_json::from_slice(&body) {
+            Ok(req) => req,
+            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+        };
+
+        if req.chain_id == 0 {
+            return Ok(http_util::bad_request("chain_id must be > 0".to_string()));
+        }
+        if req.deadline <= current_unix_timestamp() {
+            return Ok(http_util::bad_request(
+                "deadline must be in the future".to_string(),
+            ));
+        }
+
+        let authz = match proxy.ensure_kms_access_authorized().await {
+            Ok(v) => v,
+            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+        };
+        if authz.app_id != req.app_id {
+            return Ok(http_util::bad_request(format!(
+                "app_id mismatch: request={}, enclave={}",
+                req.app_id, authz.app_id
+            )));
+        }
+
+        let registry_address = match eth_tx::parse_address_hex(&req.registry_address) {
+            Ok(v) => v,
+            Err(err) => {
+                return Ok(http_util::bad_request(format!(
+                    "Invalid registry_address: {}",
+                    err
+                )));
+            }
+        };
+        let tee_wallet_address = match eth_tx::parse_address_hex(&req.tee_wallet_address) {
+            Ok(v) => v,
+            Err(err) => {
+                return Ok(http_util::bad_request(format!(
+                    "Invalid tee_wallet_address: {}",
+                    err
+                )));
+            }
+        };
+
+        let app_wallet_key = match proxy.app_wallet_key().await {
+            Ok(v) => v,
+            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+        };
+        let app_wallet_hex = app_wallet_key.address();
+        let app_wallet_address = match eth_tx::parse_address_hex(&app_wallet_hex) {
+            Ok(v) => v,
+            Err(err) => {
+                return Ok(http_util::bad_request(format!(
+                    "Invalid app wallet address: {}",
+                    err
+                )));
+            }
+        };
+
+        let mut packed_message = Vec::with_capacity(221);
+        packed_message.extend_from_slice(b"NovaAppRegistry:SetAppWallet:");
+        packed_message.extend_from_slice(&u64_to_u256_bytes(req.chain_id));
+        packed_message.extend_from_slice(&registry_address);
+        packed_message.extend_from_slice(&u64_to_u256_bytes(req.app_id));
+        packed_message.extend_from_slice(&u64_to_u256_bytes(req.version_id));
+        packed_message.extend_from_slice(&tee_wallet_address);
+        packed_message.extend_from_slice(&app_wallet_address);
+        packed_message.extend_from_slice(&u64_to_u256_bytes(req.deadline));
+
+        let message_hash = eth_tx::keccak256(&packed_message);
+        let mut prefixed_msg = b"\x19Ethereum Signed Message:\n32".to_vec();
+        prefixed_msg.extend_from_slice(&message_hash);
+        let proof = app_wallet_key.sign_message(&prefixed_msg);
+
+        let audit_payload = serde_json::json!({
+            "app_id": req.app_id,
+            "version_id": req.version_id,
+            "chain_id": req.chain_id,
+            "deadline": req.deadline,
+        });
+        proxy
+            .audit_local_action("app_wallet_proof", Some(&audit_payload), "ok", None)
+            .await;
+
+        let response = json::object! {
+            app_id: authz.app_id,
+            app_wallet: app_wallet_hex,
+            deadline: req.deadline,
+            message_hash: format!("0x{}", hex::encode(message_hash)),
+            proof: format!("0x{}", hex::encode(proof)),
+        };
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "application/json")
+            .body(Full::new(Bytes::from(json::stringify(response))))?)
+    }
+
+    async fn handle_app_wallet_sign_tx(&self, body: Bytes) -> Result<Response<Full<Bytes>>> {
+        let proxy = match &self.kms_proxy {
+            Some(proxy) => proxy,
+            None => return Self::kms_not_configured(),
+        };
+
+        let req: EthSignTxRequest = match serde_json::from_slice(&body) {
+            Ok(req) => req,
+            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+        };
+
+        let authz = match proxy.ensure_app_wallet_authorized().await {
+            Ok(v) => v,
+            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+        };
+
+        let unsigned_tx = match req.payload.into_unsigned_tx() {
+            Ok(tx) => tx,
+            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+        };
+
+        let app_wallet_key = match proxy.app_wallet_key().await {
+            Ok(v) => v,
+            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+        };
+
+        let signable_payload = unsigned_tx.signing_payload();
+        let signature_bytes = app_wallet_key.sign_message(&signable_payload);
+        let tx_signature = match TxSignature::from_recoverable_bytes(&signature_bytes) {
+            Ok(sig) => sig,
+            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+        };
+
+        let raw_tx = unsigned_tx.finalize(&tx_signature);
+        let tx_hash = eth_tx::keccak256(&raw_tx);
+
+        let audit_payload = serde_json::from_slice::<Value>(&body).unwrap_or_else(|_| {
+            serde_json::json!({ "payload": "unparseable" })
+        });
+        proxy
+            .audit_local_action("app_wallet_sign_tx", Some(&audit_payload), "ok", None)
+            .await;
+
+        let response = json::object! {
+            raw_transaction: format!("0x{}", hex::encode(&raw_tx)),
+            transaction_hash: format!("0x{}", hex::encode(tx_hash)),
+            signature: format!("0x{}", hex::encode(signature_bytes)),
+            address: app_wallet_key.address(),
+            app_id: authz.app_id,
+        };
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, "application/json")
+            .body(Full::new(Bytes::from(json::stringify(response))))?)
     }
 
     async fn handle_random(&self) -> Result<Response<Full<Bytes>>> {
@@ -481,6 +773,12 @@ impl ApiHandler {
 
     fn s3_not_configured() -> Result<Response<Full<Bytes>>> {
         Ok(http_util::bad_request("S3 storage not configured".to_string()))
+    }
+
+    fn kms_not_configured() -> Result<Response<Full<Bytes>>> {
+        Ok(http_util::bad_request(
+            "KMS integration not configured".to_string(),
+        ))
     }
 }
 
@@ -691,6 +989,29 @@ fn zero_hex_string() -> String {
 
 fn empty_hex_string() -> String {
     "0x".to_string()
+}
+
+fn u64_to_u256_bytes(value: u64) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[24..].copy_from_slice(&value.to_be_bytes());
+    out
+}
+
+fn current_unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+#[derive(Deserialize)]
+struct AppWalletProofRequest {
+    app_id: u64,
+    version_id: u64,
+    tee_wallet_address: String,
+    registry_address: String,
+    chain_id: u64,
+    deadline: u64,
 }
 
 struct DerPublicKey {

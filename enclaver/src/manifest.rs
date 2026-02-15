@@ -26,6 +26,8 @@ pub struct Manifest {
     pub aux_api: Option<AuxApi>,
     pub vsock_ports: Option<VsockPorts>,
     pub storage: Option<Storage>,
+    pub kms_integration: Option<KmsIntegration>,
+    pub chain_access: Option<ChainAccess>,
     pub helios_rpc: Option<HeliosRpc>,
 }
 
@@ -118,6 +120,238 @@ pub struct S3StorageConfig {
     pub prefix: String,
     /// AWS region (optional, defaults to us-east-1 or IMDS-provided region)
     pub region: Option<String>,
+    /// Optional transparent encryption for values stored in S3.
+    pub encryption: Option<S3EncryptionConfig>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum S3EncryptionMode {
+    Plaintext,
+    Kms,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum S3EncryptionKeyScope {
+    App,
+    Object,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub enum S3EncryptionAadMode {
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "key")]
+    Key,
+    #[serde(rename = "key+version")]
+    KeyAndVersion,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct S3EncryptionConfig {
+    #[serde(default = "default_s3_encryption_mode")]
+    pub mode: S3EncryptionMode,
+    #[serde(default = "default_s3_key_scope")]
+    pub key_scope: S3EncryptionKeyScope,
+    #[serde(default = "default_s3_aad_mode")]
+    pub aad_mode: S3EncryptionAadMode,
+    #[serde(default = "default_s3_key_version")]
+    pub key_version: String,
+    #[serde(default = "default_s3_accept_plaintext")]
+    pub accept_plaintext: bool,
+}
+
+fn default_s3_encryption_mode() -> S3EncryptionMode {
+    S3EncryptionMode::Plaintext
+}
+
+fn default_s3_key_scope() -> S3EncryptionKeyScope {
+    S3EncryptionKeyScope::Object
+}
+
+fn default_s3_aad_mode() -> S3EncryptionAadMode {
+    S3EncryptionAadMode::Key
+}
+
+fn default_s3_key_version() -> String {
+    "v1".to_string()
+}
+
+fn default_s3_accept_plaintext() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KmsIntegration {
+    #[serde(default)]
+    pub enabled: bool,
+    pub kms_app_id: Option<u64>,
+    pub nova_app_registry: Option<String>,
+    pub registry_chain_rpc: Option<String>,
+    pub base_urls: Option<Vec<String>>,
+    #[serde(default = "default_kms_timeout_ms")]
+    pub request_timeout_ms: u64,
+    #[serde(default = "default_kms_max_retries")]
+    pub max_retries: u8,
+    #[serde(default = "default_kms_discovery_ttl_ms")]
+    pub discovery_ttl_ms: u64,
+    #[serde(default = "default_kms_require_mutual_signature")]
+    pub require_mutual_signature: bool,
+    pub audit_log_path: Option<String>,
+    pub reserved_derive_prefixes: Option<Vec<String>>,
+}
+
+fn default_kms_timeout_ms() -> u64 {
+    3000
+}
+
+fn default_kms_max_retries() -> u8 {
+    2
+}
+
+fn default_kms_discovery_ttl_ms() -> u64 {
+    15000
+}
+
+fn default_kms_require_mutual_signature() -> bool {
+    true
+}
+
+impl KmsIntegration {
+    fn validate(&self) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+
+        if self.kms_app_id.unwrap_or(0) == 0 {
+            bail!("kms_integration.kms_app_id is required when enabled");
+        }
+        let registry = self
+            .nova_app_registry
+            .as_ref()
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| anyhow!("kms_integration.nova_app_registry is required when enabled"))?;
+        if !(registry.starts_with("0x") || registry.starts_with("0X")) || registry.len() != 42 {
+            bail!("kms_integration.nova_app_registry must be a 20-byte hex address");
+        }
+        let registry_chain_rpc = self
+            .registry_chain_rpc
+            .as_ref()
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| anyhow!("kms_integration.registry_chain_rpc is required when enabled"))?;
+        if !(registry_chain_rpc.starts_with("http://")
+            || registry_chain_rpc.starts_with("https://"))
+        {
+            bail!("kms_integration.registry_chain_rpc must use http:// or https://");
+        }
+
+        let base_urls = self
+            .base_urls
+            .as_ref()
+            .ok_or_else(|| anyhow!("kms_integration.base_urls is required when enabled"))?;
+        if base_urls.is_empty() {
+            bail!("kms_integration.base_urls cannot be empty when enabled");
+        }
+
+        for url in base_urls {
+            let trimmed = url.trim();
+            if trimmed.is_empty() {
+                bail!("kms_integration.base_urls contains an empty URL");
+            }
+            if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+                bail!("kms_integration.base_urls must use http:// or https://: {}", trimmed);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChainAccess {
+    pub registry_chain: Option<HeliosRpcProvider>,
+    pub app_rpc_providers: Option<HashMap<String, HeliosRpcProvider>>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeliosRpcProvider {
+    pub kind: HeliosRpcKind,
+    pub network: String,
+    pub execution_rpc: String,
+    pub consensus_rpc: Option<String>,
+    pub checkpoint: Option<String>,
+    pub local_rpc_port: u16,
+}
+
+impl HeliosRpcProvider {
+    fn validate(&self, context: &str) -> Result<()> {
+        let network = self.network.trim().to_lowercase();
+        if network.is_empty() {
+            bail!("{context}.network is required");
+        }
+
+        let execution_rpc = self.execution_rpc.trim();
+        if execution_rpc.is_empty() {
+            bail!("{context}.execution_rpc is required");
+        }
+
+        match self.kind {
+            HeliosRpcKind::Ethereum => {
+                if !matches!(network.as_str(), "mainnet" | "sepolia" | "holesky") {
+                    bail!(
+                        "{context}.network '{}' is invalid for kind=ethereum. \
+                         Supported: mainnet, sepolia, holesky",
+                        network
+                    );
+                }
+            }
+            HeliosRpcKind::Opstack => {
+                if !matches!(
+                    network.as_str(),
+                    "op-mainnet" | "base" | "base-sepolia" | "worldchain" | "zora" | "unichain"
+                ) {
+                    bail!(
+                        "{context}.network '{}' is invalid for kind=opstack. \
+                         Supported: op-mainnet, base, base-sepolia, worldchain, zora, unichain",
+                        network
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl ChainAccess {
+    fn validate(&self) -> Result<()> {
+        let mut used_ports = std::collections::HashSet::new();
+
+        if let Some(registry_chain) = &self.registry_chain {
+            registry_chain.validate("chain_access.registry_chain")?;
+            if !used_ports.insert(registry_chain.local_rpc_port) {
+                bail!("duplicate local_rpc_port in chain_access: {}", registry_chain.local_rpc_port);
+            }
+        }
+
+        if let Some(app_rpc_providers) = &self.app_rpc_providers {
+            for (chain_id, provider) in app_rpc_providers {
+                provider.validate(&format!("chain_access.app_rpc_providers.{chain_id}"))?;
+                if !used_ports.insert(provider.local_rpc_port) {
+                    bail!("duplicate local_rpc_port in chain_access: {}", provider.local_rpc_port);
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Helios client kind: ethereum or opstack
@@ -218,6 +452,14 @@ impl HeliosRpc {
 
 fn parse_manifest(buf: &[u8]) -> Result<Manifest> {
     let manifest: Manifest = serde_yaml::from_slice(buf)?;
+
+    if let Some(kms_integration) = manifest.kms_integration.as_ref() {
+        kms_integration.validate()?;
+    }
+
+    if let Some(chain_access) = manifest.chain_access.as_ref() {
+        chain_access.validate()?;
+    }
 
     if let Some(helios) = manifest.helios_rpc.as_ref() {
         helios.validate()?;
@@ -455,5 +697,99 @@ helios_rpc:
   execution_rpc: "https://example.invalid"
 "#;
         assert!(parse_manifest(raw_manifest).is_err());
+    }
+
+    #[test]
+    fn test_parse_kms_integration_enabled_requires_base_urls() {
+        let raw_manifest = br#"
+version: v1
+name: "test-kms"
+target: "target-image:latest"
+sources:
+  app: "app-image:latest"
+kms_integration:
+  enabled: true
+"#;
+
+        assert!(parse_manifest(raw_manifest).is_err());
+    }
+
+    #[test]
+    fn test_parse_kms_integration_enabled_with_base_urls() {
+        let raw_manifest = br#"
+version: v1
+name: "test-kms-ok"
+target: "target-image:latest"
+sources:
+  app: "app-image:latest"
+kms_integration:
+  enabled: true
+  kms_app_id: 49
+  nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64cc8"
+  registry_chain_rpc: "https://sepolia.base.org"
+  base_urls:
+    - "https://kms-1.example.com"
+    - "https://kms-2.example.com"
+"#;
+
+        let manifest = parse_manifest(raw_manifest).unwrap();
+        let kms = manifest
+            .kms_integration
+            .expect("kms_integration should be present");
+        assert!(kms.enabled);
+        assert_eq!(kms.base_urls.unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_parse_chain_access_duplicate_ports_rejected() {
+        let raw_manifest = br#"
+version: v1
+name: "test-chain-access"
+target: "target-image:latest"
+sources:
+  app: "app-image:latest"
+chain_access:
+  registry_chain:
+    kind: opstack
+    network: base-sepolia
+    execution_rpc: "https://sepolia.base.org"
+    local_rpc_port: 18545
+  app_rpc_providers:
+    "8453":
+      kind: opstack
+      network: base
+      execution_rpc: "https://mainnet.base.org"
+      local_rpc_port: 18545
+"#;
+
+        assert!(parse_manifest(raw_manifest).is_err());
+    }
+
+    #[test]
+    fn test_parse_chain_access_valid() {
+        let raw_manifest = br#"
+version: v1
+name: "test-chain-access-ok"
+target: "target-image:latest"
+sources:
+  app: "app-image:latest"
+chain_access:
+  registry_chain:
+    kind: opstack
+    network: base-sepolia
+    execution_rpc: "https://sepolia.base.org"
+    local_rpc_port: 18545
+  app_rpc_providers:
+    "1":
+      kind: ethereum
+      network: mainnet
+      execution_rpc: "https://eth.llamarpc.com"
+      local_rpc_port: 18546
+"#;
+
+        let manifest = parse_manifest(raw_manifest).unwrap();
+        let chain_access = manifest.chain_access.expect("chain_access should exist");
+        assert!(chain_access.registry_chain.is_some());
+        assert_eq!(chain_access.app_rpc_providers.unwrap().len(), 1);
     }
 }
