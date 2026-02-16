@@ -23,7 +23,7 @@ Repository layout (important files)
 - `enclaver/src/run.rs` — enclave runtime orchestration (feature `run_enclave`).
 - `enclaver/src/run_container.rs` — start and stream the sleeve container image on the host.
 - `enclaver/src/bin/odyn/helios_rpc.rs` — Helios Ethereum/OP Stack light client RPC service.
-- `enclaver/src/proxy/` — network proxy implementations: `ingress`, `egress_http`, (optionally) `kms`, `pkcs7`.
+- `enclaver/src/proxy/` — network proxy implementations: `ingress`, `egress_http`, (optionally) `kms`, `nova_kms`, `pkcs7`, `s3`.
 - `enclaver/src/policy/` — egress allow/deny (domain/ip pattern filters).
 - `enclaver/src/vsock.rs` — vsock helper wrappers and TLS-on-vsock helpers.
 - `enclaver/src/tls.rs` — rustls config helpers and test helpers.
@@ -62,6 +62,8 @@ Top-level modules and responsibilities
   - `ingress.rs`: `EnclaveProxy` (vsock listener inside enclave; TLS termination) and `HostProxy` (host listener forwarding to vsock).
   - `egress_http.rs`: inside-enclave HTTP proxy + host-side vsock proxy for outbound HTTP(S); supports CONNECT and normal proxying; enforces `policy::EgressPolicy`.
   - `kms.rs` (feature `odyn`): KMS request proxy that inserts attestation and decrypts `CiphertextForRecipient` using PKCS#7.
+  - `nova_kms.rs` (feature `odyn`): Nova KMS integration used by the internal API (`/v1/kms/*`, `/v1/app-wallet/*`), including registry-backed authorization/discovery, node failover, and audit logging.
+  - `s3.rs` (feature `odyn`): S3-backed storage APIs with optional KMS-derived encryption mode.
   - `pkcs7.rs`: parsing and decrypting PKCS#7 EnvelopedData.
 
 - policy (`src/policy/*`)
@@ -124,11 +126,13 @@ Ingress topology
 - Host listens on configured host TCP ports (via `HostProxy`), accepts incoming connections and forwards them over vsock to the enclave.
 - Inside the enclave, `EnclaveProxy` accepts vsock connections (optionally TLS-terminated) and forwards to the enclave-local app TCP socket.
 
-KMS attestation / special handling (feature `odyn`)
---------------------------------------------------
+KMS proxying / special handling (feature `odyn`)
+------------------------------------------------
 
 - `proxy::kms` inspects KMS requests that require attestation (Decrypt, GenerateDataKey, GenerateDataKeyPair, DeriveSharedSecret, GenerateRandom).
 - For attesting actions it requests an attestation document from `nsm` (or `StaticAttestationProvider` in tests), inserts a `Recipient` structure into the request body, re-signs the request (SigV4) with AWS credentials, forwards to KMS, and on response decrypts `CiphertextForRecipient` using PKCS#7 logic in `proxy::pkcs7`.
+- `proxy::nova_kms` serves internal API KMS/app-wallet endpoints and can discover/authorize against `NovaAppRegistry` via `kms_integration` settings (`kms_app_id`, `nova_app_registry`, `registry_chain_rpc`).
+- When `storage.s3.encryption.mode=kms`, `odyn` wires `S3Proxy` to `NovaKmsProxy`; if an audit log path is configured, a background task periodically archives KMS audit JSONL chunks to S3.
 
 Ports and constants
 -------------------
@@ -175,7 +179,7 @@ Important files to inspect quickly
 - `enclaver/src/images.rs` — image append and tar/context builder.
 - `enclaver/src/nitro_cli_container.rs` — containerized `nitro-cli` invocation.
 - `enclaver/src/proxy/egress_http.rs` — HTTP proxying logic and CONNECT handling.
-- `enclaver/src/proxy/kms.rs` & `enclaver/src/proxy/pkcs7.rs` — KMS attestation and PKCS#7 decrypt logic.
+- `enclaver/src/proxy/kms.rs`, `enclaver/src/proxy/nova_kms.rs`, `enclaver/src/proxy/s3.rs`, `enclaver/src/proxy/pkcs7.rs` — KMS proxies, Nova KMS integration, S3 integration, and PKCS#7 decrypt logic.
 
 Assumptions and notes
 ---------------------

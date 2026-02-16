@@ -156,18 +156,30 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
   - Start a small internal HTTP server used for attestation endpoints, encryption operations, health checks, and light management.
   - Provide handlers that optionally use the NSM to produce attestation material.
   - Provide ECDH-based encryption/decryption using P-384 key pairs for secure client-enclave communication.
+  - Optionally wire `NovaKmsProxy` (`kms_integration`) and `S3Proxy` (`storage.s3`) into API routes.
+  - Enforce KMS dependency for `storage.s3.encryption.mode=kms` and surface startup-time configuration errors early.
+  - Periodically archive Nova KMS audit logs into S3 when both KMS integration and S3 KMS encryption are enabled.
 
 - Key data structures
-  - `ApiService { task: Option<JoinHandle<()>> }` and the `ApiHandler` implementing routes.
+  - `ApiService { task: Option<JoinHandle<()>>, audit_archive_task: Option<JoinHandle<()>> }` and the `ApiHandler` implementing routes.
 
 - External deps
   - The project's http server util, the NSM attestation helper, `EncryptionKey` for P-384 ECDH, and route/handler types.
+  - `enclaver::proxy::nova_kms::NovaKmsProxy` for `/v1/kms/*` and `/v1/app-wallet/*`.
+  - `enclaver::proxy::s3::S3Proxy` and `aws_sdk_s3` for `/v1/s3/*` and audit-log archival.
 
 - Lifecycle
-  - `start()` binds the API listen port and spawns the server task. `stop()` gracefully shuts it down.
+  - `start()` binds the API listen port and spawns the server task.
+  - If `kms_integration` is configured, `start()` constructs `NovaKmsProxy`.
+  - If `storage.s3` is configured, `start()` constructs `S3Proxy` and loads AWS config through IMDS via egress proxy.
+  - If `storage.s3.encryption.mode=kms`, `start()` requires `kms_integration.enabled=true`; otherwise startup fails.
+  - If KMS integration + S3 KMS encryption + KMS `audit_log_path` are all set, `start()` spawns a background archive loop that rotates `*.jsonl` audit files into S3 (`kms-audit/...`).
+  - `stop()` aborts both the API task and audit archive task.
 
 - Common errors
   - Bind failures or missing attestation artifacts.
+  - Missing egress proxy / IMDS access when S3 is configured.
+  - `storage.s3.encryption.mode=kms` without KMS integration enabled.
 
 - Extensions
   - Add auth middleware (mTLS, JWT), role-based access, or metrics.

@@ -153,6 +153,7 @@ egress:
 - Runs an HTTP server on a configured port
 - Provides attestation, signing, encryption, and random number generation
 - Uses the Nitro Secure Module (NSM) for hardware-backed security
+- Optionally exposes Nova KMS + app-wallet endpoints when `kms_integration` is enabled
 
 **Configuration**:
 ```yaml
@@ -176,6 +177,14 @@ api:
 | `/v1/s3/put` | POST | Put object to S3 storage |
 | `/v1/s3/list` | POST | List objects in S3 storage |
 | `/v1/s3/delete` | POST | Delete object from S3 storage |
+| `/v1/kms/derive` | POST | Derive key material from Nova KMS (`kms_integration`) |
+| `/v1/kms/kv/get` | POST | Read KMS-backed KV value (`kms_integration`) |
+| `/v1/kms/kv/put` | POST | Write KMS-backed KV value (`kms_integration`) |
+| `/v1/kms/kv/delete` | POST | Delete KMS-backed KV value (`kms_integration`) |
+| `/v1/app-wallet/address` | GET | Get anchored app wallet metadata (`kms_integration`) |
+| `/v1/app-wallet/sign` | POST | Sign EIP-191 message with app wallet (`kms_integration`) |
+| `/v1/app-wallet/proof` | POST | Build app-wallet binding proof (`kms_integration`) |
+| `/v1/app-wallet/sign-tx` | POST | Sign Ethereum tx with app wallet (`kms_integration`) |
 
 **For your app**: Make HTTP requests to `http://127.0.0.1:<api_port>/v1/...`
 
@@ -254,6 +263,12 @@ storage:
     bucket: "my-app-data"
     prefix: "apps/my-service/"
     region: "us-east-1"
+    encryption:              # Optional
+      mode: "kms"            # plaintext | kms
+      key_scope: "object"    # app | object
+      aad_mode: "key"        # none | key | key+version
+      key_version: "v1"
+      accept_plaintext: true
 ```
 
 **For your app**: Use the Internal API `/v1/s3/...` endpoints.
@@ -261,6 +276,7 @@ storage:
 **Requirements**:
 - Egress must allow `169.254.169.254` (IMDS)
 - Egress must allow your S3 endpoint (e.g., `s3.us-east-1.amazonaws.com` or `s3.amazonaws.com`)
+- If `storage.s3.encryption.mode=kms`, `kms_integration.enabled=true` is required.
 
 ---
 

@@ -235,6 +235,187 @@ Encrypt data to send to a client using ECDH + AES-256-GCM.
     }
     ```
 
+## KMS Integration API Endpoints (Primary API only)
+
+These endpoints are available only when `kms_integration.enabled=true` in `enclaver.yaml`.
+If KMS integration is not configured, they return `400 Bad Request` with plain-text body:
+`KMS integration not configured`.
+
+### Derive KMS Key Material
+
+Derive key material from Nova KMS.
+
+- **URL:** `/v1/kms/derive`
+- **Method:** `POST`
+- **Content-Type:** `application/json`
+- **Request Body:**
+  ```json
+  {
+    "path": "app/session/alpha",
+    "context": "optional-context",
+    "length": 32
+  }
+  ```
+  `context` is optional (defaults to empty string). `length` is optional (defaults to `32`).
+- **Success Response:**
+  - **Code:** 200 OK
+  - **Body:**
+    ```json
+    {
+      "key": "base64_encoded_key_bytes"
+    }
+    ```
+
+### KMS KV Get
+
+Read a value from KMS-backed key/value storage.
+
+- **URL:** `/v1/kms/kv/get`
+- **Method:** `POST`
+- **Request Body:**
+  ```json
+  {
+    "key": "config/service_token"
+  }
+  ```
+- **Success Response:**
+  ```json
+  {
+    "found": true,
+    "value": "opaque_string_value"
+  }
+  ```
+  When not found:
+  ```json
+  {
+    "found": false,
+    "value": null
+  }
+  ```
+
+### KMS KV Put
+
+Write a value to KMS-backed key/value storage.
+
+- **URL:** `/v1/kms/kv/put`
+- **Method:** `POST`
+- **Request Body:**
+  ```json
+  {
+    "key": "config/service_token",
+    "value": "opaque_string_value",
+    "ttl_ms": 60000
+  }
+  ```
+  `ttl_ms` is optional (defaults to `0`).
+- **Success Response:**
+  ```json
+  {
+    "success": true
+  }
+  ```
+
+### KMS KV Delete
+
+Delete a value from KMS-backed key/value storage.
+
+- **URL:** `/v1/kms/kv/delete`
+- **Method:** `POST`
+- **Request Body:**
+  ```json
+  {
+    "key": "config/service_token"
+  }
+  ```
+- **Success Response:**
+  ```json
+  {
+    "success": true
+  }
+  ```
+
+## App Wallet API Endpoints (Primary API only)
+
+These endpoints are also gated by `kms_integration.enabled=true`.
+
+### Get App Wallet Address
+
+- **URL:** `/v1/app-wallet/address`
+- **Method:** `GET`
+- **Success Response:**
+  ```json
+  {
+    "address": "0x...",
+    "app_id": 1001,
+    "instance_wallet": "0x..."
+  }
+  ```
+
+### Sign Message with App Wallet
+
+Signs a plain-text message using EIP-191 personal-sign prefix.
+
+- **URL:** `/v1/app-wallet/sign`
+- **Method:** `POST`
+- **Request Body:**
+  ```json
+  {
+    "message": "hello app wallet"
+  }
+  ```
+- **Success Response:**
+  ```json
+  {
+    "signature": "0x...",
+    "address": "0x...",
+    "app_id": 1001
+  }
+  ```
+
+### Generate App Wallet Binding Proof
+
+Produces a signed proof payload for app-wallet binding flows in `NovaAppRegistry`.
+
+- **URL:** `/v1/app-wallet/proof`
+- **Method:** `POST`
+- **Request Body:**
+  ```json
+  {
+    "app_id": 1001,
+    "version_id": 1,
+    "tee_wallet_address": "0x...",
+    "registry_address": "0x...",
+    "chain_id": 84532,
+    "deadline": 1767225600
+  }
+  ```
+- **Success Response:**
+  ```json
+  {
+    "app_id": 1001,
+    "app_wallet": "0x...",
+    "deadline": 1767225600,
+    "message_hash": "0x...",
+    "proof": "0x..."
+  }
+  ```
+
+### Sign Transaction with App Wallet
+
+- **URL:** `/v1/app-wallet/sign-tx`
+- **Method:** `POST`
+- **Request Body:** Same schema as `/v1/eth/sign-tx`.
+- **Success Response:**
+  ```json
+  {
+    "raw_transaction": "0x02...",
+    "transaction_hash": "0x...",
+    "signature": "0x...",
+    "address": "0x...",
+    "app_id": 1001
+  }
+  ```
+
 ## Auxiliary API Endpoints
 
 The Auxiliary API exposes a **subset** of the Primary API endpoints with the following restrictions:
@@ -275,6 +456,14 @@ The following endpoints are **NOT** available on the Auxiliary API:
 - `/v1/random`
 - `/v1/encryption/decrypt`
 - `/v1/encryption/encrypt`
+- `/v1/kms/derive`
+- `/v1/kms/kv/get`
+- `/v1/kms/kv/put`
+- `/v1/kms/kv/delete`
+- `/v1/app-wallet/address`
+- `/v1/app-wallet/sign`
+- `/v1/app-wallet/proof`
+- `/v1/app-wallet/sign-tx`
 
 Attempts to access these endpoints on the Auxiliary API port will result in a 404 Not Found error.
 The following endpoints are also **NOT** available on the Auxiliary API:

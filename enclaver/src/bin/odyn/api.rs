@@ -83,44 +83,42 @@ impl ApiService {
             };
 
             // If S3 encryption requires KMS, attach the KMS proxy.
-            if let Some(s3_proxy_ref) = s3_proxy.as_ref() {
-                if let Some(s3_cfg) = config.s3_config() {
-                    if matches!(
-                        s3_cfg.encryption.as_ref().map(|v| &v.mode),
-                        Some(S3EncryptionMode::Kms)
-                    ) {
-                        if let Some(kms_proxy_ref) = kms_proxy.as_ref() {
-                            s3_proxy_ref.attach_kms_proxy(kms_proxy_ref.clone()).await;
-                        } else {
-                            anyhow::bail!(
-                                "storage.s3.encryption.mode=kms requires kms_integration.enabled=true"
-                            );
-                        }
-                    }
+            if let Some(s3_proxy_ref) = s3_proxy.as_ref()
+                && let Some(s3_cfg) = config.s3_config()
+                && matches!(
+                    s3_cfg.encryption.as_ref().map(|v| &v.mode),
+                    Some(S3EncryptionMode::Kms)
+                )
+            {
+                if let Some(kms_proxy_ref) = kms_proxy.as_ref() {
+                    s3_proxy_ref.attach_kms_proxy(kms_proxy_ref.clone()).await;
+                } else {
+                    anyhow::bail!(
+                        "storage.s3.encryption.mode=kms requires kms_integration.enabled=true"
+                    );
                 }
             }
 
             // Periodically rotate and archive audit logs into encrypted S3.
-            if let (Some(kms_proxy_ref), Some(s3_proxy_ref)) = (kms_proxy.as_ref(), s3_proxy.as_ref()) {
-                if let Some(s3_cfg) = config.s3_config() {
-                    if matches!(
-                        s3_cfg.encryption.as_ref().map(|v| &v.mode),
-                        Some(S3EncryptionMode::Kms)
-                    ) && let Some(audit_log_path) = kms_proxy_ref.audit_log_path()
-                    {
-                        let s3_clone = s3_proxy_ref.clone();
-                        audit_archive_task = Some(tokio::task::spawn(async move {
-                            loop {
-                                tokio::time::sleep(Duration::from_secs(60)).await;
-                                if let Err(err) =
-                                    archive_audit_log_once(&audit_log_path, &s3_clone).await
-                                {
-                                    warn!("Failed to archive KMS audit log: {}", err);
-                                }
-                            }
-                        }));
+            if let (Some(kms_proxy_ref), Some(s3_proxy_ref)) = (kms_proxy.as_ref(), s3_proxy.as_ref())
+                && let Some(s3_cfg) = config.s3_config()
+                && matches!(
+                    s3_cfg.encryption.as_ref().map(|v| &v.mode),
+                    Some(S3EncryptionMode::Kms)
+                )
+                && let Some(audit_log_path) = kms_proxy_ref.audit_log_path()
+            {
+                let s3_clone = s3_proxy_ref.clone();
+                audit_archive_task = Some(tokio::task::spawn(async move {
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        if let Err(err) =
+                            archive_audit_log_once(&audit_log_path, &s3_clone).await
+                        {
+                            warn!("Failed to archive KMS audit log: {}", err);
+                        }
                     }
-                }
+                }));
             }
 
             let srv = HttpServer::bind(port).await?;

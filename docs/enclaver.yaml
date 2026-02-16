@@ -109,6 +109,27 @@ kms_proxy:
     us-east-1: kms.us-east-1.amazonaws.com
     #eu-west-1: kms.eu-west-1.amazonaws.com
 
+# Optional: Nova KMS integration used by Internal API `/v1/kms/*` and `/v1/app-wallet/*`
+# - Enables registry-backed app/instance authorization for Nova KMS operations.
+# - If enabled=true, kms_app_id, nova_app_registry, registry_chain_rpc, and base_urls are required.
+# - `registry_chain_rpc` and each value in `base_urls` must use http:// or https://.
+# - If `storage.s3.encryption.mode=kms`, this integration must also be enabled.
+kms_integration:
+  enabled: true              # [ODYN] Enable Nova KMS integration for Internal API KMS/app-wallet routes.
+  kms_app_id: 1001           # [ODYN] Required when enabled. App ID on NovaAppRegistry.
+  nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64cc8" # [ODYN] Required when enabled.
+  registry_chain_rpc: "https://sepolia.base.org" # [ODYN] Required when enabled.
+  base_urls:                 # [ODYN] Required when enabled. KMS node base URLs.
+    - "https://kms-node-1.example.com"
+    - "https://kms-node-2.example.com"
+  request_timeout_ms: 3000   # [ODYN] Optional. Per-request timeout to each KMS node.
+  max_retries: 2             # [ODYN] Optional. Retries across nodes (effective attempts = max_retries + 1).
+  discovery_ttl_ms: 15000    # [ODYN] Optional. Registry discovery cache TTL.
+  require_mutual_signature: true # [ODYN] Optional. Require/verify mutual request-response signatures.
+  audit_log_path: "/tmp/nova-kms-audit.jsonl" # [ODYN] Optional local JSONL audit log path.
+  reserved_derive_prefixes:  # [ODYN] Optional. Paths blocked for app-initiated derive requests.
+    - "wallet/eth/app/"
+
 # Optional: internal API exposed inside the enclave for attestation/encryption/signing
 api:
   listen_port: 18000         # [ODYN] Required. TCP port (u16) for internal API server.
@@ -142,6 +163,13 @@ storage:
     region: "us-east-1"      # [ODYN] Optional. AWS region override for the bucket.
                              # If omitted, the region is resolved via IMDS.
                              # Requires egress allow for IMDS (169.254.169.254) and the S3 endpoint.
+    encryption:              # [ODYN] Optional. Transparent encryption for stored values.
+      mode: "kms"            # [ODYN] plaintext | kms
+      key_scope: "object"    # [ODYN] app | object
+      aad_mode: "key"        # [ODYN] none | key | key+version
+      key_version: "v1"      # [ODYN] Version label included in metadata/derivation path.
+      accept_plaintext: true # [ODYN] Allow legacy plaintext reads during migration.
+                             # Note: mode=kms requires kms_integration.enabled=true.
 
 # ============================================================================
 # Summary: Parameter -> Module Mapping
@@ -166,6 +194,17 @@ storage:
 # | egress.deny            | ODYN        | Egress deny list (domain/IP patterns)          |
 # | kms_proxy.listen_port  | ODYN        | Local KMS proxy port inside enclave            |
 # | kms_proxy.endpoints    | ODYN        | Regional KMS endpoint overrides                |
+# | kms_integration.enabled | ODYN       | Enable Nova KMS integration                    |
+# | kms_integration.kms_app_id | ODYN    | Nova app ID used for authz/discovery           |
+# | kms_integration.nova_app_registry | ODYN | NovaAppRegistry contract address           |
+# | kms_integration.registry_chain_rpc | ODYN | RPC URL for registry reads/eth_call        |
+# | kms_integration.base_urls | ODYN     | KMS node base URLs used for requests           |
+# | kms_integration.request_timeout_ms | ODYN | Per-node request timeout                    |
+# | kms_integration.max_retries | ODYN   | Retry count across KMS nodes                   |
+# | kms_integration.discovery_ttl_ms | ODYN | Registry discovery cache TTL                |
+# | kms_integration.require_mutual_signature | ODYN | Enforce response signature checks    |
+# | kms_integration.audit_log_path | ODYN | Local path for KMS audit JSONL                |
+# | kms_integration.reserved_derive_prefixes | ODYN | Blocked derive path prefixes        |
 # | api.listen_port        | ODYN        | Internal API port (attestation, signing, etc.) |
 # | aux_api.listen_port    | ODYN        | Auxiliary API port (restricted access)         |
 # | helios_rpc.enabled     | ODYN        | Enable/disable Helios RPC service              |
@@ -179,5 +218,10 @@ storage:
 # | storage.s3.bucket      | ODYN        | S3 bucket for persistent storage               |
 # | storage.s3.prefix      | ODYN        | Prefix for S3 key isolation                    |
 # | storage.s3.region      | ODYN        | Regional override for S3 bucket                |
+# | storage.s3.encryption.mode | ODYN    | Storage encryption mode (plaintext or kms)     |
+# | storage.s3.encryption.key_scope | ODYN | Derivation scope (app/object)               |
+# | storage.s3.encryption.aad_mode | ODYN | AAD binding mode for ciphertext metadata     |
+# | storage.s3.encryption.key_version | ODYN | Encryption key version label              |
+# | storage.s3.encryption.accept_plaintext | ODYN | Allow plaintext reads during migration |
 #
 # ============================================================================

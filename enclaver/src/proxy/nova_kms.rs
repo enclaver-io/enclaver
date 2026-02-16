@@ -72,6 +72,17 @@ struct DiscoveryCacheEntry {
     expires_at_ms: u64,
 }
 
+struct AuditLogEntry<'a> {
+    request_id: &'a str,
+    instance_wallet: &'a str,
+    action: &'a str,
+    payload_hash: &'a str,
+    kms_node: &'a str,
+    result: &'a str,
+    error_code: Option<&'a str>,
+    authz_context: Option<&'a AppAuthzContext>,
+}
+
 #[derive(Clone)]
 struct RegistryInstance {
     app_id: u64,
@@ -262,16 +273,16 @@ impl NovaKmsProxy {
             .await
             .unwrap_or_else(|_| "unknown".to_string());
         let authz_ctx = self.cached_authz_context().await;
-        self.append_audit_log(
-            &request_id,
-            &instance_wallet,
+        self.append_audit_log(AuditLogEntry {
+            request_id: &request_id,
+            instance_wallet: &instance_wallet,
             action,
-            &payload_hash,
-            "local",
+            payload_hash: &payload_hash,
+            kms_node: "local",
             result,
             error_code,
-            authz_ctx.as_ref(),
-        )
+            authz_context: authz_ctx.as_ref(),
+        })
         .await;
     }
 
@@ -384,9 +395,9 @@ impl NovaKmsProxy {
             Err(err) => return Ok(http_util::bad_request(err.to_string())),
         };
 
-        Ok(http_util::ok_json(&DeriveApiResponse {
+        http_util::ok_json(&DeriveApiResponse {
             key: general_purpose::STANDARD.encode(key),
-        })?)
+        })
     }
 
     pub async fn handle_kv_get(&self, body: Bytes) -> Result<Response<Full<Bytes>>> {
@@ -498,31 +509,32 @@ impl NovaKmsProxy {
 
                 match result {
                     Ok(value) => {
-                        self.append_audit_log(
-                            &request_id,
-                            &instance_wallet,
-                            &action,
-                            &payload_hash,
-                            base_url,
-                            "ok",
-                            None,
-                            authz_ctx.as_ref(),
-                        )
+                        self.append_audit_log(AuditLogEntry {
+                            request_id: &request_id,
+                            instance_wallet: &instance_wallet,
+                            action: &action,
+                            payload_hash: &payload_hash,
+                            kms_node: base_url,
+                            result: "ok",
+                            error_code: None,
+                            authz_context: authz_ctx.as_ref(),
+                        })
                         .await;
                         return Ok(value);
                     }
                     Err(err) => {
                         last_error = Some(err);
-                        self.append_audit_log(
-                            &request_id,
-                            &instance_wallet,
-                            &action,
-                            &payload_hash,
-                            base_url,
-                            "error",
-                            last_error.as_ref().map(ToString::to_string).as_deref(),
-                            authz_ctx.as_ref(),
-                        )
+                        let error_code = last_error.as_ref().map(ToString::to_string);
+                        self.append_audit_log(AuditLogEntry {
+                            request_id: &request_id,
+                            instance_wallet: &instance_wallet,
+                            action: &action,
+                            payload_hash: &payload_hash,
+                            kms_node: base_url,
+                            result: "error",
+                            error_code: error_code.as_deref(),
+                            authz_context: authz_ctx.as_ref(),
+                        })
                         .await;
                     }
                 }
@@ -779,37 +791,27 @@ impl NovaKmsProxy {
         hex::encode(hash)
     }
 
-    async fn append_audit_log(
-        &self,
-        request_id: &str,
-        instance_wallet: &str,
-        action: &str,
-        payload_hash: &str,
-        kms_node: &str,
-        result: &str,
-        error_code: Option<&str>,
-        authz_context: Option<&AppAuthzContext>,
-    ) {
+    async fn append_audit_log(&self, entry: AuditLogEntry<'_>) {
         let Some(path) = self.audit_log_path.as_ref() else {
             return;
         };
 
-        let (app_id, app_wallet) = if let Some(ctx) = authz_context {
+        let (app_id, app_wallet) = if let Some(ctx) = entry.authz_context {
             (Some(ctx.app_id), Some(ctx.app_wallet.clone()))
         } else {
             (None, None)
         };
 
         let entry = json!({
-            "request_id": request_id,
-            "instance_wallet": instance_wallet,
+            "request_id": entry.request_id,
+            "instance_wallet": entry.instance_wallet,
             "app_id": app_id,
             "app_wallet": app_wallet,
-            "action": action,
-            "payload_hash": payload_hash,
-            "kms_node": kms_node,
-            "result": result,
-            "error_code": error_code,
+            "action": entry.action,
+            "payload_hash": entry.payload_hash,
+            "kms_node": entry.kms_node,
+            "result": entry.result,
+            "error_code": entry.error_code,
             "timestamp": current_unix_timestamp(),
         });
 
@@ -888,10 +890,10 @@ impl NovaKmsProxy {
     async fn cached_authz_context(&self) -> Option<AppAuthzContext> {
         let now_ms = current_unix_millis();
         let mut guard = self.authz_cache.lock().await;
-        if let Some(cached) = guard.as_ref() {
-            if now_ms < cached.expires_at_ms {
-                return Some(cached.context.clone());
-            }
+        if let Some(cached) = guard.as_ref()
+            && now_ms < cached.expires_at_ms
+        {
+            return Some(cached.context.clone());
         }
         *guard = None;
         None
@@ -1128,11 +1130,12 @@ impl NovaKmsProxy {
         let result_hex = response
             .result
             .ok_or_else(|| anyhow!("registry eth_call missing result"))?;
-        Ok(hex::decode(trim_0x(&result_hex))
-            .map_err(|e| anyhow!("registry eth_call invalid hex result: {}", e))?)
+        hex::decode(trim_0x(&result_hex))
+            .map_err(|e| anyhow!("registry eth_call invalid hex result: {}", e))
     }
 }
 
+#[allow(deprecated)]
 fn registry_fn_get_active_instances() -> Function {
     Function {
         name: "getActiveInstances".to_string(),
@@ -1151,6 +1154,7 @@ fn registry_fn_get_active_instances() -> Function {
     }
 }
 
+#[allow(deprecated)]
 fn registry_fn_get_instance_by_wallet() -> Function {
     Function {
         name: "getInstanceByWallet".to_string(),
@@ -1180,6 +1184,7 @@ fn registry_fn_get_instance_by_wallet() -> Function {
     }
 }
 
+#[allow(deprecated)]
 fn registry_fn_get_app() -> Function {
     Function {
         name: "getApp".to_string(),
