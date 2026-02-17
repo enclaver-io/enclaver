@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose};
 use ethabi::ethereum_types::{H160, U256};
-use ethabi::{Function, Param, ParamType, StateMutability, Token};
+use ethabi::{Function, Token};
 use form_urlencoded::byte_serialize;
 use http_body_util::Full;
 use hyper::Response;
@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
 use crate::eth_key::EthKey;
@@ -33,15 +33,16 @@ const AUTHZ_CACHE_TTL_MS: u64 = 10_000;
 #[derive(Clone)]
 pub struct NovaKmsProxy {
     client: reqwest::Client,
-    base_urls: Arc<Vec<String>>,
+    base_urls: Arc<[String]>,
     odyn_endpoint: String,
     max_retries: usize,
     require_mutual_signature: bool,
     reserved_derive_prefixes: Arc<Vec<String>>,
     audit_log_path: Option<PathBuf>,
-    audit_lock: Arc<Mutex<()>>,
+    audit_log_sender: Option<mpsc::UnboundedSender<String>>,
     registry_discovery: Option<RegistryDiscoveryConfig>,
     discovery_cache: Arc<Mutex<Option<DiscoveryCacheEntry>>>,
+    discovery_refresh_lock: Arc<Mutex<()>>,
     authz_cache: Arc<Mutex<Option<CachedAuthzContext>>>,
 }
 
@@ -207,20 +208,53 @@ impl NovaKmsProxy {
             .unwrap_or_else(|| vec!["wallet/eth/app/".to_string()]);
 
         let registry_discovery = Self::build_registry_discovery(config)?;
+        let audit_log_path = config.audit_log_path.as_ref().map(PathBuf::from);
+        let audit_log_sender = Self::spawn_audit_log_writer(audit_log_path.clone());
 
         Ok(Self {
             client,
-            base_urls: Arc::new(base_urls),
+            base_urls: Arc::from(base_urls),
             odyn_endpoint,
             max_retries: usize::from(config.max_retries) + 1,
             require_mutual_signature: config.require_mutual_signature,
             reserved_derive_prefixes: Arc::new(reserved_derive_prefixes),
-            audit_log_path: config.audit_log_path.as_ref().map(PathBuf::from),
-            audit_lock: Arc::new(Mutex::new(())),
+            audit_log_path,
+            audit_log_sender,
             registry_discovery,
             discovery_cache: Arc::new(Mutex::new(None)),
+            discovery_refresh_lock: Arc::new(Mutex::new(())),
             authz_cache: Arc::new(Mutex::new(None)),
         })
+    }
+
+    fn spawn_audit_log_writer(
+        path: Option<PathBuf>,
+    ) -> Option<mpsc::UnboundedSender<String>> {
+        let path = path?;
+        let (sender, mut receiver) = mpsc::unbounded_channel::<String>();
+        let handle = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => handle,
+            Err(err) => {
+                warn!(
+                    "Nova KMS audit log writer not started (runtime unavailable: {}); falling back to inline writes",
+                    err
+                );
+                return None;
+            }
+        };
+        handle.spawn(async move {
+            while let Some(line) = receiver.recv().await {
+                if let Ok(mut file) = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .await
+                {
+                    let _ = file.write_all(line.as_bytes()).await;
+                }
+            }
+        });
+        Some(sender)
     }
 
     pub fn is_reserved_derive_path(&self, path: &str) -> bool {
@@ -268,10 +302,16 @@ impl NovaKmsProxy {
     ) {
         let request_id = Uuid::new_v4().to_string();
         let payload_hash = self.hash_payload(payload);
-        let instance_wallet = self
-            .local_eth_address()
-            .await
-            .unwrap_or_else(|_| "unknown".to_string());
+        let instance_wallet = match self.local_eth_address().await {
+            Ok(value) => value,
+            Err(err) => {
+                warn!(
+                    "Skipping Nova KMS local audit entry due to missing local wallet identity: {}",
+                    err
+                );
+                return;
+            }
+        };
         let authz_ctx = self.cached_authz_context().await;
         self.append_audit_log(AuditLogEntry {
             request_id: &request_id,
@@ -488,10 +528,7 @@ impl NovaKmsProxy {
     ) -> Result<Value> {
         let request_id = Uuid::new_v4().to_string();
         let payload_hash = self.hash_payload(payload.as_ref());
-        let instance_wallet = self
-            .local_eth_address()
-            .await
-            .unwrap_or_else(|_| "unknown".to_string());
+        let instance_wallet = self.local_eth_address().await?;
         let authz_ctx = if include_authz_metadata {
             self.cached_authz_context().await
         } else {
@@ -814,16 +851,22 @@ impl NovaKmsProxy {
             "error_code": entry.error_code,
             "timestamp": current_unix_timestamp(),
         });
+        let mut line = entry.to_string();
+        line.push('\n');
 
-        let _guard = self.audit_lock.lock().await;
+        if let Some(sender) = self.audit_log_sender.as_ref() {
+            if sender.send(line.clone()).is_ok() {
+                return;
+            }
+            warn!("Nova KMS audit log channel unavailable; falling back to inline write");
+        }
         if let Ok(mut file) = OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
             .await
         {
-            let _ = file.write_all(entry.to_string().as_bytes()).await;
-            let _ = file.write_all(b"\n").await;
+            let _ = file.write_all(line.as_bytes()).await;
         }
     }
 
@@ -901,9 +944,21 @@ impl NovaKmsProxy {
 
     async fn resolve_base_urls(&self) -> Vec<String> {
         let Some(discovery) = self.registry_discovery.as_ref() else {
-            return self.base_urls.as_ref().clone();
+            return self.base_urls.to_vec();
         };
 
+        let now_ms = current_unix_millis();
+        {
+            let guard = self.discovery_cache.lock().await;
+            if let Some(cached) = guard.as_ref()
+                && now_ms < cached.expires_at_ms
+                && !cached.base_urls.is_empty()
+            {
+                return cached.base_urls.clone();
+            }
+        }
+
+        let _refresh_guard = self.discovery_refresh_lock.lock().await;
         let now_ms = current_unix_millis();
         {
             let guard = self.discovery_cache.lock().await;
@@ -926,14 +981,14 @@ impl NovaKmsProxy {
             }
             Ok(_) => {
                 warn!("Registry discovery returned no ACTIVE KMS nodes; falling back to static base_urls");
-                self.base_urls.as_ref().clone()
+                self.base_urls.to_vec()
             }
             Err(err) => {
                 warn!(
                     "Registry discovery failed ({}); falling back to static base_urls",
                     err
                 );
-                self.base_urls.as_ref().clone()
+                self.base_urls.to_vec()
             }
         }
     }
@@ -1135,82 +1190,76 @@ impl NovaKmsProxy {
     }
 }
 
-#[allow(deprecated)]
 fn registry_fn_get_active_instances() -> Function {
-    Function {
-        name: "getActiveInstances".to_string(),
-        inputs: vec![Param {
-            name: "appId".to_string(),
-            kind: ParamType::Uint(256),
-            internal_type: None,
-        }],
-        outputs: vec![Param {
-            name: "".to_string(),
-            kind: ParamType::Array(Box::new(ParamType::Address)),
-            internal_type: None,
-        }],
-        constant: None,
-        state_mutability: StateMutability::View,
-    }
+    registry_function_from_abi(json!({
+        "name": "getActiveInstances",
+        "inputs": [
+            {"name": "appId", "type": "uint256"}
+        ],
+        "outputs": [
+            {"name": "", "type": "address[]"}
+        ],
+        "stateMutability": "view"
+    }))
 }
 
-#[allow(deprecated)]
 fn registry_fn_get_instance_by_wallet() -> Function {
-    Function {
-        name: "getInstanceByWallet".to_string(),
-        inputs: vec![Param {
-            name: "wallet".to_string(),
-            kind: ParamType::Address,
-            internal_type: None,
-        }],
-        outputs: vec![Param {
-            name: "".to_string(),
-            kind: ParamType::Tuple(vec![
-                ParamType::Uint(256), // id
-                ParamType::Uint(256), // appId
-                ParamType::Uint(256), // versionId
-                ParamType::Address,   // operator
-                ParamType::String,    // instanceUrl
-                ParamType::Bytes,     // teePubkey
-                ParamType::Address,   // teeWalletAddress
-                ParamType::Bool,      // zkVerified
-                ParamType::Uint(8),   // status
-                ParamType::Uint(256), // registeredAt
-            ]),
-            internal_type: None,
-        }],
-        constant: None,
-        state_mutability: StateMutability::View,
-    }
+    registry_function_from_abi(json!({
+        "name": "getInstanceByWallet",
+        "inputs": [
+            {"name": "wallet", "type": "address"}
+        ],
+        "outputs": [
+            {
+                "name": "",
+                "type": "tuple",
+                "components": [
+                    {"name": "id", "type": "uint256"},
+                    {"name": "appId", "type": "uint256"},
+                    {"name": "versionId", "type": "uint256"},
+                    {"name": "operator", "type": "address"},
+                    {"name": "instanceUrl", "type": "string"},
+                    {"name": "teePubkey", "type": "bytes"},
+                    {"name": "teeWalletAddress", "type": "address"},
+                    {"name": "zkVerified", "type": "bool"},
+                    {"name": "status", "type": "uint8"},
+                    {"name": "registeredAt", "type": "uint256"}
+                ]
+            }
+        ],
+        "stateMutability": "view"
+    }))
 }
 
-#[allow(deprecated)]
 fn registry_fn_get_app() -> Function {
-    Function {
-        name: "getApp".to_string(),
-        inputs: vec![Param {
-            name: "appId".to_string(),
-            kind: ParamType::Uint(256),
-            internal_type: None,
-        }],
-        outputs: vec![Param {
-            name: "".to_string(),
-            kind: ParamType::Tuple(vec![
-                ParamType::Uint(256),      // appId
-                ParamType::Address,        // owner
-                ParamType::FixedBytes(32), // teeArch
-                ParamType::Address,        // dappContract
-                ParamType::String,         // metadataUri
-                ParamType::Uint(256),      // latestVersionId
-                ParamType::Uint(256),      // createdAt
-                ParamType::Uint(8),        // status
-                ParamType::Address,        // appWallet
-            ]),
-            internal_type: None,
-        }],
-        constant: None,
-        state_mutability: StateMutability::View,
-    }
+    registry_function_from_abi(json!({
+        "name": "getApp",
+        "inputs": [
+            {"name": "appId", "type": "uint256"}
+        ],
+        "outputs": [
+            {
+                "name": "",
+                "type": "tuple",
+                "components": [
+                    {"name": "appId", "type": "uint256"},
+                    {"name": "owner", "type": "address"},
+                    {"name": "teeArch", "type": "bytes32"},
+                    {"name": "dappContract", "type": "address"},
+                    {"name": "metadataUri", "type": "string"},
+                    {"name": "latestVersionId", "type": "uint256"},
+                    {"name": "createdAt", "type": "uint256"},
+                    {"name": "status", "type": "uint8"},
+                    {"name": "appWallet", "type": "address"}
+                ]
+            }
+        ],
+        "stateMutability": "view"
+    }))
+}
+
+fn registry_function_from_abi(value: Value) -> Function {
+    serde_json::from_value(value).expect("valid registry function ABI")
 }
 
 fn extract_single_tuple(tokens: Vec<Token>, context: &str) -> Result<Vec<Token>> {
@@ -1330,15 +1379,16 @@ mod tests {
     fn reserved_path_detection_matches_prefix() {
         let proxy = NovaKmsProxy {
             client: reqwest::Client::new(),
-            base_urls: Arc::new(vec!["https://kms-1.example.com".to_string()]),
+            base_urls: Arc::from(vec!["https://kms-1.example.com".to_string()]),
             odyn_endpoint: "http://127.0.0.1:18000".to_string(),
             max_retries: 1,
             require_mutual_signature: true,
             reserved_derive_prefixes: Arc::new(vec!["wallet/eth/app/".to_string()]),
             audit_log_path: None,
-            audit_lock: Arc::new(Mutex::new(())),
+            audit_log_sender: None,
             registry_discovery: None,
             discovery_cache: Arc::new(Mutex::new(None)),
+            discovery_refresh_lock: Arc::new(Mutex::new(())),
             authz_cache: Arc::new(Mutex::new(None)),
         };
 
