@@ -254,7 +254,8 @@ impl ApiHandler {
             Err(err) => return Ok(http_util::bad_request(err.to_string())),
         };
 
-        let params = match attestation_req.into_params(&self.eth_key, &self.encryption_key) {
+        let app_wallet = self.attestation_app_wallet().await;
+        let params = match attestation_req.into_params(&self.eth_key, &self.encryption_key, app_wallet) {
             Ok(params) => params,
             Err(err) => return Ok(http_util::bad_request(err.to_string())),
         };
@@ -302,11 +303,7 @@ impl ApiHandler {
         let msg_hash = eth_tx::keccak256(&prefixed_msg);
 
         let attestation = if req.include_attestation {
-            // user_data is always a JSON dict with eth_addr
-            let user_data_json = serde_json::json!({
-                "eth_addr": self.eth_key.address()
-            });
-            let user_data_bytes = serde_json::to_vec(&user_data_json)?;
+            let user_data_bytes = self.attestation_user_data_bytes(None).await?;
 
             let att_doc = self.attester.attestation(AttestationParams {
                 nonce: Some(msg_hash.to_vec()),
@@ -357,11 +354,7 @@ impl ApiHandler {
         let tx_hash = eth_tx::keccak256(&raw_tx);
 
         let attestation = if req.include_attestation {
-            // user_data is always a JSON dict with eth_addr
-            let user_data_json = serde_json::json!({
-                "eth_addr": self.eth_key.address()
-            });
-            let user_data_bytes = serde_json::to_vec(&user_data_json)?;
+            let user_data_bytes = self.attestation_user_data_bytes(None).await?;
 
             let att_doc = self.attester.attestation(AttestationParams {
                 nonce: Some(tx_hash.to_vec()),
@@ -771,6 +764,26 @@ impl ApiHandler {
             .body(Full::new(Bytes::from(serde_json::to_string(&response)?)))?)
     }
 
+    async fn attestation_app_wallet(&self) -> Option<String> {
+        let proxy = match &self.kms_proxy {
+            Some(proxy) => proxy,
+            None => return None,
+        };
+
+        match proxy.app_wallet_address().await {
+            Ok(address) => Some(address),
+            Err(err) => {
+                log::warn!("Failed to resolve app wallet for attestation user_data: {}", err);
+                None
+            }
+        }
+    }
+
+    async fn attestation_user_data_bytes(&self, user_data: Option<Value>) -> Result<Vec<u8>> {
+        let app_wallet = self.attestation_app_wallet().await;
+        AttestationRequest::build_user_data(user_data, &self.eth_key.address(), app_wallet.as_deref())
+    }
+
     fn s3_not_configured() -> Result<Response<Full<Bytes>>> {
         Ok(http_util::bad_request("S3 storage not configured".to_string()))
     }
@@ -796,11 +809,16 @@ impl HttpHandler for ApiHandler {
 struct AttestationRequest {
     nonce: Option<String>,
     public_key: Option<String>,
-    user_data: Option<Value>,  // JSON object, eth_addr will be injected
+    user_data: Option<Value>,  // JSON object, eth_addr/app_wallet will be injected
 }
 
 impl AttestationRequest {
-    fn into_params(self, eth_key: &EthKey, encryption_key: &EncryptionKey) -> Result<AttestationParams> {
+    fn into_params(
+        self,
+        eth_key: &EthKey,
+        encryption_key: &EncryptionKey,
+        app_wallet: Option<String>,
+    ) -> Result<AttestationParams> {
         let nonce = self.nonce.map(|n| general_purpose::STANDARD.decode(n)).transpose()?;
 
         // Use P-384 encryption key by default, or user-provided PEM
@@ -809,8 +827,22 @@ impl AttestationRequest {
             None => Some(encryption_key.public_key_as_der()?),
         };
 
-        // user_data is always a JSON dict with eth_addr
-        let mut user_data_map = match self.user_data {
+        let user_data_bytes = Self::build_user_data(self.user_data, &eth_key.address(), app_wallet.as_deref())?;
+
+        Ok(AttestationParams {
+            nonce,
+            public_key,
+            user_data: Some(user_data_bytes),
+        })
+    }
+
+    fn build_user_data(
+        user_data: Option<Value>,
+        eth_addr: &str,
+        app_wallet: Option<&str>,
+    ) -> Result<Vec<u8>> {
+        // user_data is always a JSON dict and eth_addr is always injected
+        let mut user_data_map = match user_data {
             Some(Value::Object(map)) => map,
             Some(_) => return Err(anyhow!("user_data must be a JSON object")),
             None => serde_json::Map::new(),
@@ -819,17 +851,17 @@ impl AttestationRequest {
         // Always inject eth_addr (overwrites if user tried to set it)
         user_data_map.insert(
             "eth_addr".to_string(),
-            Value::String(eth_key.address()),
+            Value::String(eth_addr.to_string()),
         );
+        // App wallet is optional and only injected when KMS integration resolves it
+        if let Some(address) = app_wallet {
+            user_data_map.insert(
+                "app_wallet".to_string(),
+                Value::String(address.to_string()),
+            );
+        }
 
-        // Serialize to JSON bytes
-        let user_data_bytes = serde_json::to_vec(&Value::Object(user_data_map))?;
-
-        Ok(AttestationParams {
-            nonce,
-            public_key,
-            user_data: Some(user_data_bytes),
-        })
+        serde_json::to_vec(&Value::Object(user_data_map)).map_err(Into::into)
     }
 }
 
@@ -1039,6 +1071,48 @@ impl DerPublicKey {
 fn pem_decode(pem: &str) -> Result<Vec<u8>> {
     let der = DerPublicKey::from_public_key_pem(pem)?;
     Ok(der.into_bytes())
+}
+
+#[test]
+fn test_attestation_build_user_data_injects_eth_and_app_wallet() {
+    use assert2::assert;
+    use serde_json::json;
+
+    let bytes = AttestationRequest::build_user_data(
+        Some(json!({
+            "app_name": "test-app",
+            "version": "1.0",
+        })),
+        "0x1111111111111111111111111111111111111111",
+        Some("0x2222222222222222222222222222222222222222"),
+    )
+    .unwrap();
+
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(value["eth_addr"] == "0x1111111111111111111111111111111111111111");
+    assert!(value["app_wallet"] == "0x2222222222222222222222222222222222222222");
+    assert!(value["app_name"] == "test-app");
+    assert!(value["version"] == "1.0");
+}
+
+#[test]
+fn test_attestation_build_user_data_overwrites_reserved_fields() {
+    use assert2::assert;
+    use serde_json::json;
+
+    let bytes = AttestationRequest::build_user_data(
+        Some(json!({
+            "eth_addr": "0xdeadbeef",
+            "app_wallet": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        })),
+        "0x1111111111111111111111111111111111111111",
+        Some("0x2222222222222222222222222222222222222222"),
+    )
+    .unwrap();
+
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(value["eth_addr"] == "0x1111111111111111111111111111111111111111");
+    assert!(value["app_wallet"] == "0x2222222222222222222222222222222222222222");
 }
 
 #[tokio::test]
