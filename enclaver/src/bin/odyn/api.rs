@@ -112,10 +112,17 @@ impl ApiService {
                 audit_archive_task = Some(tokio::task::spawn(async move {
                     loop {
                         tokio::time::sleep(Duration::from_secs(60)).await;
+                        
+                        // 1. Retry backlog of failed uploads
+                        if let Err(err) = flush_audit_log_backlog(&audit_log_path, &s3_clone).await {
+                            warn!("Failed to flush KMS audit log backlog: {}", err);
+                        }
+
+                        // 2. Archive current active log
                         if let Err(err) =
                             archive_audit_log_once(&audit_log_path, &s3_clone).await
                         {
-                            warn!("Failed to archive KMS audit log: {}", err);
+                            warn!("Failed to archive current KMS audit log: {}", err);
                         }
                     }
                 }));
@@ -181,6 +188,52 @@ async fn archive_audit_log_once(path: &std::path::Path, s3_proxy: &Arc<S3Proxy>)
         .put_raw(&key, payload, Some("application/x-ndjson".to_string()))
         .await?;
     tokio::fs::remove_file(&rotate_path).await?;
+    Ok(())
+}
+
+async fn flush_audit_log_backlog(base_path: &std::path::Path, s3_proxy: &Arc<S3Proxy>) -> Result<()> {
+    let parent = base_path.parent().unwrap_or_else(|| std::path::Path::new("/"));
+    let base_name = base_path.file_name().unwrap_or_default().to_string_lossy();
+    let prefix = format!("{}.upload.", base_name);
+    
+    let mut entries = match tokio::fs::read_dir(parent).await {
+        Ok(e) => e,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err.into()),
+    };
+    
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with(&prefix) {
+            let path = entry.path();
+            let payload = match tokio::fs::read(&path).await {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            
+            if payload.is_empty() {
+                let _ = tokio::fs::remove_file(&path).await;
+                continue;
+            }
+
+            let key = format!(
+                "kms-audit/{}-{}.jsonl",
+                current_unix_timestamp(),
+                Uuid::new_v4()
+            );
+
+            match s3_proxy.put_raw(&key, payload, Some("application/x-ndjson".to_string())).await {
+                Ok(_) => {
+                    info!("Successfully archived backlog audit log {}", path.display());
+                    let _ = tokio::fs::remove_file(&path).await;
+                }
+                Err(err) => {
+                    warn!("Failed to archive backlog audit log {}: {}", path.display(), err);
+                    // Leave it on disk for next retry
+                }
+            }
+        }
+    }
     Ok(())
 }
 

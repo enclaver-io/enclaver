@@ -305,9 +305,8 @@ impl HeliosRpcProvider {
         match self.kind {
             HeliosRpcKind::Ethereum => {
                 if !matches!(network.as_str(), "mainnet" | "sepolia" | "holesky") {
-                    bail!(
-                        "{context}.network '{}' is invalid for kind=ethereum. \
-                         Supported: mainnet, sepolia, holesky",
+                    log::warn!(
+                        "{context}.network '{}' is not fully recognized for kind=ethereum. Supported: mainnet, sepolia, holesky. Enclaver cannot guarantee compatibility, but will proceed.",
                         network
                     );
                 }
@@ -317,9 +316,8 @@ impl HeliosRpcProvider {
                     network.as_str(),
                     "op-mainnet" | "base" | "base-sepolia" | "worldchain" | "zora" | "unichain"
                 ) {
-                    bail!(
-                        "{context}.network '{}' is invalid for kind=opstack. \
-                         Supported: op-mainnet, base, base-sepolia, worldchain, zora, unichain",
+                    log::warn!(
+                        "{context}.network '{}' is not fully recognized for kind=opstack. Supported: op-mainnet, base, base-sepolia, worldchain, zora, unichain. Enclaver cannot guarantee compatibility, but will proceed.",
                         network
                     );
                 }
@@ -425,9 +423,8 @@ impl HeliosRpc {
         match self.kind {
             HeliosRpcKind::Ethereum => {
                 if !matches!(net.as_str(), "mainnet" | "sepolia" | "holesky") {
-                    bail!(
-                        "helios_rpc.network '{}' is invalid for kind=ethereum. \
-                         Supported: mainnet, sepolia, holesky",
+                    log::warn!(
+                        "helios_rpc.network '{}' is not fully recognized for kind=ethereum. Supported: mainnet, sepolia, holesky. Enclaver cannot guarantee compatibility, but will proceed.",
                         net
                     );
                 }
@@ -437,9 +434,8 @@ impl HeliosRpc {
                     net.as_str(),
                     "op-mainnet" | "base" | "base-sepolia" | "worldchain" | "zora" | "unichain"
                 ) {
-                    bail!(
-                        "helios_rpc.network '{}' is invalid for kind=opstack. \
-                         Supported: op-mainnet, base, base-sepolia, worldchain, zora, unichain",
+                    log::warn!(
+                        "helios_rpc.network '{}' is not fully recognized for kind=opstack. Supported: op-mainnet, base, base-sepolia, worldchain, zora, unichain. Enclaver cannot guarantee compatibility, but will proceed.",
                         net
                     );
                 }
@@ -649,7 +645,7 @@ helios_rpc:
     }
 
     #[test]
-    fn test_parse_helios_rpc_opstack_rejects_unknown_network() {
+    fn test_parse_helios_rpc_opstack_warns_unknown_network() {
         let raw_manifest = br#"
 version: v1
 name: "test-helios-opstack-invalid"
@@ -663,11 +659,11 @@ helios_rpc:
   execution_rpc: "https://example.invalid"
 "#;
 
-        assert!(parse_manifest(raw_manifest).is_err());
+        assert!(parse_manifest(raw_manifest).is_ok());
     }
 
     #[test]
-    fn test_parse_helios_rpc_rejects_cross_kind_networks() {
+    fn test_parse_helios_rpc_warns_cross_kind_networks() {
         // ethereum kind with opstack network
         let raw_manifest = br#"
 version: v1
@@ -681,7 +677,7 @@ helios_rpc:
   network: op-mainnet
   execution_rpc: "https://example.invalid"
 "#;
-        assert!(parse_manifest(raw_manifest).is_err());
+        assert!(parse_manifest(raw_manifest).is_ok());
 
         // opstack kind with ethereum network
         let raw_manifest = br#"
@@ -696,7 +692,7 @@ helios_rpc:
   network: mainnet
   execution_rpc: "https://example.invalid"
 "#;
-        assert!(parse_manifest(raw_manifest).is_err());
+        assert!(parse_manifest(raw_manifest).is_ok());
     }
 
     #[test]
