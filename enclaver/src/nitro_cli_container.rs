@@ -1,13 +1,19 @@
-use std::sync::Arc;
-use std::path::PathBuf;
-use anyhow::{anyhow, Result};
-use bollard::{Docker, models::{Mount, MountTypeEnum}};
-use bollard::container::LogOutput;
-use bollard::query_parameters::{LogsOptions, CreateContainerOptions, StartContainerOptions, WaitContainerOptions, RemoveContainerOptions};
-use bollard::models::{ContainerCreateBody, HostConfig};
-use futures::{future, Stream, TryStreamExt};
 use crate::images::ImageRef;
+use anyhow::{Result, anyhow};
+use bollard::container::LogOutput;
+use bollard::models::{ContainerCreateBody, HostConfig};
+use bollard::query_parameters::{
+    CreateContainerOptions, LogsOptions, RemoveContainerOptions, StartContainerOptions,
+    WaitContainerOptions,
+};
+use bollard::{
+    Docker,
+    models::{Mount, MountTypeEnum},
+};
+use futures::{Stream, TryStreamExt, future};
 use log::debug;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 pub struct SigningInfo {
     pub key: PathBuf,
@@ -24,7 +30,13 @@ impl NitroCLIContainer {
         Self { docker, image }
     }
 
-    pub async fn build_enclave(&self, eif_name: &str, img_tag: &str, build_dir_path: &str, sign: Option<SigningInfo>) -> Result<String> {
+    pub async fn build_enclave(
+        &self,
+        eif_name: &str,
+        img_tag: &str,
+        build_dir_path: &str,
+        sign: Option<SigningInfo>,
+    ) -> Result<String> {
         debug!("using nitro-cli image: {}", self.image.to_str());
 
         let mut cmd = vec![
@@ -153,7 +165,9 @@ impl NitroCLIContainer {
     }
 
     pub async fn remove_container(&self, container_id: &str) -> Result<()> {
-        self.docker.remove_container(container_id, None::<RemoveContainerOptions>).await?;
+        self.docker
+            .remove_container(container_id, None::<RemoveContainerOptions>)
+            .await?;
         Ok(())
     }
 }

@@ -10,12 +10,12 @@ use std::time::Duration;
 use alloy_primitives::B256;
 use anyhow::{Result, anyhow};
 use enclaver::manifest::HeliosRpcKind;
-use helios::ethereum::{EthereumClient, EthereumClientBuilder};
 use helios::ethereum::config::networks::Network;
 use helios::ethereum::database::ConfigDB;
-use helios::opstack::{OpStackClient, OpStackClientBuilder};
+use helios::ethereum::{EthereumClient, EthereumClientBuilder};
 use helios::opstack::config::Network as OpNetwork;
 use helios::opstack::config::NetworkConfig as OpNetworkConfig;
+use helios::opstack::{OpStackClient, OpStackClientBuilder};
 use log::{info, warn};
 use tokio::task::JoinHandle;
 
@@ -64,27 +64,23 @@ impl HeliosRpcService {
             let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
             let task = tokio::task::spawn(async move {
                 let result = match kind {
-                    HeliosRpcKind::Ethereum => {
-                        Self::run_helios_ethereum(
-                            port,
-                            &network,
-                            &execution_rpc,
-                            consensus_rpc.as_deref(),
-                            checkpoint.as_deref(),
-                        )
-                        .await
-                        .map(|_| ())
-                    }
-                    HeliosRpcKind::Opstack => {
-                        Self::run_helios_opstack(
-                            port,
-                            &network,
-                            &execution_rpc,
-                            consensus_rpc.as_deref(),
-                        )
-                        .await
-                        .map(|_| ())
-                    }
+                    HeliosRpcKind::Ethereum => Self::run_helios_ethereum(
+                        port,
+                        &network,
+                        &execution_rpc,
+                        consensus_rpc.as_deref(),
+                        checkpoint.as_deref(),
+                    )
+                    .await
+                    .map(|_| ()),
+                    HeliosRpcKind::Opstack => Self::run_helios_opstack(
+                        port,
+                        &network,
+                        &execution_rpc,
+                        consensus_rpc.as_deref(),
+                    )
+                    .await
+                    .map(|_| ()),
                 };
 
                 match result {
@@ -195,7 +191,10 @@ impl HeliosRpcService {
                 .as_ref()
                 .map(|url| url.as_str().to_string())
                 .ok_or_else(|| {
-                    anyhow!("Helios OP Stack network '{}' missing default consensus RPC", net)
+                    anyhow!(
+                        "Helios OP Stack network '{}' missing default consensus RPC",
+                        net
+                    )
                 })?
         };
 
@@ -282,13 +281,13 @@ mod tests {
     #[tokio::test]
     async fn test_helios_service_no_config() {
         // Create a minimal Configuration with no helios_rpc
-        // Since we can't easily construct Configuration in tests, 
+        // Since we can't easily construct Configuration in tests,
         // we test the service's behavior by checking the struct fields
         let service = HeliosRpcService {
             tasks: Vec::new(),
             ready_rxs: Vec::new(),
         };
-        
+
         // Should be ready immediately since no Helios is configured
         let mut service = service;
         assert!(service.wait_ready().await);
@@ -354,7 +353,7 @@ mod tests {
     #[test]
     fn test_address_parsing() {
         let port = 8545u16;
-        let addr: std::result::Result<std::net::SocketAddr, _> = 
+        let addr: std::result::Result<std::net::SocketAddr, _> =
             format!("127.0.0.1:{}", port).parse();
         assert!(addr.is_ok());
         let addr = addr.unwrap();
@@ -366,7 +365,7 @@ mod tests {
     #[test]
     fn test_address_parsing_custom_port() {
         let port = 9999u16;
-        let addr: std::result::Result<std::net::SocketAddr, _> = 
+        let addr: std::result::Result<std::net::SocketAddr, _> =
             format!("127.0.0.1:{}", port).parse();
         assert!(addr.is_ok());
         let addr = addr.unwrap();
@@ -380,7 +379,7 @@ mod tests {
             tasks: Vec::new(),
             ready_rxs: Vec::new(),
         };
-        
+
         // Should not panic
         service.stop().await;
     }

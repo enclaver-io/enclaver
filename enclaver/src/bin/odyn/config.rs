@@ -232,3 +232,126 @@ impl KmsEndpointProvider for Configuration {
         ep.unwrap_or_else(|| format!("kms.{region}.amazonaws.com"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use enclaver::manifest::{Api, AuxApi, ChainAccess, HeliosRpc, HeliosRpcProvider, Sources};
+
+    fn base_config() -> Configuration {
+        Configuration {
+            config_dir: PathBuf::from("."),
+            manifest: Manifest {
+                version: "v1".to_string(),
+                name: "test".to_string(),
+                target: "target:latest".to_string(),
+                sources: Sources {
+                    app: "app:latest".to_string(),
+                    odyn: None,
+                    sleeve: None,
+                },
+                signature: None,
+                ingress: None,
+                egress: None,
+                defaults: None,
+                kms_proxy: None,
+                api: Some(Api { listen_port: 9000 }),
+                aux_api: None,
+                vsock_ports: None,
+                storage: None,
+                kms_integration: None,
+                chain_access: None,
+                helios_rpc: None,
+            },
+            listener_configs: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn aux_api_port_defaults_to_api_plus_one() {
+        let cfg = base_config();
+        assert_eq!(cfg.aux_api_port(), Some(9001));
+    }
+
+    #[test]
+    fn aux_api_port_uses_explicit_value() {
+        let mut cfg = base_config();
+        cfg.manifest.aux_api = Some(AuxApi {
+            listen_port: Some(9100),
+        });
+        assert_eq!(cfg.aux_api_port(), Some(9100));
+    }
+
+    #[test]
+    fn helios_configs_falls_back_to_legacy_shape() {
+        let mut cfg = base_config();
+        cfg.manifest.helios_rpc = Some(HeliosRpc {
+            enabled: true,
+            kind: HeliosRpcKind::Ethereum,
+            listen_port: 8545,
+            network: Some("sepolia".to_string()),
+            execution_rpc: Some("https://eth-sepolia.example".to_string()),
+            consensus_rpc: None,
+            checkpoint: None,
+        });
+
+        let configs = cfg.helios_configs();
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].network, "sepolia");
+        assert_eq!(configs[0].chain_id, None);
+    }
+
+    #[test]
+    fn helios_configs_prefers_chain_access_and_sorts_chain_ids() {
+        let mut cfg = base_config();
+        let mut app_providers = HashMap::new();
+        app_providers.insert(
+            "8453".to_string(),
+            HeliosRpcProvider {
+                kind: HeliosRpcKind::Opstack,
+                network: "base".to_string(),
+                execution_rpc: "https://base.example".to_string(),
+                consensus_rpc: None,
+                checkpoint: None,
+                local_rpc_port: 18547,
+            },
+        );
+        app_providers.insert(
+            "1".to_string(),
+            HeliosRpcProvider {
+                kind: HeliosRpcKind::Ethereum,
+                network: "mainnet".to_string(),
+                execution_rpc: "https://eth.example".to_string(),
+                consensus_rpc: None,
+                checkpoint: None,
+                local_rpc_port: 18546,
+            },
+        );
+        cfg.manifest.chain_access = Some(ChainAccess {
+            registry_chain: Some(HeliosRpcProvider {
+                kind: HeliosRpcKind::Opstack,
+                network: "base-sepolia".to_string(),
+                execution_rpc: "https://sepolia.base.example".to_string(),
+                consensus_rpc: None,
+                checkpoint: None,
+                local_rpc_port: 18545,
+            }),
+            app_rpc_providers: Some(app_providers),
+        });
+        cfg.manifest.helios_rpc = Some(HeliosRpc {
+            enabled: true,
+            kind: HeliosRpcKind::Ethereum,
+            listen_port: 9999,
+            network: Some("holesky".to_string()),
+            execution_rpc: Some("https://unused.example".to_string()),
+            consensus_rpc: None,
+            checkpoint: None,
+        });
+
+        let configs = cfg.helios_configs();
+        assert_eq!(configs.len(), 3);
+        assert_eq!(configs[0].chain_id.as_deref(), Some("registry"));
+        assert_eq!(configs[1].chain_id.as_deref(), Some("1"));
+        assert_eq!(configs[2].chain_id.as_deref(), Some("8453"));
+    }
+}

@@ -227,9 +227,7 @@ impl NovaKmsProxy {
         })
     }
 
-    fn spawn_audit_log_writer(
-        path: Option<PathBuf>,
-    ) -> Option<mpsc::UnboundedSender<String>> {
+    fn spawn_audit_log_writer(path: Option<PathBuf>) -> Option<mpsc::UnboundedSender<String>> {
         let path = path?;
         let (sender, mut receiver) = mpsc::unbounded_channel::<String>();
         let handle = match tokio::runtime::Handle::try_current() {
@@ -282,7 +280,10 @@ impl NovaKmsProxy {
             .derive_reserved_key_internal(APP_WALLET_DERIVE_PATH, "", 32)
             .await?;
         if key.len() != 32 {
-            bail!("KMS app wallet derivation returned invalid length {}", key.len());
+            bail!(
+                "KMS app wallet derivation returned invalid length {}",
+                key.len()
+            );
         }
         let mut entropy = [0u8; 32];
         entropy.copy_from_slice(&key);
@@ -326,12 +327,7 @@ impl NovaKmsProxy {
         .await;
     }
 
-    pub async fn derive_key(
-        &self,
-        path: &str,
-        context: &str,
-        length: usize,
-    ) -> Result<Vec<u8>> {
+    pub async fn derive_key(&self, path: &str, context: &str, length: usize) -> Result<Vec<u8>> {
         if path.trim().is_empty() {
             bail!("KMS derive path cannot be empty");
         }
@@ -604,7 +600,9 @@ impl NovaKmsProxy {
         let client_signature = self.local_sign_message(&message).await?;
         let app_wallet = self.local_eth_address().await?;
 
-        let mut req = self.client.request(method.clone(), format!("{base_url}{path}"));
+        let mut req = self
+            .client
+            .request(method.clone(), format!("{base_url}{path}"));
         req = req
             .header("x-app-signature", client_signature.clone())
             .header("x-app-nonce", nonce_b64)
@@ -731,11 +729,17 @@ impl NovaKmsProxy {
         let pubkey = value
             .get("public_key_der")
             .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("Odyn /v1/encryption/public_key response missing public_key_der"))?;
+            .ok_or_else(|| {
+                anyhow!("Odyn /v1/encryption/public_key response missing public_key_der")
+            })?;
         Ok(trim_0x(pubkey))
     }
 
-    async fn encrypt_payload_for_node(&self, payload: &Value, node_tee_pubkey: &str) -> Result<Value> {
+    async fn encrypt_payload_for_node(
+        &self,
+        payload: &Value,
+        node_tee_pubkey: &str,
+    ) -> Result<Value> {
         let sender_pubkey = self.local_tee_pubkey().await?;
         let plaintext = serde_json::to_string(payload)?;
         let value = self
@@ -754,7 +758,9 @@ impl NovaKmsProxy {
         let encrypted_data = value
             .get("encrypted_data")
             .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("Odyn /v1/encryption/encrypt response missing encrypted_data"))?;
+            .ok_or_else(|| {
+                anyhow!("Odyn /v1/encryption/encrypt response missing encrypted_data")
+            })?;
 
         Ok(json!({
             "sender_tee_pubkey": sender_pubkey,
@@ -870,15 +876,17 @@ impl NovaKmsProxy {
         }
     }
 
-    async fn resolve_authz_context(&self, require_anchored_wallet: bool) -> Result<AppAuthzContext> {
+    async fn resolve_authz_context(
+        &self,
+        require_anchored_wallet: bool,
+    ) -> Result<AppAuthzContext> {
         if let Some(cached) = self.cached_authz_context().await {
             return Ok(cached);
         }
 
-        let discovery = self
-            .registry_discovery
-            .as_ref()
-            .ok_or_else(|| anyhow!("registry-based authz requires kms_app_id/nova_app_registry/registry_chain_rpc"))?;
+        let discovery = self.registry_discovery.as_ref().ok_or_else(|| {
+            anyhow!("registry-based authz requires kms_app_id/nova_app_registry/registry_chain_rpc")
+        })?;
 
         let instance_wallet = self.local_eth_address().await?;
         let instance = self
@@ -886,7 +894,10 @@ impl NovaKmsProxy {
             .await?;
 
         if !instance.zk_verified {
-            bail!("instance {} is not zk-verified on registry", instance_wallet);
+            bail!(
+                "instance {} is not zk-verified on registry",
+                instance_wallet
+            );
         }
         if instance.status != 0 {
             bail!("instance {} is not ACTIVE on registry", instance_wallet);
@@ -907,7 +918,10 @@ impl NovaKmsProxy {
             );
         }
         if require_anchored_wallet && is_zero_address(&anchored_wallet) {
-            bail!("app {} has no anchored appWallet on registry", instance.app_id);
+            bail!(
+                "app {} has no anchored appWallet on registry",
+                instance.app_id
+            );
         }
 
         let context = AppAuthzContext {
@@ -980,7 +994,9 @@ impl NovaKmsProxy {
                 urls
             }
             Ok(_) => {
-                warn!("Registry discovery returned no ACTIVE KMS nodes; falling back to static base_urls");
+                warn!(
+                    "Registry discovery returned no ACTIVE KMS nodes; falling back to static base_urls"
+                );
                 self.base_urls.to_vec()
             }
             Err(err) => {
@@ -1024,7 +1040,9 @@ impl NovaKmsProxy {
         Ok(urls)
     }
 
-    fn build_registry_discovery(config: &KmsIntegration) -> Result<Option<RegistryDiscoveryConfig>> {
+    fn build_registry_discovery(
+        config: &KmsIntegration,
+    ) -> Result<Option<RegistryDiscoveryConfig>> {
         let has_any_registry_field = config.kms_app_id.is_some()
             || config.nova_app_registry.is_some()
             || config.registry_chain_rpc.is_some();
@@ -1032,21 +1050,25 @@ impl NovaKmsProxy {
             return Ok(None);
         }
 
-        let kms_app_id = config
-            .kms_app_id
-            .ok_or_else(|| anyhow!("kms_integration.kms_app_id is required for registry discovery"))?;
+        let kms_app_id = config.kms_app_id.ok_or_else(|| {
+            anyhow!("kms_integration.kms_app_id is required for registry discovery")
+        })?;
         let registry_address = config
             .nova_app_registry
             .as_deref()
             .map(str::trim)
             .filter(|v| !v.is_empty())
-            .ok_or_else(|| anyhow!("kms_integration.nova_app_registry is required for registry discovery"))?;
+            .ok_or_else(|| {
+                anyhow!("kms_integration.nova_app_registry is required for registry discovery")
+            })?;
         let registry_chain_rpc = config
             .registry_chain_rpc
             .as_deref()
             .map(str::trim)
             .filter(|v| !v.is_empty())
-            .ok_or_else(|| anyhow!("kms_integration.registry_chain_rpc is required for registry discovery"))?;
+            .ok_or_else(|| {
+                anyhow!("kms_integration.registry_chain_rpc is required for registry discovery")
+            })?;
 
         Ok(Some(RegistryDiscoveryConfig {
             kms_app_id,
@@ -1063,11 +1085,7 @@ impl NovaKmsProxy {
     ) -> Result<Vec<String>> {
         let function = registry_fn_get_active_instances();
         let output = self
-            .registry_call(
-                discovery,
-                &function,
-                vec![Token::Uint(U256::from(app_id))],
-            )
+            .registry_call(discovery, &function, vec![Token::Uint(U256::from(app_id))])
             .await?;
         let first = output
             .first()
@@ -1119,11 +1137,7 @@ impl NovaKmsProxy {
     ) -> Result<RegistryApp> {
         let function = registry_fn_get_app();
         let output = self
-            .registry_call(
-                discovery,
-                &function,
-                vec![Token::Uint(U256::from(app_id))],
-            )
+            .registry_call(discovery, &function, vec![Token::Uint(U256::from(app_id))])
             .await?;
         let tuple = extract_single_tuple(output, "getApp")?;
         if tuple.len() < 9 {
@@ -1328,14 +1342,18 @@ fn normalize_base_url(value: &str) -> Option<String> {
         normalized.pop();
     }
     if normalized.is_empty() {
-        None
-    } else {
-        Some(normalized)
+        return None;
     }
+    let parsed = reqwest::Url::parse(&normalized).ok()?;
+    if parsed.host_str().is_none() {
+        return None;
+    }
+    Some(normalized)
 }
 
 fn trim_0x(value: &str) -> String {
-    value.trim_start_matches("0x")
+    value
+        .trim_start_matches("0x")
         .trim_start_matches("0X")
         .to_string()
 }
@@ -1356,13 +1374,18 @@ fn current_unix_millis() -> u64 {
 
 fn canonical_wallet(wallet: &str) -> Result<String> {
     let value = wallet.trim().to_lowercase();
-    if value.starts_with("0x") && value.len() == 42 {
-        return Ok(value);
-    }
-    if value.len() == 40 {
-        return Ok(format!("0x{value}"));
-    }
-    bail!("invalid wallet address format: {}", wallet)
+    let body = if let Some(stripped) = value.strip_prefix("0x") {
+        if stripped.len() != 40 {
+            bail!("invalid wallet address format: {}", wallet);
+        }
+        stripped
+    } else if value.len() == 40 {
+        value.as_str()
+    } else {
+        bail!("invalid wallet address format: {}", wallet);
+    };
+    hex::decode(body).map_err(|_| anyhow!("invalid wallet address format: {}", wallet))?;
+    Ok(format!("0x{}", body))
 }
 
 fn is_zero_address(wallet: &str) -> bool {
@@ -1374,6 +1397,8 @@ fn is_zero_address(wallet: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manifest::KmsIntegration;
+    use ethabi::ethereum_types::U256;
 
     #[test]
     fn reserved_path_detection_matches_prefix() {
@@ -1418,5 +1443,74 @@ mod tests {
             normalize_base_url("https://kms.example.com/"),
             Some("https://kms.example.com".to_string())
         );
+        assert_eq!(normalize_base_url("https://"), None);
+    }
+
+    #[test]
+    fn canonical_wallet_rejects_invalid_hex() {
+        assert!(canonical_wallet("0xzzzz000000000000000000000000000000000000").is_err());
+        assert!(canonical_wallet("not-a-wallet").is_err());
+    }
+
+    #[test]
+    fn parse_h160_rejects_invalid_inputs() {
+        assert!(parse_h160("0x1234").is_err());
+        assert!(parse_h160("0xgggg000000000000000000000000000000000000").is_err());
+    }
+
+    #[test]
+    fn extract_single_tuple_rejects_invalid_shapes() {
+        assert!(extract_single_tuple(vec![], "ctx").is_err());
+        assert!(extract_single_tuple(vec![Token::Uint(U256::from(1u64))], "ctx").is_err());
+        assert!(
+            extract_single_tuple(vec![Token::Tuple(vec![]), Token::Tuple(vec![])], "ctx").is_err()
+        );
+    }
+
+    #[test]
+    fn token_to_u64_rejects_overflow_and_wrong_type() {
+        let overflow = Token::Uint(U256::from(u64::MAX) + U256::from(1u64));
+        assert!(token_to_u64(&overflow, "field").is_err());
+        assert!(token_to_u64(&Token::Bool(true), "field").is_err());
+    }
+
+    #[test]
+    fn build_registry_discovery_none_when_registry_fields_absent() {
+        let config = KmsIntegration {
+            enabled: true,
+            kms_app_id: None,
+            nova_app_registry: None,
+            registry_chain_rpc: None,
+            base_urls: Some(vec!["https://kms-1.example.com".to_string()]),
+            request_timeout_ms: 3000,
+            max_retries: 2,
+            discovery_ttl_ms: 100,
+            require_mutual_signature: true,
+            audit_log_path: None,
+            reserved_derive_prefixes: None,
+        };
+        let discovery = NovaKmsProxy::build_registry_discovery(&config).unwrap();
+        assert!(discovery.is_none());
+    }
+
+    #[test]
+    fn build_registry_discovery_enforces_min_ttl() {
+        let config = KmsIntegration {
+            enabled: true,
+            kms_app_id: Some(49),
+            nova_app_registry: Some("0x0f68e6e699f2e972998a1ecc000c7ce103e64cc8".to_string()),
+            registry_chain_rpc: Some("https://sepolia.base.org".to_string()),
+            base_urls: Some(vec!["https://kms-1.example.com".to_string()]),
+            request_timeout_ms: 3000,
+            max_retries: 2,
+            discovery_ttl_ms: 10,
+            require_mutual_signature: true,
+            audit_log_path: None,
+            reserved_derive_prefixes: None,
+        };
+        let discovery = NovaKmsProxy::build_registry_discovery(&config)
+            .unwrap()
+            .expect("discovery config");
+        assert!(discovery.ttl_ms == 1000);
     }
 }

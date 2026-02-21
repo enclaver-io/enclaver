@@ -1,6 +1,6 @@
-use anyhow::{Result, anyhow, bail};
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use anyhow::{Result, anyhow, bail};
 use aws_sdk_s3::Client as S3Client;
 use aws_sdk_s3::primitives::ByteStream;
 use base64::{Engine as _, engine::general_purpose};
@@ -73,7 +73,9 @@ impl S3Proxy {
     /// Returns an error if the key attempts path traversal (e.g. contains "..").
     pub fn build_key(&self, key: &str) -> Result<String> {
         if key.contains("..") || key.starts_with('/') {
-            return Err(anyhow!("Invalid key: path traversal or absolute path not allowed"));
+            return Err(anyhow!(
+                "Invalid key: path traversal or absolute path not allowed"
+            ));
         }
         Ok(format!("{}{}", self.prefix, key))
     }
@@ -211,10 +213,9 @@ impl S3Proxy {
 
     async fn current_kms_proxy(&self) -> Result<Arc<NovaKmsProxy>> {
         let guard = self.kms_proxy.read().await;
-        guard
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| anyhow!("S3 KMS encryption is enabled, but KMS integration is not configured"))
+        guard.as_ref().cloned().ok_or_else(|| {
+            anyhow!("S3 KMS encryption is enabled, but KMS integration is not configured")
+        })
     }
 
     fn key_version(&self) -> String {
@@ -274,7 +275,13 @@ impl S3Proxy {
         rand::rngs::OsRng.fill_bytes(&mut nonce);
 
         let ciphertext = cipher
-            .encrypt(Nonce::from_slice(&nonce), aes_gcm::aead::Payload { msg: plaintext, aad: &aad })
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                aes_gcm::aead::Payload {
+                    msg: plaintext,
+                    aad: &aad,
+                },
+            )
             .map_err(|e| anyhow!("S3 encrypt failed: {}", e))?;
 
         Ok((
@@ -352,7 +359,8 @@ impl S3Proxy {
         let mut metadata_pairs: Vec<(String, String)> = Vec::new();
 
         if self.kms_encryption_enabled() {
-            let (ciphertext, nonce_hex, key_version, aad_mode) = self.encrypt_for_s3(key, &data).await?;
+            let (ciphertext, nonce_hex, key_version, aad_mode) =
+                self.encrypt_for_s3(key, &data).await?;
             data = ciphertext;
             metadata_pairs.push((META_ENC_SCHEME.to_string(), ENC_SCHEME_KMS_V1.to_string()));
             metadata_pairs.push((META_NONCE.to_string(), nonce_hex));
@@ -429,14 +437,24 @@ struct S3ListResponse {
 mod tests {
     use super::*;
     use aws_sdk_s3::config::{BehaviorVersion, Config};
+    use std::collections::HashMap;
 
-    fn mock_proxy(prefix: &str) -> S3Proxy {
+    fn mock_proxy_with_encryption(prefix: &str, encryption: Option<S3EncryptionConfig>) -> S3Proxy {
         let config = Config::builder()
             .behavior_version(BehaviorVersion::latest())
             .region(aws_sdk_s3::config::Region::new("us-east-1"))
             .build();
         let client = S3Client::from_conf(config);
-        S3Proxy::new(client, "test-bucket".to_string(), prefix.to_string(), None)
+        S3Proxy::new(
+            client,
+            "test-bucket".to_string(),
+            prefix.to_string(),
+            encryption,
+        )
+    }
+
+    fn mock_proxy(prefix: &str) -> S3Proxy {
+        mock_proxy_with_encryption(prefix, None)
     }
 
     #[test]
@@ -493,5 +511,70 @@ mod tests {
             S3Proxy::build_aad("cfg", "v1", &S3EncryptionAadMode::KeyAndVersion),
             b"v1:cfg".to_vec()
         );
+    }
+
+    #[tokio::test]
+    async fn test_decrypt_if_needed_passthrough_plaintext_when_unencrypted() {
+        let proxy = mock_proxy("apps/my-app/");
+        let payload = b"hello".to_vec();
+        let metadata = HashMap::new();
+        let out = proxy
+            .decrypt_if_needed("config.json", payload.clone(), &metadata)
+            .await
+            .unwrap();
+        assert_eq!(out, payload);
+    }
+
+    #[tokio::test]
+    async fn test_decrypt_if_needed_rejects_plaintext_when_kms_enforced() {
+        let proxy = mock_proxy_with_encryption(
+            "apps/my-app/",
+            Some(S3EncryptionConfig {
+                mode: S3EncryptionMode::Kms,
+                key_scope: crate::manifest::S3EncryptionKeyScope::Object,
+                aad_mode: S3EncryptionAadMode::Key,
+                key_version: "v1".to_string(),
+                accept_plaintext: false,
+            }),
+        );
+        let metadata = HashMap::new();
+        let err = proxy
+            .decrypt_if_needed("config.json", b"plaintext".to_vec(), &metadata)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("plaintext object is not accepted when kms encryption is enforced")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_decrypt_if_needed_rejects_missing_nonce_metadata() {
+        let proxy = mock_proxy("apps/my-app/");
+        let mut metadata = HashMap::new();
+        metadata.insert(META_ENC_SCHEME.to_string(), ENC_SCHEME_KMS_V1.to_string());
+
+        let err = proxy
+            .decrypt_if_needed("config.json", vec![1, 2, 3], &metadata)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("encrypted object metadata missing nonce")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_decrypt_if_needed_rejects_invalid_nonce_size() {
+        let proxy = mock_proxy("apps/my-app/");
+        let mut metadata = HashMap::new();
+        metadata.insert(META_ENC_SCHEME.to_string(), ENC_SCHEME_KMS_V1.to_string());
+        metadata.insert(META_NONCE.to_string(), "001122".to_string());
+
+        let err = proxy
+            .decrypt_if_needed("config.json", vec![1, 2, 3], &metadata)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("invalid nonce size"));
     }
 }

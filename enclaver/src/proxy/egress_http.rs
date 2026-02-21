@@ -5,8 +5,8 @@ use crate::utils;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
-use http_body_util::combinators::BoxBody;
 use http_body_util::Full;
+use http_body_util::combinators::BoxBody;
 use hyper::body::{Body, Bytes, Incoming};
 use hyper::client::conn::http1 as http1_client;
 use hyper::header::HeaderValue;
@@ -16,7 +16,7 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use log::{debug, error};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_vsock::VsockStream;
@@ -292,7 +292,7 @@ async fn handle_request(
         None => {
             return Ok(with_boxed_body(bad_request(
                 "URI is missing a host".to_string(),
-            )))
+            )));
         }
     };
     let port = req.uri().port_u16().unwrap_or(80);
@@ -402,7 +402,7 @@ async fn remote_connect(egress_port: u32, host: &str, port: u16) -> anyhow::Resu
 #[cfg(test)]
 mod tests {
     use assert2::assert;
-    use http::{uri::PathAndQuery, Method, Version};
+    use http::{Method, Version, uri::PathAndQuery};
     use http_body_util::{BodyExt, Full};
     use hyper::body::{Bytes, Incoming};
     use hyper::server::conn::http1 as http1_server;
@@ -495,12 +495,17 @@ mod tests {
         async fn start(base_port: u16, use_tls: bool) -> Self {
             _ = pretty_env_logger::try_init();
 
-            return Self {
+            let fixture = Self {
                 base_port,
                 enclave_proxy_task: start_enclave_proxy(base_port, base_port as u32).await,
                 host_proxy_task: start_host_proxy(base_port as u32),
                 echo_task: start_echo_server(base_port + 1, use_tls),
             };
+
+            // Give background listeners a brief window to start before issuing requests.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            fixture
         }
 
         fn proxy_uri(&self) -> http::Uri {
@@ -584,7 +589,7 @@ mod tests {
 
         let resp1 = client
             .post(format!(
-                "https://localhost:{}/echo",
+                "https://127.0.0.1:{}/echo",
                 fixture.webserver_port()
             ))
             .body(expected.clone())

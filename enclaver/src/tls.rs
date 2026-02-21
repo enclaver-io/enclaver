@@ -3,7 +3,7 @@ use std::io::BufReader;
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::aws_lc_rs;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};

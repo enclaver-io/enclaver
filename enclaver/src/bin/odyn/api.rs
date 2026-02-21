@@ -30,22 +30,28 @@ impl ApiService {
 
             // Create S3 proxy if S3 storage is configured
             let s3_proxy = if let Some(s3_config) = config.s3_config() {
-                info!("S3 storage enabled: bucket={}, prefix={}", s3_config.bucket, s3_config.prefix);
-                
+                info!(
+                    "S3 storage enabled: bucket={}, prefix={}",
+                    s3_config.bucket, s3_config.prefix
+                );
+
                 // Load AWS config from IMDS (EC2 instance metadata) via proxy
                 // inside an enclave, we MUST use a proxy to reach IMDS
                 let proxy_uri = config.egress_proxy_uri().ok_or_else(|| {
                     anyhow::anyhow!("Egress proxy is not configured, but is required for AWS IMDS access inside the enclave.")
                 })?;
 
-                info!("Enclave environment detected: using egress proxy at {} for AWS configuration", proxy_uri);
-                
+                info!(
+                    "Enclave environment detected: using egress proxy at {} for AWS configuration",
+                    proxy_uri
+                );
+
                 let http_client = enclaver::proxy::aws_util::new_proxied_client(proxy_uri.clone())?;
                 let imds = enclaver::proxy::aws_util::imds_client_with_proxy(proxy_uri).await?;
-                
+
                 // Small delay to ensure egress proxy is fully up and ready to handle vsock requests
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                
+
                 let aws_config = enclaver::proxy::aws_util::load_config_from_imds(imds).await?;
 
                 let mut s3_config_builder = aws_sdk_s3::config::Builder::from(&aws_config);
@@ -54,9 +60,9 @@ impl ApiService {
                 if let Some(region) = &s3_config.region {
                     s3_config_builder = s3_config_builder.region(Region::new(region.clone()));
                 }
-                
+
                 let client = S3Client::from_conf(s3_config_builder.build());
-                
+
                 Some(Arc::new(enclaver::proxy::s3::S3Proxy::new(
                     client,
                     s3_config.bucket.clone(),
@@ -100,7 +106,8 @@ impl ApiService {
             }
 
             // Periodically rotate and archive audit logs into encrypted S3.
-            if let (Some(kms_proxy_ref), Some(s3_proxy_ref)) = (kms_proxy.as_ref(), s3_proxy.as_ref())
+            if let (Some(kms_proxy_ref), Some(s3_proxy_ref)) =
+                (kms_proxy.as_ref(), s3_proxy.as_ref())
                 && let Some(s3_cfg) = config.s3_config()
                 && matches!(
                     s3_cfg.encryption.as_ref().map(|v| &v.mode),
@@ -112,16 +119,15 @@ impl ApiService {
                 audit_archive_task = Some(tokio::task::spawn(async move {
                     loop {
                         tokio::time::sleep(Duration::from_secs(60)).await;
-                        
+
                         // 1. Retry backlog of failed uploads
-                        if let Err(err) = flush_audit_log_backlog(&audit_log_path, &s3_clone).await {
+                        if let Err(err) = flush_audit_log_backlog(&audit_log_path, &s3_clone).await
+                        {
                             warn!("Failed to flush KMS audit log backlog: {}", err);
                         }
 
                         // 2. Archive current active log
-                        if let Err(err) =
-                            archive_audit_log_once(&audit_log_path, &s3_clone).await
-                        {
+                        if let Err(err) = archive_audit_log_once(&audit_log_path, &s3_clone).await {
                             warn!("Failed to archive current KMS audit log: {}", err);
                         }
                     }
@@ -162,11 +168,7 @@ impl ApiService {
 }
 
 async fn archive_audit_log_once(path: &std::path::Path, s3_proxy: &Arc<S3Proxy>) -> Result<()> {
-    let rotate_path = format!(
-        "{}.upload.{}",
-        path.display(),
-        current_unix_timestamp()
-    );
+    let rotate_path = format!("{}.upload.{}", path.display(), current_unix_timestamp());
     match tokio::fs::rename(path, &rotate_path).await {
         Ok(()) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -191,17 +193,22 @@ async fn archive_audit_log_once(path: &std::path::Path, s3_proxy: &Arc<S3Proxy>)
     Ok(())
 }
 
-async fn flush_audit_log_backlog(base_path: &std::path::Path, s3_proxy: &Arc<S3Proxy>) -> Result<()> {
-    let parent = base_path.parent().unwrap_or_else(|| std::path::Path::new("/"));
+async fn flush_audit_log_backlog(
+    base_path: &std::path::Path,
+    s3_proxy: &Arc<S3Proxy>,
+) -> Result<()> {
+    let parent = base_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("/"));
     let base_name = base_path.file_name().unwrap_or_default().to_string_lossy();
     let prefix = format!("{}.upload.", base_name);
-    
+
     let mut entries = match tokio::fs::read_dir(parent).await {
         Ok(e) => e,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(err) => return Err(err.into()),
     };
-    
+
     while let Ok(Some(entry)) = entries.next_entry().await {
         let name = entry.file_name().to_string_lossy().into_owned();
         if name.starts_with(&prefix) {
@@ -210,7 +217,7 @@ async fn flush_audit_log_backlog(base_path: &std::path::Path, s3_proxy: &Arc<S3P
                 Ok(p) => p,
                 Err(_) => continue,
             };
-            
+
             if payload.is_empty() {
                 let _ = tokio::fs::remove_file(&path).await;
                 continue;
@@ -222,13 +229,20 @@ async fn flush_audit_log_backlog(base_path: &std::path::Path, s3_proxy: &Arc<S3P
                 Uuid::new_v4()
             );
 
-            match s3_proxy.put_raw(&key, payload, Some("application/x-ndjson".to_string())).await {
+            match s3_proxy
+                .put_raw(&key, payload, Some("application/x-ndjson".to_string()))
+                .await
+            {
                 Ok(_) => {
                     info!("Successfully archived backlog audit log {}", path.display());
                     let _ = tokio::fs::remove_file(&path).await;
                 }
                 Err(err) => {
-                    warn!("Failed to archive backlog audit log {}: {}", path.display(), err);
+                    warn!(
+                        "Failed to archive backlog audit log {}: {}",
+                        path.display(),
+                        err
+                    );
                     // Leave it on disk for next retry
                 }
             }

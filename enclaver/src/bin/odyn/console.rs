@@ -387,10 +387,10 @@ impl WatchSet {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::{anyhow, Result};
+    use anyhow::{Result, anyhow};
     use assert2::assert;
     use enclaver::constants::STATUS_PORT;
-    use json::{object, JsonValue};
+    use json::{JsonValue, object};
     use nix::sys::signal::Signal;
     use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader, Lines};
     use tokio_vsock::VsockStream;

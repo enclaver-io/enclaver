@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::pin::Pin;
@@ -115,7 +115,7 @@ pub struct S3StorageConfig {
     pub enabled: bool,
     /// S3 bucket name
     pub bucket: String,
-    /// S3 key prefix for isolation (e.g., "apps/my-app/"). 
+    /// S3 key prefix for isolation (e.g., "apps/my-app/").
     /// Odyn will automatically ensure this ends with a trailing slash.
     pub prefix: String,
     /// AWS region (optional, defaults to us-east-1 or IMDS-provided region)
@@ -238,12 +238,18 @@ impl KmsIntegration {
         if !(registry.starts_with("0x") || registry.starts_with("0X")) || registry.len() != 42 {
             bail!("kms_integration.nova_app_registry must be a 20-byte hex address");
         }
+        let registry_hex = registry.trim_start_matches("0x").trim_start_matches("0X");
+        if hex::decode(registry_hex).is_err() {
+            bail!("kms_integration.nova_app_registry must be a 20-byte hex address");
+        }
         let registry_chain_rpc = self
             .registry_chain_rpc
             .as_ref()
             .map(|v| v.trim())
             .filter(|v| !v.is_empty())
-            .ok_or_else(|| anyhow!("kms_integration.registry_chain_rpc is required when enabled"))?;
+            .ok_or_else(|| {
+                anyhow!("kms_integration.registry_chain_rpc is required when enabled")
+            })?;
         if !(registry_chain_rpc.starts_with("http://")
             || registry_chain_rpc.starts_with("https://"))
         {
@@ -264,7 +270,10 @@ impl KmsIntegration {
                 bail!("kms_integration.base_urls contains an empty URL");
             }
             if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
-                bail!("kms_integration.base_urls must use http:// or https://: {}", trimmed);
+                bail!(
+                    "kms_integration.base_urls must use http:// or https://: {}",
+                    trimmed
+                );
             }
         }
 
@@ -305,8 +314,8 @@ impl HeliosRpcProvider {
         match self.kind {
             HeliosRpcKind::Ethereum => {
                 if !matches!(network.as_str(), "mainnet" | "sepolia" | "holesky") {
-                    log::warn!(
-                        "{context}.network '{}' is not fully recognized for kind=ethereum. Supported: mainnet, sepolia, holesky. Enclaver cannot guarantee compatibility, but will proceed.",
+                    bail!(
+                        "{context}.network '{}' is unsupported for kind=ethereum. Supported: mainnet, sepolia, holesky.",
                         network
                     );
                 }
@@ -316,8 +325,8 @@ impl HeliosRpcProvider {
                     network.as_str(),
                     "op-mainnet" | "base" | "base-sepolia" | "worldchain" | "zora" | "unichain"
                 ) {
-                    log::warn!(
-                        "{context}.network '{}' is not fully recognized for kind=opstack. Supported: op-mainnet, base, base-sepolia, worldchain, zora, unichain. Enclaver cannot guarantee compatibility, but will proceed.",
+                    bail!(
+                        "{context}.network '{}' is unsupported for kind=opstack. Supported: op-mainnet, base, base-sepolia, worldchain, zora, unichain.",
                         network
                     );
                 }
@@ -335,7 +344,10 @@ impl ChainAccess {
         if let Some(registry_chain) = &self.registry_chain {
             registry_chain.validate("chain_access.registry_chain")?;
             if !used_ports.insert(registry_chain.local_rpc_port) {
-                bail!("duplicate local_rpc_port in chain_access: {}", registry_chain.local_rpc_port);
+                bail!(
+                    "duplicate local_rpc_port in chain_access: {}",
+                    registry_chain.local_rpc_port
+                );
             }
         }
 
@@ -343,7 +355,10 @@ impl ChainAccess {
             for (chain_id, provider) in app_rpc_providers {
                 provider.validate(&format!("chain_access.app_rpc_providers.{chain_id}"))?;
                 if !used_ports.insert(provider.local_rpc_port) {
-                    bail!("duplicate local_rpc_port in chain_access: {}", provider.local_rpc_port);
+                    bail!(
+                        "duplicate local_rpc_port in chain_access: {}",
+                        provider.local_rpc_port
+                    );
                 }
             }
         }
@@ -423,8 +438,8 @@ impl HeliosRpc {
         match self.kind {
             HeliosRpcKind::Ethereum => {
                 if !matches!(net.as_str(), "mainnet" | "sepolia" | "holesky") {
-                    log::warn!(
-                        "helios_rpc.network '{}' is not fully recognized for kind=ethereum. Supported: mainnet, sepolia, holesky. Enclaver cannot guarantee compatibility, but will proceed.",
+                    bail!(
+                        "helios_rpc.network '{}' is unsupported for kind=ethereum. Supported: mainnet, sepolia, holesky.",
                         net
                     );
                 }
@@ -434,8 +449,8 @@ impl HeliosRpc {
                     net.as_str(),
                     "op-mainnet" | "base" | "base-sepolia" | "worldchain" | "zora" | "unichain"
                 ) {
-                    log::warn!(
-                        "helios_rpc.network '{}' is not fully recognized for kind=opstack. Supported: op-mainnet, base, base-sepolia, worldchain, zora, unichain. Enclaver cannot guarantee compatibility, but will proceed.",
+                    bail!(
+                        "helios_rpc.network '{}' is unsupported for kind=opstack. Supported: op-mainnet, base, base-sepolia, worldchain, zora, unichain.",
                         net
                     );
                 }
@@ -544,7 +559,10 @@ helios_rpc:
             helios.execution_rpc.as_deref(),
             Some("https://eth-mainnet.g.alchemy.com/v2/KEY")
         );
-        assert_eq!(helios.consensus_rpc, Some("https://www.lightclientdata.org".to_string()));
+        assert_eq!(
+            helios.consensus_rpc,
+            Some("https://www.lightclientdata.org".to_string())
+        );
         assert_eq!(helios.checkpoint, Some("0x1234567890abcdef".to_string()));
     }
 
@@ -645,7 +663,7 @@ helios_rpc:
     }
 
     #[test]
-    fn test_parse_helios_rpc_opstack_warns_unknown_network() {
+    fn test_parse_helios_rpc_opstack_rejects_unknown_network() {
         let raw_manifest = br#"
 version: v1
 name: "test-helios-opstack-invalid"
@@ -659,11 +677,11 @@ helios_rpc:
   execution_rpc: "https://example.invalid"
 "#;
 
-        assert!(parse_manifest(raw_manifest).is_ok());
+        assert!(parse_manifest(raw_manifest).is_err());
     }
 
     #[test]
-    fn test_parse_helios_rpc_warns_cross_kind_networks() {
+    fn test_parse_helios_rpc_rejects_cross_kind_networks() {
         // ethereum kind with opstack network
         let raw_manifest = br#"
 version: v1
@@ -677,7 +695,7 @@ helios_rpc:
   network: op-mainnet
   execution_rpc: "https://example.invalid"
 "#;
-        assert!(parse_manifest(raw_manifest).is_ok());
+        assert!(parse_manifest(raw_manifest).is_err());
 
         // opstack kind with ethereum network
         let raw_manifest = br#"
@@ -692,7 +710,7 @@ helios_rpc:
   network: mainnet
   execution_rpc: "https://example.invalid"
 "#;
-        assert!(parse_manifest(raw_manifest).is_ok());
+        assert!(parse_manifest(raw_manifest).is_err());
     }
 
     #[test]
@@ -734,6 +752,87 @@ kms_integration:
             .expect("kms_integration should be present");
         assert!(kms.enabled);
         assert_eq!(kms.base_urls.unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_parse_kms_integration_enabled_rejects_invalid_registry_hex() {
+        let raw_manifest = br#"
+version: v1
+name: "test-kms-bad-registry"
+target: "target-image:latest"
+sources:
+  app: "app-image:latest"
+kms_integration:
+  enabled: true
+  kms_app_id: 49
+  nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64ccZ"
+  registry_chain_rpc: "https://sepolia.base.org"
+  base_urls:
+    - "https://kms-1.example.com"
+"#;
+
+        assert!(parse_manifest(raw_manifest).is_err());
+    }
+
+    #[test]
+    fn test_parse_kms_integration_enabled_rejects_invalid_registry_chain_rpc_scheme() {
+        let raw_manifest = br#"
+version: v1
+name: "test-kms-bad-rpc"
+target: "target-image:latest"
+sources:
+  app: "app-image:latest"
+kms_integration:
+  enabled: true
+  kms_app_id: 49
+  nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64cc8"
+  registry_chain_rpc: "ws://sepolia.base.org"
+  base_urls:
+    - "https://kms-1.example.com"
+"#;
+
+        assert!(parse_manifest(raw_manifest).is_err());
+    }
+
+    #[test]
+    fn test_parse_kms_integration_enabled_rejects_zero_app_id() {
+        let raw_manifest = br#"
+version: v1
+name: "test-kms-zero-app-id"
+target: "target-image:latest"
+sources:
+  app: "app-image:latest"
+kms_integration:
+  enabled: true
+  kms_app_id: 0
+  nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64cc8"
+  registry_chain_rpc: "https://sepolia.base.org"
+  base_urls:
+    - "https://kms-1.example.com"
+"#;
+
+        assert!(parse_manifest(raw_manifest).is_err());
+    }
+
+    #[test]
+    fn test_parse_kms_integration_enabled_rejects_empty_base_url_entry() {
+        let raw_manifest = br#"
+version: v1
+name: "test-kms-empty-base-url"
+target: "target-image:latest"
+sources:
+  app: "app-image:latest"
+kms_integration:
+  enabled: true
+  kms_app_id: 49
+  nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64cc8"
+  registry_chain_rpc: "https://sepolia.base.org"
+  base_urls:
+    - "https://kms-1.example.com"
+    - "  "
+"#;
+
+        assert!(parse_manifest(raw_manifest).is_err());
     }
 
     #[test]

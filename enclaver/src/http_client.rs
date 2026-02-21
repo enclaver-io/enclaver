@@ -1,8 +1,8 @@
-use hyper::body::Body;
 use hyper::Uri;
+use hyper::body::Body;
 use hyper_proxy2::{Intercept, Proxy, ProxyConnector};
-use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
+use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 
 pub type HttpProxyClient<B> = Client<ProxyConnector<HttpConnector>, B>;

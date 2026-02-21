@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 use log::{error, info};
 use tokio::task::JoinHandle;
@@ -29,7 +29,10 @@ impl KmsProxyService {
                 info!("Generating public/private keypair");
                 let keypair = Arc::new(KeyPair::generate()?);
 
-                info!("Egress proxy detected at {}, loading configuration from IMDS...", proxy_uri);
+                info!(
+                    "Egress proxy detected at {}, loading configuration from IMDS...",
+                    proxy_uri
+                );
                 let imds = aws_util::imds_client_with_proxy(proxy_uri.clone()).await?;
 
                 // Small delay to ensure egress proxy is ready
