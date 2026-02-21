@@ -14,11 +14,12 @@ concurrency:
 
 env:
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: "sparse"
-  RUSTFLAGS: "-Dwarnings"
 
 jobs:
-  clippy-check:
+  fmt-check:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,21 +30,83 @@ jobs:
       - name: Install Rust Toolchain
         run: rustup toolchain install $RUSTUP_TOOLCHAIN
 
-      - name: Install Clippy and Rustfmt
-        run: rustup component add clippy rustfmt
+      - name: Install Rustfmt
+        run: rustup component add rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path enclaver/Cargo.toml --all -- --check
+
+  clippy-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Parse MSRV
+        run: sed -n 's/^rust-version = "\(.*\)"$/RUSTUP_TOOLCHAIN=\1/p' enclaver/Cargo.toml >> $GITHUB_ENV
+
+      - name: Install Rust Toolchain
+        run: rustup toolchain install $RUSTUP_TOOLCHAIN
+
+      - name: Install Clippy
+        run: rustup component add clippy
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "enclaver -> target"
 
       - name: Check with default features
+        env:
+          RUSTFLAGS: "-Dwarnings"
         run: |
           cargo clippy --quiet --no-deps --manifest-path enclaver/Cargo.toml
 
       - name: Check all binaries
+        env:
+          RUSTFLAGS: "-Dwarnings"
         run: |
           cargo clippy --quiet --no-deps --manifest-path enclaver/Cargo.toml --features=run_enclave,odyn
 
       - name: Check with tracing enabled
         env:
-          RUSTFLAGS: "--cfg=tokio_unstable"
+          RUSTFLAGS: "--cfg=tokio_unstable -Dwarnings"
         run: |
           cargo clippy --quiet --no-deps --manifest-path enclaver/Cargo.toml --features=run_enclave,odyn,tracing
 
-  ## TODO: Add test job here?
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        feature_set:
+          - default
+          - run_enclave
+          - odyn
+          - run_enclave,odyn
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Parse MSRV
+        run: sed -n 's/^rust-version = "\(.*\)"$/RUSTUP_TOOLCHAIN=\1/p' enclaver/Cargo.toml >> $GITHUB_ENV
+
+      - name: Install Rust Toolchain
+        run: rustup toolchain install $RUSTUP_TOOLCHAIN
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "enclaver -> target"
+
+      - name: Run tests (${{ matrix.feature_set }})
+        run: |
+          if [[ "${{ matrix.feature_set }}" == "default" ]]; then
+            cargo test --quiet --manifest-path enclaver/Cargo.toml
+          else
+            cargo test --quiet --manifest-path enclaver/Cargo.toml --features="${{ matrix.feature_set }}"
+          fi
