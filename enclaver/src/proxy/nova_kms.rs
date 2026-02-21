@@ -1345,9 +1345,7 @@ fn normalize_base_url(value: &str) -> Option<String> {
         return None;
     }
     let parsed = reqwest::Url::parse(&normalized).ok()?;
-    if parsed.host_str().is_none() {
-        return None;
-    }
+    parsed.host_str()?;
     Some(normalized)
 }
 
