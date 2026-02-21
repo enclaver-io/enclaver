@@ -1247,6 +1247,7 @@ fn test_collect_random_bytes_from_source_rejects_repeated_empty_chunks() {
 async fn test_attestation_handler() {
     use crate::nsm::StaticAttestationProvider;
     use assert2::assert;
+    use base64::Engine as _;
 
     let handler =
         ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();
@@ -1267,7 +1268,7 @@ async fn test_attestation_handler() {
     assert!(resp.status() == StatusCode::OK);
 
     let body = json::object!(
-        nonce: base64::encode("the nonce"),
+        nonce: base64::engine::general_purpose::STANDARD.encode("the nonce"),
         user_data: json::object!(
             app_name: "test-app",
             version: "1.0"

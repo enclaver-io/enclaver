@@ -105,17 +105,16 @@ jobs:
 
       - name: Run tests (${{ matrix.feature_set }})
         run: |
-          # These tests require stable vsock/network conditions that are flaky on shared GitHub runners.
-          # Keep them for dedicated integration environments; skip them in PR CI to avoid nondeterministic failures.
-          SKIP_ARGS=(
-            --skip proxy::egress_http::tests::test_http_proxy
-            --skip proxy::egress_http::tests::test_https_proxy
-            --skip proxy::ingress::tests::test_enclave_proxy
-            --skip proxy::ingress::tests::test_full_proxy
-          )
-
           if [[ "${{ matrix.feature_set }}" == "default" ]]; then
-            cargo test --quiet --manifest-path enclaver/Cargo.toml -- "${SKIP_ARGS[@]}"
+            cargo test --quiet --manifest-path enclaver/Cargo.toml -- \
+              --skip proxy::egress_http::tests::test_http_proxy \
+              --skip proxy::egress_http::tests::test_https_proxy \
+              --skip proxy::ingress::tests::test_enclave_proxy \
+              --skip proxy::ingress::tests::test_full_proxy
           else
-            cargo test --quiet --manifest-path enclaver/Cargo.toml --features="${{ matrix.feature_set }}" -- "${SKIP_ARGS[@]}"
+            cargo test --quiet --manifest-path enclaver/Cargo.toml --features="${{ matrix.feature_set }}" -- \
+              --skip proxy::egress_http::tests::test_http_proxy \
+              --skip proxy::egress_http::tests::test_https_proxy \
+              --skip proxy::ingress::tests::test_enclave_proxy \
+              --skip proxy::ingress::tests::test_full_proxy
           fi
