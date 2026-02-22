@@ -29,11 +29,17 @@ use crate::manifest::KmsIntegration;
 const APP_WALLET_DERIVE_PATH: &str = "wallet/eth/app/main";
 const ZERO_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 const AUTHZ_CACHE_TTL_MS: u64 = 10_000;
+const DEFAULT_REGISTRY_CHAIN_RPC: &str = "http://127.0.0.1:18545";
+const DEFAULT_KMS_REQUEST_TIMEOUT_MS: u64 = 3000;
+const DEFAULT_KMS_MAX_ATTEMPTS: usize = 3;
+const DEFAULT_KMS_DISCOVERY_TTL_MS: u64 = 15_000;
+const DEFAULT_KMS_REQUIRE_MUTUAL_SIGNATURE: bool = true;
+const DEFAULT_KMS_RESERVED_DERIVE_PREFIXES: [&str; 1] = ["wallet/eth/app/"];
+const DEFAULT_KMS_AUDIT_LOG_PATH: &str = "/tmp/odyn_kms_audit.log";
 
 #[derive(Clone)]
 pub struct NovaKmsProxy {
     client: reqwest::Client,
-    base_urls: Arc<[String]>,
     odyn_endpoint: String,
     max_retries: usize,
     require_mutual_signature: bool,
@@ -69,7 +75,7 @@ struct RegistryDiscoveryConfig {
 
 #[derive(Clone)]
 struct DiscoveryCacheEntry {
-    base_urls: Vec<String>,
+    node_urls: Vec<String>,
     expires_at_ms: u64,
 }
 
@@ -182,41 +188,24 @@ struct JsonRpcError {
 
 impl NovaKmsProxy {
     pub fn new(config: &KmsIntegration, odyn_endpoint: String) -> Result<Self> {
-        let mut base_urls = config
-            .base_urls
-            .clone()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|u| u.trim().trim_end_matches('/').to_string())
-            .filter(|u| !u.is_empty())
-            .collect::<Vec<_>>();
-
-        if base_urls.is_empty() {
-            bail!("kms_integration.base_urls is required when KMS integration is enabled");
-        }
-
-        // Keep deterministic node selection order.
-        base_urls.sort();
-
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_millis(config.request_timeout_ms))
+            .timeout(Duration::from_millis(DEFAULT_KMS_REQUEST_TIMEOUT_MS))
             .build()?;
 
-        let reserved_derive_prefixes = config
-            .reserved_derive_prefixes
-            .clone()
-            .unwrap_or_else(|| vec!["wallet/eth/app/".to_string()]);
+        let reserved_derive_prefixes = DEFAULT_KMS_RESERVED_DERIVE_PREFIXES
+            .into_iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
 
         let registry_discovery = Self::build_registry_discovery(config)?;
-        let audit_log_path = config.audit_log_path.as_ref().map(PathBuf::from);
+        let audit_log_path = Some(PathBuf::from(DEFAULT_KMS_AUDIT_LOG_PATH));
         let audit_log_sender = Self::spawn_audit_log_writer(audit_log_path.clone());
 
         Ok(Self {
             client,
-            base_urls: Arc::from(base_urls),
             odyn_endpoint,
-            max_retries: usize::from(config.max_retries) + 1,
-            require_mutual_signature: config.require_mutual_signature,
+            max_retries: DEFAULT_KMS_MAX_ATTEMPTS,
+            require_mutual_signature: DEFAULT_KMS_REQUIRE_MUTUAL_SIGNATURE,
             reserved_derive_prefixes: Arc::new(reserved_derive_prefixes),
             audit_log_path,
             audit_log_sender,
@@ -531,10 +520,10 @@ impl NovaKmsProxy {
             None
         };
         let mut last_error: Option<anyhow::Error> = None;
-        let base_urls = self.resolve_base_urls().await;
+        let node_urls = self.resolve_node_urls().await?;
 
         for attempt in 0..self.max_retries {
-            for base_url in &base_urls {
+            for base_url in &node_urls {
                 let action = format!("{} {}", method.as_str(), path);
                 let result = self
                     .call_kms_on_node(base_url, method.clone(), path, payload.clone())
@@ -884,9 +873,10 @@ impl NovaKmsProxy {
             return Ok(cached);
         }
 
-        let discovery = self.registry_discovery.as_ref().ok_or_else(|| {
-            anyhow!("registry-based authz requires kms_app_id/nova_app_registry/registry_chain_rpc")
-        })?;
+        let discovery = self
+            .registry_discovery
+            .as_ref()
+            .ok_or_else(|| anyhow!("registry-based authz requires kms_app_id/nova_app_registry"))?;
 
         let instance_wallet = self.local_eth_address().await?;
         let instance = self
@@ -956,19 +946,20 @@ impl NovaKmsProxy {
         None
     }
 
-    async fn resolve_base_urls(&self) -> Vec<String> {
-        let Some(discovery) = self.registry_discovery.as_ref() else {
-            return self.base_urls.to_vec();
-        };
+    async fn resolve_node_urls(&self) -> Result<Vec<String>> {
+        let discovery = self
+            .registry_discovery
+            .as_ref()
+            .ok_or_else(|| anyhow!("kms_integration requires registry discovery configuration"))?;
 
         let now_ms = current_unix_millis();
         {
             let guard = self.discovery_cache.lock().await;
             if let Some(cached) = guard.as_ref()
                 && now_ms < cached.expires_at_ms
-                && !cached.base_urls.is_empty()
+                && !cached.node_urls.is_empty()
             {
-                return cached.base_urls.clone();
+                return Ok(cached.node_urls.clone());
             }
         }
 
@@ -978,9 +969,9 @@ impl NovaKmsProxy {
             let guard = self.discovery_cache.lock().await;
             if let Some(cached) = guard.as_ref()
                 && now_ms < cached.expires_at_ms
-                && !cached.base_urls.is_empty()
+                && !cached.node_urls.is_empty()
             {
-                return cached.base_urls.clone();
+                return Ok(cached.node_urls.clone());
             }
         }
 
@@ -988,24 +979,16 @@ impl NovaKmsProxy {
             Ok(urls) if !urls.is_empty() => {
                 let mut guard = self.discovery_cache.lock().await;
                 *guard = Some(DiscoveryCacheEntry {
-                    base_urls: urls.clone(),
+                    node_urls: urls.clone(),
                     expires_at_ms: now_ms.saturating_add(discovery.ttl_ms),
                 });
-                urls
+                Ok(urls)
             }
-            Ok(_) => {
-                warn!(
-                    "Registry discovery returned no ACTIVE KMS nodes; falling back to static base_urls"
-                );
-                self.base_urls.to_vec()
-            }
-            Err(err) => {
-                warn!(
-                    "Registry discovery failed ({}); falling back to static base_urls",
-                    err
-                );
-                self.base_urls.to_vec()
-            }
+            Ok(_) => bail!(
+                "registry discovery returned no ACTIVE KMS nodes for app_id {}",
+                discovery.kms_app_id
+            ),
+            Err(err) => Err(anyhow!("registry discovery failed: {}", err)),
         }
     }
 
@@ -1043,9 +1026,8 @@ impl NovaKmsProxy {
     fn build_registry_discovery(
         config: &KmsIntegration,
     ) -> Result<Option<RegistryDiscoveryConfig>> {
-        let has_any_registry_field = config.kms_app_id.is_some()
-            || config.nova_app_registry.is_some()
-            || config.registry_chain_rpc.is_some();
+        let has_any_registry_field =
+            config.kms_app_id.is_some() || config.nova_app_registry.is_some();
         if !has_any_registry_field {
             return Ok(None);
         }
@@ -1061,20 +1043,11 @@ impl NovaKmsProxy {
             .ok_or_else(|| {
                 anyhow!("kms_integration.nova_app_registry is required for registry discovery")
             })?;
-        let registry_chain_rpc = config
-            .registry_chain_rpc
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .ok_or_else(|| {
-                anyhow!("kms_integration.registry_chain_rpc is required for registry discovery")
-            })?;
-
         Ok(Some(RegistryDiscoveryConfig {
             kms_app_id,
             registry_address: canonical_wallet(registry_address)?,
-            rpc_url: registry_chain_rpc.to_string(),
-            ttl_ms: config.discovery_ttl_ms.max(1000),
+            rpc_url: DEFAULT_REGISTRY_CHAIN_RPC.to_string(),
+            ttl_ms: DEFAULT_KMS_DISCOVERY_TTL_MS,
         }))
     }
 
@@ -1402,7 +1375,6 @@ mod tests {
     fn reserved_path_detection_matches_prefix() {
         let proxy = NovaKmsProxy {
             client: reqwest::Client::new(),
-            base_urls: Arc::from(vec!["https://kms-1.example.com".to_string()]),
             odyn_endpoint: "http://127.0.0.1:18000".to_string(),
             max_retries: 1,
             require_mutual_signature: true,
@@ -1478,37 +1450,34 @@ mod tests {
             enabled: true,
             kms_app_id: None,
             nova_app_registry: None,
-            registry_chain_rpc: None,
-            base_urls: Some(vec!["https://kms-1.example.com".to_string()]),
-            request_timeout_ms: 3000,
-            max_retries: 2,
-            discovery_ttl_ms: 100,
-            require_mutual_signature: true,
-            audit_log_path: None,
-            reserved_derive_prefixes: None,
         };
         let discovery = NovaKmsProxy::build_registry_discovery(&config).unwrap();
         assert!(discovery.is_none());
     }
 
     #[test]
-    fn build_registry_discovery_enforces_min_ttl() {
+    fn build_registry_discovery_uses_internal_rpc_and_ttl() {
         let config = KmsIntegration {
             enabled: true,
             kms_app_id: Some(49),
             nova_app_registry: Some("0x0f68e6e699f2e972998a1ecc000c7ce103e64cc8".to_string()),
-            registry_chain_rpc: Some("https://sepolia.base.org".to_string()),
-            base_urls: Some(vec!["https://kms-1.example.com".to_string()]),
-            request_timeout_ms: 3000,
-            max_retries: 2,
-            discovery_ttl_ms: 10,
-            require_mutual_signature: true,
-            audit_log_path: None,
-            reserved_derive_prefixes: None,
         };
         let discovery = NovaKmsProxy::build_registry_discovery(&config)
             .unwrap()
             .expect("discovery config");
-        assert!(discovery.ttl_ms == 1000);
+        assert_eq!(discovery.rpc_url, DEFAULT_REGISTRY_CHAIN_RPC);
+        assert_eq!(discovery.ttl_ms, DEFAULT_KMS_DISCOVERY_TTL_MS);
+    }
+
+    #[test]
+    fn new_builds_without_static_nodes() {
+        let config = KmsIntegration {
+            enabled: true,
+            kms_app_id: Some(49),
+            nova_app_registry: Some("0x0f68e6e699f2e972998a1ecc000c7ce103e64cc8".to_string()),
+        };
+        let proxy = NovaKmsProxy::new(&config, "http://127.0.0.1:18000".to_string())
+            .expect("proxy should build");
+        assert!(proxy.registry_discovery.is_some());
     }
 }

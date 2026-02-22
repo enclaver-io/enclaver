@@ -238,6 +238,8 @@ Encrypt data to send to a client using ECDH + AES-256-GCM.
 ## KMS Integration API Endpoints (Primary API only)
 
 These endpoints are available only when `kms_integration.enabled=true` in `enclaver.yaml`.
+When KMS integration is enabled, the manifest must also enable `helios_rpc` and include
+one chain with `local_rpc_port: 18545` for registry discovery.
 If KMS integration is not configured, they return `400 Bad Request` with plain-text body:
 `KMS integration not configured`.
 

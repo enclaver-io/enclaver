@@ -277,6 +277,9 @@ storage:
 - Egress must allow `169.254.169.254` (IMDS)
 - Egress must allow your S3 endpoint (e.g., `s3.us-east-1.amazonaws.com` or `s3.amazonaws.com`)
 - If `storage.s3.encryption.mode=kms`, `kms_integration.enabled=true` is required.
+- If `kms_integration.enabled=true`, `helios_rpc.enabled=true` is required and
+  `helios_rpc.chains[]` must include a chain on `local_rpc_port: 18545`
+  (used for registry discovery).
 
 ---
 
@@ -336,6 +339,29 @@ aux_api:
 kms_proxy:
   listen_port: 9000
 
+# Nova KMS integration (optional)
+kms_integration:
+  enabled: true
+  kms_app_id: 49
+  nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64cc8"
+
+# Helios light-client RPC (required when kms_integration.enabled=true)
+helios_rpc:
+  enabled: true
+  chains:
+    - name: "L2-base-sepolia"
+      network_id: "84532"
+      kind: "opstack"
+      network: "base-sepolia"
+      execution_rpc: "https://sepolia.base.org"
+      local_rpc_port: 18545
+    - name: "ethereum-mainnet"
+      network_id: "1"
+      kind: "ethereum"
+      network: "mainnet"
+      execution_rpc: "https://eth.llamarpc.com"
+      local_rpc_port: 18546
+
 # S3 Storage (optional)
 storage:
   s3:
@@ -356,7 +382,7 @@ storage:
 | **Aux API** | `aux_api.listen_port` | Restricted API for sidecars | HTTP to `http://127.0.0.1:<port>` |
 | **KMS Proxy** | `kms_proxy.listen_port` | AWS KMS with attestation | Use AWS SDK normally |
 | **Storage** | N/A (Internal API) | Persistent S3 storage | HTTP to `/v1/s3/...` |
-| **Helios RPC** | `helios_rpc.listen_port` | Trustless Ethereum RPC | HTTP to `http://127.0.0.1:8545` |
+| **Helios RPC** | `helios_rpc.chains[].local_rpc_port` | Trustless multi-chain RPC | HTTP to `http://127.0.0.1:<chain_port>` |
 | **Console** | N/A (automatic) | Log streaming | Print to stdout/stderr |
 
 ---
@@ -365,7 +391,7 @@ storage:
 
 - [Internal API Reference](internal_api.md) — Complete API endpoint documentation
 - [Internal API Mock Service](internal_api_mockup.md) — Local development without an enclave
-- [Helios RPC Integration](helios_rpc.md) — Trustless Ethereum light client
+- [Helios RPC Integration](helios_rpc.md) — Trustless multi-chain light client
 - [enclaver.yaml Reference](enclaver.yaml) — Complete manifest configuration
 - [Architecture Overview](architecture.md) — System architecture and component relationships
 - [Odyn Implementation Details](odyn_details.md) — Deep dive into code structure (for contributors)

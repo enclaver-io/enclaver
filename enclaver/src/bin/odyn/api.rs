@@ -75,14 +75,7 @@ impl ApiService {
 
             // Create Nova KMS proxy if configured.
             let kms_proxy = if let Some(kms_config) = config.kms_integration_config() {
-                info!(
-                    "Nova KMS integration enabled (nodes={})",
-                    kms_config
-                        .base_urls
-                        .as_ref()
-                        .map(|v| v.len())
-                        .unwrap_or_default()
-                );
+                info!("Nova KMS integration enabled (registry discovery mode)");
                 Some(Arc::new(NovaKmsProxy::new(kms_config, odyn_endpoint)?))
             } else {
                 None

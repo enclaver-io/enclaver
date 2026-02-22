@@ -18,7 +18,7 @@ pub struct HeliosRuntimeConfig {
     pub consensus_rpc: Option<String>,
     pub checkpoint: Option<String>,
     pub listen_port: u16,
-    pub chain_id: Option<String>,
+    pub chain_name: String,
 }
 
 pub struct Configuration {
@@ -153,70 +153,27 @@ impl Configuration {
     }
 
     pub fn helios_configs(&self) -> Vec<HeliosRuntimeConfig> {
-        // New multi-chain manifest shape.
-        if let Some(chain_access) = self.manifest.chain_access.as_ref() {
-            let mut configs = Vec::new();
-            if let Some(registry_chain) = chain_access.registry_chain.as_ref() {
-                configs.push(HeliosRuntimeConfig {
-                    kind: registry_chain.kind.clone(),
-                    network: registry_chain.network.clone(),
-                    execution_rpc: registry_chain.execution_rpc.clone(),
-                    consensus_rpc: registry_chain.consensus_rpc.clone(),
-                    checkpoint: registry_chain.checkpoint.clone(),
-                    listen_port: registry_chain.local_rpc_port,
-                    chain_id: Some("registry".to_string()),
-                });
-            }
+        let Some(helios) = self.manifest.helios_rpc.as_ref().filter(|h| h.enabled) else {
+            return Vec::new();
+        };
+        let Some(chains) = helios.chains.as_ref() else {
+            return Vec::new();
+        };
 
-            if let Some(providers) = chain_access.app_rpc_providers.as_ref() {
-                let mut keys: Vec<&String> = providers.keys().collect();
-                keys.sort();
-                for key in keys {
-                    if let Some(provider) = providers.get(key) {
-                        configs.push(HeliosRuntimeConfig {
-                            kind: provider.kind.clone(),
-                            network: provider.network.clone(),
-                            execution_rpc: provider.execution_rpc.clone(),
-                            consensus_rpc: provider.consensus_rpc.clone(),
-                            checkpoint: provider.checkpoint.clone(),
-                            listen_port: provider.local_rpc_port,
-                            chain_id: Some((*key).clone()),
-                        });
-                    }
-                }
-            }
-
-            if !configs.is_empty() {
-                return configs;
-            }
+        let mut configs = Vec::with_capacity(chains.len());
+        for chain in chains {
+            configs.push(HeliosRuntimeConfig {
+                kind: chain.kind.clone(),
+                network: chain.network.clone(),
+                execution_rpc: chain.execution_rpc.clone(),
+                consensus_rpc: chain.consensus_rpc.clone(),
+                checkpoint: chain.checkpoint.clone(),
+                listen_port: chain.local_rpc_port,
+                chain_name: chain.name.clone(),
+            });
         }
 
-        // Backward-compatible single Helios shape.
-        if let Some(legacy) = self.manifest.helios_rpc.as_ref().filter(|h| h.enabled) {
-            let network = legacy
-                .network
-                .as_ref()
-                .map(|n| n.trim().to_string())
-                .unwrap_or_default();
-            let execution_rpc = legacy
-                .execution_rpc
-                .as_ref()
-                .map(|v| v.trim().to_string())
-                .unwrap_or_default();
-            if !network.is_empty() && !execution_rpc.is_empty() {
-                return vec![HeliosRuntimeConfig {
-                    kind: legacy.kind.clone(),
-                    network,
-                    execution_rpc,
-                    consensus_rpc: legacy.consensus_rpc.clone(),
-                    checkpoint: legacy.checkpoint.clone(),
-                    listen_port: legacy.listen_port,
-                    chain_id: None,
-                }];
-            }
-        }
-
-        Vec::new()
+        configs
     }
 }
 
@@ -236,7 +193,7 @@ impl KmsEndpointProvider for Configuration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use enclaver::manifest::{Api, AuxApi, ChainAccess, HeliosRpc, HeliosRpcProvider, Sources};
+    use enclaver::manifest::{Api, AuxApi, HeliosRpc, HeliosRpcChain, Sources};
 
     fn base_config() -> Configuration {
         Configuration {
@@ -260,7 +217,6 @@ mod tests {
                 vsock_ports: None,
                 storage: None,
                 kms_integration: None,
-                chain_access: None,
                 helios_rpc: None,
             },
             listener_configs: HashMap::new(),
@@ -283,75 +239,61 @@ mod tests {
     }
 
     #[test]
-    fn helios_configs_falls_back_to_legacy_shape() {
+    fn helios_configs_returns_empty_when_disabled() {
         let mut cfg = base_config();
         cfg.manifest.helios_rpc = Some(HeliosRpc {
-            enabled: true,
-            kind: HeliosRpcKind::Ethereum,
-            listen_port: 8545,
-            network: Some("sepolia".to_string()),
-            execution_rpc: Some("https://eth-sepolia.example".to_string()),
-            consensus_rpc: None,
-            checkpoint: None,
+            enabled: false,
+            chains: None,
         });
 
         let configs = cfg.helios_configs();
-        assert_eq!(configs.len(), 1);
-        assert_eq!(configs[0].network, "sepolia");
-        assert_eq!(configs[0].chain_id, None);
+        assert!(configs.is_empty());
     }
 
     #[test]
-    fn helios_configs_prefers_chain_access_and_sorts_chain_ids() {
+    fn helios_configs_prefers_helios_rpc_chains() {
         let mut cfg = base_config();
-        let mut app_providers = HashMap::new();
-        app_providers.insert(
-            "8453".to_string(),
-            HeliosRpcProvider {
-                kind: HeliosRpcKind::Opstack,
-                network: "base".to_string(),
-                execution_rpc: "https://base.example".to_string(),
-                consensus_rpc: None,
-                checkpoint: None,
-                local_rpc_port: 18547,
-            },
-        );
-        app_providers.insert(
-            "1".to_string(),
-            HeliosRpcProvider {
-                kind: HeliosRpcKind::Ethereum,
-                network: "mainnet".to_string(),
-                execution_rpc: "https://eth.example".to_string(),
-                consensus_rpc: None,
-                checkpoint: None,
-                local_rpc_port: 18546,
-            },
-        );
-        cfg.manifest.chain_access = Some(ChainAccess {
-            registry_chain: Some(HeliosRpcProvider {
-                kind: HeliosRpcKind::Opstack,
-                network: "base-sepolia".to_string(),
-                execution_rpc: "https://sepolia.base.example".to_string(),
-                consensus_rpc: None,
-                checkpoint: None,
-                local_rpc_port: 18545,
-            }),
-            app_rpc_providers: Some(app_providers),
-        });
         cfg.manifest.helios_rpc = Some(HeliosRpc {
             enabled: true,
-            kind: HeliosRpcKind::Ethereum,
-            listen_port: 9999,
-            network: Some("holesky".to_string()),
-            execution_rpc: Some("https://unused.example".to_string()),
-            consensus_rpc: None,
-            checkpoint: None,
+            chains: Some(vec![
+                HeliosRpcChain {
+                    name: "L2-base-sepolia".to_string(),
+                    network_id: Some("84532".to_string()),
+                    kind: HeliosRpcKind::Opstack,
+                    network: "base-sepolia".to_string(),
+                    execution_rpc: "https://sepolia.base.example".to_string(),
+                    consensus_rpc: None,
+                    checkpoint: None,
+                    local_rpc_port: 18545,
+                },
+                HeliosRpcChain {
+                    name: "ethereum-mainnet".to_string(),
+                    network_id: Some("1".to_string()),
+                    kind: HeliosRpcKind::Ethereum,
+                    network: "mainnet".to_string(),
+                    execution_rpc: "https://eth.example".to_string(),
+                    consensus_rpc: None,
+                    checkpoint: None,
+                    local_rpc_port: 18546,
+                },
+            ]),
         });
 
         let configs = cfg.helios_configs();
-        assert_eq!(configs.len(), 3);
-        assert_eq!(configs[0].chain_id.as_deref(), Some("registry"));
-        assert_eq!(configs[1].chain_id.as_deref(), Some("1"));
-        assert_eq!(configs[2].chain_id.as_deref(), Some("8453"));
+        assert_eq!(configs.len(), 2);
+        assert_eq!(configs[0].chain_name, "L2-base-sepolia");
+        assert_eq!(configs[1].chain_name, "ethereum-mainnet");
+    }
+
+    #[test]
+    fn helios_configs_returns_empty_when_no_chains() {
+        let mut cfg = base_config();
+        cfg.manifest.helios_rpc = Some(HeliosRpc {
+            enabled: true,
+            chains: None,
+        });
+
+        let configs = cfg.helios_configs();
+        assert!(configs.is_empty());
     }
 }

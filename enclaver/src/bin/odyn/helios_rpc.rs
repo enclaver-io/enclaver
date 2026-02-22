@@ -50,15 +50,12 @@ impl HeliosRpcService {
                 consensus_rpc,
                 checkpoint,
                 listen_port: port,
-                chain_id,
+                chain_name,
             } = helios_config;
 
             info!(
                 "Starting Helios RPC ({:?}) on port {} for network {} ({})",
-                kind,
-                port,
-                network,
-                chain_id.unwrap_or_else(|| "legacy".to_string())
+                kind, port, network, chain_name
             );
 
             let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();

@@ -67,7 +67,7 @@ ingress:
   # WARNING: Do not expose these endpoints in production environments.
   # Production note: do NOT expose internal API or Helios RPC via ingress.
   # - listen_port: 18000       # internal API (full capabilities)
-  # - listen_port: 8545        # Helios RPC
+  # - listen_port: 18545       # Helios RPC chain port
 
 # Egress: enable a local HTTP(S) proxy inside the enclave with allow/deny policy
 # When enabled, odyn sets http_proxy/https_proxy env vars to http://127.0.0.1:<proxy_port>
@@ -111,24 +111,17 @@ kms_proxy:
 
 # Optional: Nova KMS integration used by Internal API `/v1/kms/*` and `/v1/app-wallet/*`
 # - Enables registry-backed app/instance authorization for Nova KMS operations.
-# - If enabled=true, kms_app_id, nova_app_registry, registry_chain_rpc, and base_urls are required.
-# - `registry_chain_rpc` and each value in `base_urls` must use http:// or https://.
+# - If enabled=true, `kms_app_id` and `nova_app_registry` are required.
+# - Registry RPC uses built-in Helios endpoint (`http://127.0.0.1:18545`).
+# - If enabled=true, `helios_rpc.enabled=true` and `helios_rpc.chains` must
+#   include an entry with `local_rpc_port: 18545`.
+# - Timeout/retry/discovery/audit settings are ODYN internal defaults (not YAML-configurable).
+# - Any extra fields under `kms_integration` are rejected.
 # - If `storage.s3.encryption.mode=kms`, this integration must also be enabled.
 kms_integration:
   enabled: true              # [ODYN] Enable Nova KMS integration for Internal API KMS/app-wallet routes.
   kms_app_id: 1001           # [ODYN] Required when enabled. App ID on NovaAppRegistry.
   nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64cc8" # [ODYN] Required when enabled.
-  registry_chain_rpc: "https://sepolia.base.org" # [ODYN] Required when enabled.
-  base_urls:                 # [ODYN] Required when enabled. KMS node base URLs.
-    - "https://kms-node-1.example.com"
-    - "https://kms-node-2.example.com"
-  request_timeout_ms: 3000   # [ODYN] Optional. Per-request timeout to each KMS node.
-  max_retries: 2             # [ODYN] Optional. Retries across nodes (effective attempts = max_retries + 1).
-  discovery_ttl_ms: 15000    # [ODYN] Optional. Registry discovery cache TTL.
-  require_mutual_signature: true # [ODYN] Optional. Require/verify mutual request-response signatures.
-  audit_log_path: "/tmp/nova-kms-audit.jsonl" # [ODYN] Optional local JSONL audit log path.
-  reserved_derive_prefixes:  # [ODYN] Optional. Paths blocked for app-initiated derive requests.
-    - "wallet/eth/app/"
 
 # Optional: internal API exposed inside the enclave for attestation/encryption/signing
 api:
@@ -143,16 +136,22 @@ aux_api:
 
 # Optional: Helios Ethereum/OP Stack light client RPC (trustless JSON-RPC)
 helios_rpc:
-  enabled: false             # [ODYN] Optional. Enable/disable Helios RPC service.
-  kind: ethereum             # [ODYN] Required. Client type: "ethereum" or "opstack".
-  listen_port: 8545          # [ODYN] Optional. TCP port (u16) for Helios JSON-RPC (default: 8545).
-  # Network name (required when enabled):
-  #   ethereum: mainnet, sepolia, holesky
-  #   opstack:  op-mainnet, base, base-sepolia, worldchain, zora, unichain
-  network: mainnet           # [ODYN] Required when enabled.
-  execution_rpc: "https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY" # [ODYN] Required when enabled.
-  #consensus_rpc: "https://www.lightclientdata.org" # [ODYN] Optional. Consensus RPC URL (ethereum only).
-  #checkpoint: "0x..."       # [ODYN] Optional. Weak subjectivity checkpoint (ethereum only).
+  enabled: true              # [ODYN] Enable/disable Helios services.
+  chains:                    # [ODYN] Required when enabled. One entry per local Helios endpoint.
+    - name: "L2-base-sepolia"  # [ODYN] Display/logging name for this chain config.
+      network_id: "84532"       # [ODYN] Optional chain id for UI/reference.
+      kind: "opstack"           # [ODYN] ethereum | opstack
+      network: "base-sepolia"   # [ODYN] Network slug for the selected kind.
+      execution_rpc: "https://sepolia.base.org" # [ODYN] Required execution RPC URL.
+      local_rpc_port: 18545     # [ODYN] Required local JSON-RPC port inside enclave.
+      #consensus_rpc: "https://..." # [ODYN] Optional consensus RPC override.
+      #checkpoint: "0x..."          # [ODYN] Optional checkpoint (ethereum only).
+    - name: "ethereum-mainnet"
+      network_id: "1"
+      kind: "ethereum"
+      network: "mainnet"
+      execution_rpc: "https://eth.llamarpc.com"
+      local_rpc_port: 18546
 
 # Optional: S3 storage configuration for persistent data
 storage:
@@ -168,7 +167,7 @@ storage:
       key_scope: "object"    # [ODYN] app | object
       aad_mode: "key"        # [ODYN] none | key | key+version
       key_version: "v1"      # [ODYN] Version label included in metadata/derivation path.
-      accept_plaintext: true # [ODYN] Allow legacy plaintext reads during migration.
+      accept_plaintext: true # [ODYN] Allow reading plaintext objects when present.
                              # Note: mode=kms requires kms_integration.enabled=true.
 
 # ============================================================================
@@ -197,23 +196,17 @@ storage:
 # | kms_integration.enabled | ODYN       | Enable Nova KMS integration                    |
 # | kms_integration.kms_app_id | ODYN    | Nova app ID used for authz/discovery           |
 # | kms_integration.nova_app_registry | ODYN | NovaAppRegistry contract address           |
-# | kms_integration.registry_chain_rpc | ODYN | RPC URL for registry reads/eth_call        |
-# | kms_integration.base_urls | ODYN     | KMS node base URLs used for requests           |
-# | kms_integration.request_timeout_ms | ODYN | Per-node request timeout                    |
-# | kms_integration.max_retries | ODYN   | Retry count across KMS nodes                   |
-# | kms_integration.discovery_ttl_ms | ODYN | Registry discovery cache TTL                |
-# | kms_integration.require_mutual_signature | ODYN | Enforce response signature checks    |
-# | kms_integration.audit_log_path | ODYN | Local path for KMS audit JSONL                |
-# | kms_integration.reserved_derive_prefixes | ODYN | Blocked derive path prefixes        |
 # | api.listen_port        | ODYN        | Internal API port (attestation, signing, etc.) |
 # | aux_api.listen_port    | ODYN        | Auxiliary API port (restricted access)         |
 # | helios_rpc.enabled     | ODYN        | Enable/disable Helios RPC service              |
-# | helios_rpc.kind        | ODYN        | Helios client type (ethereum or opstack)       |
-# | helios_rpc.listen_port | ODYN        | Helios JSON-RPC port inside enclave            |
-# | helios_rpc.network     | ODYN        | Helios network selection                       |
-# | helios_rpc.execution_rpc | ODYN      | Execution RPC URL (untrusted, required)        |
-# | helios_rpc.consensus_rpc | ODYN      | Consensus RPC URL override                     |
-# | helios_rpc.checkpoint  | ODYN        | Weak subjectivity checkpoint override          |
+# | helios_rpc.chains[].name | ODYN      | Chain config name used in logs/UI              |
+# | helios_rpc.chains[].network_id | ODYN | Optional chain id for reference               |
+# | helios_rpc.chains[].kind | ODYN      | Helios client type (ethereum or opstack)       |
+# | helios_rpc.chains[].network | ODYN   | Network selection for the selected kind        |
+# | helios_rpc.chains[].execution_rpc | ODYN | Execution RPC URL (required)              |
+# | helios_rpc.chains[].local_rpc_port | ODYN | Local JSON-RPC port per chain             |
+# | helios_rpc.chains[].consensus_rpc | ODYN | Optional consensus RPC override           |
+# | helios_rpc.chains[].checkpoint | ODYN | Optional checkpoint override (ethereum)      |
 # | storage.s3.enabled     | ODYN        | Enable/disable S3 storage integration          |
 # | storage.s3.bucket      | ODYN        | S3 bucket for persistent storage               |
 # | storage.s3.prefix      | ODYN        | Prefix for S3 key isolation                    |
@@ -222,6 +215,6 @@ storage:
 # | storage.s3.encryption.key_scope | ODYN | Derivation scope (app/object)               |
 # | storage.s3.encryption.aad_mode | ODYN | AAD binding mode for ciphertext metadata     |
 # | storage.s3.encryption.key_version | ODYN | Encryption key version label              |
-# | storage.s3.encryption.accept_plaintext | ODYN | Allow plaintext reads during migration |
+# | storage.s3.encryption.accept_plaintext | ODYN | Allow plaintext reads when present      |
 #
 # ============================================================================

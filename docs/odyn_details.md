@@ -171,9 +171,11 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
 - Lifecycle
   - `start()` binds the API listen port and spawns the server task.
   - If `kms_integration` is configured, `start()` constructs `NovaKmsProxy`.
+  - Manifest validation enforces: when `kms_integration.enabled=true`, `helios_rpc.enabled=true`
+    and `helios_rpc.chains` must include `local_rpc_port=18545` for registry discovery.
   - If `storage.s3` is configured, `start()` constructs `S3Proxy` and loads AWS config through IMDS via egress proxy.
   - If `storage.s3.encryption.mode=kms`, `start()` requires `kms_integration.enabled=true`; otherwise startup fails.
-  - If KMS integration + S3 KMS encryption + KMS `audit_log_path` are all set, `start()` spawns a background archive loop that rotates `*.jsonl` audit files into S3 (`kms-audit/...`).
+  - If KMS integration + S3 KMS encryption are both enabled, `start()` spawns a background archive loop that rotates internal KMS audit `*.jsonl` files into S3 (`kms-audit/...`).
   - `stop()` aborts both the API task and audit archive task.
 
 - Common errors
