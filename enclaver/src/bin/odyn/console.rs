@@ -513,9 +513,7 @@ mod tests {
         Ok(json::parse(&line)?)
     }
 
-    fn start_app_status_client(
-        app_status: &super::AppStatus,
-    ) -> (JoinHandle<()>, StatusLines) {
+    fn start_app_status_client(app_status: &super::AppStatus) -> (JoinHandle<()>, StatusLines) {
         let (server_side, client_side) = tokio::io::duplex(1024);
         let app_status = app_status.clone();
         let task = tokio::task::spawn(async move {
