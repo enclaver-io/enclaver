@@ -342,7 +342,7 @@ impl AppStatus {
         }
     }
 
-    async fn stream(&self, mut sock: VsockStream) {
+    async fn stream<W: AsyncWrite + Unpin>(&self, mut sock: W) {
         let mut w = self.inner.lock().unwrap().watches.add();
 
         loop {
@@ -391,17 +391,13 @@ mod tests {
     use assert2::assert;
     use json::{JsonValue, object};
     use nix::sys::signal::Signal;
-    use std::sync::atomic::{AtomicU32, Ordering};
-    use std::time::Duration;
-    use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader, Lines};
+    use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader, DuplexStream, Lines};
     use tokio::task::JoinHandle;
-    use tokio_vsock::VsockStream;
 
     use super::{ByteLog, LogCursor};
     use crate::launcher::ExitStatus;
 
-    static NEXT_STATUS_TEST_PORT: AtomicU32 = AtomicU32::new(47000);
-    type StatusLines = Lines<BufReader<VsockStream>>;
+    type StatusLines = Lines<BufReader<DuplexStream>>;
 
     fn check_log(log: &ByteLog, mut expected: u8) {
         // check that the log contents monotonically increase
@@ -517,88 +513,22 @@ mod tests {
         Ok(json::parse(&line)?)
     }
 
-    fn next_status_test_port() -> u32 {
-        NEXT_STATUS_TEST_PORT.fetch_add(1, Ordering::Relaxed)
-    }
-
-    async fn app_status_lines(port: u32) -> Result<StatusLines> {
-        let mut last_err = None;
-        for _ in 0..20u8 {
-            let attempt = tokio::time::timeout(
-                Duration::from_millis(250),
-                VsockStream::connect(enclaver::vsock::VMADDR_CID_HOST, port),
-            )
-            .await;
-
-            match attempt {
-                Ok(Ok(sock)) => {
-                    // bug in VsockStream::connect: it can return Ok even if connect failed
-                    if let Err(err) = sock.peer_addr() {
-                        last_err = Some(anyhow!(err));
-                    } else {
-                        return Ok(BufReader::new(sock).lines());
-                    }
-                }
-                Ok(Err(err)) => last_err = Some(anyhow!(err)),
-                Err(_) => last_err = Some(anyhow!("status vsock connect timeout")),
-            }
-
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-
-        Err(last_err.unwrap_or_else(|| anyhow!("failed to connect to status stream")))
-    }
-
-    async fn start_app_status_clients(
+    fn start_app_status_client(
         app_status: &super::AppStatus,
-    ) -> Result<(JoinHandle<Result<()>>, StatusLines, StatusLines)> {
-        let mut last_err = None;
-
-        for _ in 0..20u8 {
-            let status_port = next_status_test_port();
-            let status_task = app_status.start_serving(status_port);
-
-            // If bind failed (e.g. port already in use), task exits immediately.
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            if status_task.is_finished() {
-                match status_task.await {
-                    Ok(Err(err)) => last_err = Some(err),
-                    Ok(Ok(())) => {
-                        last_err = Some(anyhow!(
-                            "status server exited unexpectedly before accepting clients"
-                        ));
-                    }
-                    Err(err) => last_err = Some(anyhow!(err)),
-                }
-                continue;
-            }
-
-            match app_status_lines(status_port).await {
-                Ok(client1) => match app_status_lines(status_port).await {
-                    Ok(client2) => return Ok((status_task, client1, client2)),
-                    Err(err) => {
-                        last_err = Some(err);
-                        status_task.abort();
-                        _ = status_task.await;
-                    }
-                },
-                Err(err) => {
-                    last_err = Some(err);
-                    status_task.abort();
-                    _ = status_task.await;
-                }
-            }
-        }
-
-        Err(last_err.unwrap_or_else(|| anyhow!("failed to start app status server")))
+    ) -> (JoinHandle<()>, StatusLines) {
+        let (server_side, client_side) = tokio::io::duplex(1024);
+        let app_status = app_status.clone();
+        let task = tokio::task::spawn(async move {
+            app_status.stream(server_side).await;
+        });
+        (task, BufReader::new(client_side).lines())
     }
 
     #[tokio::test]
     async fn test_app_status() {
         let app_status = super::AppStatus::new();
-        let (status_task, mut client1, mut client2) = start_app_status_clients(&app_status)
-            .await
-            .expect("failed to initialize app status test clients");
+        let (status_task1, mut client1) = start_app_status_client(&app_status);
+        let (status_task2, mut client2) = start_app_status_client(&app_status);
 
         // Running
         let mut expected = object! { status: "running" };
@@ -630,7 +560,9 @@ mod tests {
         status = read_json(&mut client2).await.unwrap();
         assert!(status == expected);
 
-        status_task.abort();
-        _ = status_task.await;
+        status_task1.abort();
+        _ = status_task1.await;
+        status_task2.abort();
+        _ = status_task2.await;
     }
 }
