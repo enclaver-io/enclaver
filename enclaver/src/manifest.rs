@@ -181,12 +181,18 @@ fn default_s3_accept_plaintext() -> bool {
 pub struct KmsIntegration {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default)]
+    pub use_app_wallet: bool,
     pub kms_app_id: Option<u64>,
     pub nova_app_registry: Option<String>,
 }
 
 impl KmsIntegration {
     fn validate(&self) -> Result<()> {
+        if self.use_app_wallet && !self.enabled {
+            bail!("kms_integration.use_app_wallet requires kms_integration.enabled=true");
+        }
+
         if !self.enabled {
             return Ok(());
         }
@@ -800,6 +806,54 @@ helios_rpc:
             .kms_integration
             .expect("kms_integration should be present");
         assert!(kms.enabled);
+        assert!(!kms.use_app_wallet);
+    }
+
+    #[test]
+    fn test_parse_kms_integration_use_app_wallet() {
+        let raw_manifest = br#"
+version: v1
+name: "test-kms-app-wallet"
+target: "target-image:latest"
+sources:
+  app: "app-image:latest"
+kms_integration:
+  enabled: true
+  use_app_wallet: true
+  kms_app_id: 49
+  nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64cc8"
+helios_rpc:
+  enabled: true
+  chains:
+    - name: L2-base-sepolia
+      kind: opstack
+      network: base-sepolia
+      execution_rpc: "https://sepolia.base.org"
+      local_rpc_port: 18545
+"#;
+
+        let manifest = parse_manifest(raw_manifest).unwrap();
+        let kms = manifest
+            .kms_integration
+            .expect("kms_integration should be present");
+        assert!(kms.enabled);
+        assert!(kms.use_app_wallet);
+    }
+
+    #[test]
+    fn test_parse_kms_integration_rejects_use_app_wallet_when_disabled() {
+        let raw_manifest = br#"
+version: v1
+name: "test-kms-app-wallet-disabled"
+target: "target-image:latest"
+sources:
+  app: "app-image:latest"
+kms_integration:
+  enabled: false
+  use_app_wallet: true
+"#;
+
+        assert!(parse_manifest(raw_manifest).is_err());
     }
 
     #[test]

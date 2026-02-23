@@ -26,9 +26,12 @@ use crate::eth_key::EthKey;
 use crate::http_util;
 use crate::manifest::KmsIntegration;
 
-const APP_WALLET_DERIVE_PATH: &str = "wallet/eth/app/main";
-const ZERO_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
+mod app_wallet;
+
+const APP_WALLET_KV_PRIVATE_KEY: &str = "wallet/eth/app/main/private_key";
+const APP_WALLET_KV_ADDRESS: &str = "wallet/eth/app/main/address";
 const AUTHZ_CACHE_TTL_MS: u64 = 10_000;
+const APP_WALLET_CACHE_TTL_MS: u64 = 10_000;
 const DEFAULT_REGISTRY_CHAIN_RPC: &str = "http://127.0.0.1:18545";
 const DEFAULT_KMS_REQUEST_TIMEOUT_MS: u64 = 3000;
 const DEFAULT_KMS_MAX_ATTEMPTS: usize = 3;
@@ -41,6 +44,7 @@ const DEFAULT_KMS_AUDIT_LOG_PATH: &str = "/tmp/odyn_kms_audit.log";
 pub struct NovaKmsProxy {
     client: reqwest::Client,
     odyn_endpoint: String,
+    use_app_wallet: bool,
     max_retries: usize,
     require_mutual_signature: bool,
     reserved_derive_prefixes: Arc<Vec<String>>,
@@ -50,6 +54,7 @@ pub struct NovaKmsProxy {
     discovery_cache: Arc<Mutex<Option<DiscoveryCacheEntry>>>,
     discovery_refresh_lock: Arc<Mutex<()>>,
     authz_cache: Arc<Mutex<Option<CachedAuthzContext>>>,
+    app_wallet_cache: Arc<Mutex<Option<CachedAppWallet>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +67,18 @@ pub struct AppAuthzContext {
 #[derive(Clone)]
 struct CachedAuthzContext {
     context: AppAuthzContext,
+    expires_at_ms: u64,
+}
+
+#[derive(Clone)]
+struct AppWalletMaterial {
+    private_key_hex: String,
+    address: String,
+}
+
+#[derive(Clone)]
+struct CachedAppWallet {
+    material: AppWalletMaterial,
     expires_at_ms: u64,
 }
 
@@ -204,6 +221,7 @@ impl NovaKmsProxy {
         Ok(Self {
             client,
             odyn_endpoint,
+            use_app_wallet: config.use_app_wallet,
             max_retries: DEFAULT_KMS_MAX_ATTEMPTS,
             require_mutual_signature: DEFAULT_KMS_REQUIRE_MUTUAL_SIGNATURE,
             reserved_derive_prefixes: Arc::new(reserved_derive_prefixes),
@@ -213,6 +231,7 @@ impl NovaKmsProxy {
             discovery_cache: Arc::new(Mutex::new(None)),
             discovery_refresh_lock: Arc::new(Mutex::new(())),
             authz_cache: Arc::new(Mutex::new(None)),
+            app_wallet_cache: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -255,32 +274,12 @@ impl NovaKmsProxy {
         self.audit_log_path.clone()
     }
 
+    pub fn is_app_wallet_enabled(&self) -> bool {
+        self.use_app_wallet
+    }
+
     pub async fn ensure_kms_access_authorized(&self) -> Result<AppAuthzContext> {
-        self.resolve_authz_context(false).await
-    }
-
-    pub async fn ensure_app_wallet_authorized(&self) -> Result<AppAuthzContext> {
-        // App-wallet signing APIs require the app wallet to be anchored on-chain.
-        self.resolve_authz_context(true).await
-    }
-
-    pub async fn app_wallet_key(&self) -> Result<EthKey> {
-        let key = self
-            .derive_reserved_key_internal(APP_WALLET_DERIVE_PATH, "", 32)
-            .await?;
-        if key.len() != 32 {
-            bail!(
-                "KMS app wallet derivation returned invalid length {}",
-                key.len()
-            );
-        }
-        let mut entropy = [0u8; 32];
-        entropy.copy_from_slice(&key);
-        EthKey::from_entropy(entropy)
-    }
-
-    pub async fn app_wallet_address(&self) -> Result<String> {
-        self.app_wallet_address_internal().await
+        self.resolve_authz_context().await
     }
 
     pub async fn audit_local_action(
@@ -474,34 +473,6 @@ impl NovaKmsProxy {
             Ok(()) => Ok(http_util::ok_json(&KvDeleteApiResponse { success: true })?),
             Err(err) => Ok(http_util::bad_request(err.to_string())),
         }
-    }
-
-    async fn derive_reserved_key_internal(
-        &self,
-        path: &str,
-        context: &str,
-        length: usize,
-    ) -> Result<Vec<u8>> {
-        let payload = json!({
-            "path": path,
-            "context": context,
-            "length": length,
-        });
-        let response = self
-            .call_kms_json_internal(Method::POST, "/kms/derive", Some(payload), false)
-            .await?;
-        let key_b64 = response
-            .get("key")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("KMS response missing 'key'"))?;
-        general_purpose::STANDARD
-            .decode(key_b64)
-            .map_err(|e| anyhow!("invalid KMS key base64: {}", e))
-    }
-
-    async fn app_wallet_address_internal(&self) -> Result<String> {
-        let key = self.app_wallet_key().await?;
-        canonical_wallet(&key.address())
     }
 
     async fn call_kms_json_internal(
@@ -865,10 +836,7 @@ impl NovaKmsProxy {
         }
     }
 
-    async fn resolve_authz_context(
-        &self,
-        require_anchored_wallet: bool,
-    ) -> Result<AppAuthzContext> {
+    async fn resolve_authz_context(&self) -> Result<AppAuthzContext> {
         if let Some(cached) = self.cached_authz_context().await {
             return Ok(cached);
         }
@@ -897,30 +865,11 @@ impl NovaKmsProxy {
         if app.status != 0 {
             bail!("app {} is not ACTIVE on registry", instance.app_id);
         }
-
-        let derived_app_wallet = self.app_wallet_address_internal().await?;
         let anchored_wallet = canonical_wallet(&app.app_wallet)?;
-        if !is_zero_address(&anchored_wallet) && anchored_wallet != derived_app_wallet {
-            bail!(
-                "anchored appWallet {} mismatches derived app wallet {}",
-                anchored_wallet,
-                derived_app_wallet
-            );
-        }
-        if require_anchored_wallet && is_zero_address(&anchored_wallet) {
-            bail!(
-                "app {} has no anchored appWallet on registry",
-                instance.app_id
-            );
-        }
 
         let context = AppAuthzContext {
             app_id: instance.app_id,
-            app_wallet: if is_zero_address(&anchored_wallet) {
-                derived_app_wallet
-            } else {
-                anchored_wallet
-            },
+            app_wallet: anchored_wallet,
             instance_wallet,
         };
 
@@ -1359,10 +1308,32 @@ fn canonical_wallet(wallet: &str) -> Result<String> {
     Ok(format!("0x{}", body))
 }
 
-fn is_zero_address(wallet: &str) -> bool {
-    canonical_wallet(wallet)
-        .map(|v| v == ZERO_ADDRESS)
-        .unwrap_or(false)
+fn decode_kms_wallet_address(value_b64: &str) -> Result<String> {
+    let decoded = general_purpose::STANDARD
+        .decode(value_b64)
+        .map_err(|e| anyhow!("invalid KMS app wallet address encoding: {}", e))?;
+    let address = std::str::from_utf8(&decoded)
+        .map_err(|e| anyhow!("invalid KMS app wallet address utf8: {}", e))?;
+    canonical_wallet(address)
+}
+
+fn decode_kms_private_key_hex(value_b64: &str) -> Result<String> {
+    let decoded = general_purpose::STANDARD
+        .decode(value_b64)
+        .map_err(|e| anyhow!("invalid KMS app wallet key encoding: {}", e))?;
+
+    if decoded.len() == 32 {
+        return Ok(format!("0x{}", hex::encode(decoded)));
+    }
+
+    let key_text = std::str::from_utf8(&decoded)
+        .map_err(|e| anyhow!("invalid KMS app wallet key utf8: {}", e))?;
+    let clean = trim_0x(key_text).to_lowercase();
+    if clean.len() != 64 {
+        bail!("invalid KMS app wallet key length");
+    }
+    hex::decode(&clean).map_err(|e| anyhow!("invalid KMS app wallet key hex: {}", e))?;
+    Ok(format!("0x{}", clean))
 }
 
 #[cfg(test)]
@@ -1376,6 +1347,7 @@ mod tests {
         let proxy = NovaKmsProxy {
             client: reqwest::Client::new(),
             odyn_endpoint: "http://127.0.0.1:18000".to_string(),
+            use_app_wallet: false,
             max_retries: 1,
             require_mutual_signature: true,
             reserved_derive_prefixes: Arc::new(vec!["wallet/eth/app/".to_string()]),
@@ -1385,6 +1357,7 @@ mod tests {
             discovery_cache: Arc::new(Mutex::new(None)),
             discovery_refresh_lock: Arc::new(Mutex::new(())),
             authz_cache: Arc::new(Mutex::new(None)),
+            app_wallet_cache: Arc::new(Mutex::new(None)),
         };
 
         assert!(proxy.is_reserved_derive_path("wallet/eth/app/main"));
@@ -1448,6 +1421,7 @@ mod tests {
     fn build_registry_discovery_none_when_registry_fields_absent() {
         let config = KmsIntegration {
             enabled: true,
+            use_app_wallet: false,
             kms_app_id: None,
             nova_app_registry: None,
         };
@@ -1459,6 +1433,7 @@ mod tests {
     fn build_registry_discovery_uses_internal_rpc_and_ttl() {
         let config = KmsIntegration {
             enabled: true,
+            use_app_wallet: false,
             kms_app_id: Some(49),
             nova_app_registry: Some("0x0f68e6e699f2e972998a1ecc000c7ce103e64cc8".to_string()),
         };
@@ -1473,6 +1448,7 @@ mod tests {
     fn new_builds_without_static_nodes() {
         let config = KmsIntegration {
             enabled: true,
+            use_app_wallet: false,
             kms_app_id: Some(49),
             nova_app_registry: Some("0x0f68e6e699f2e972998a1ecc000c7ce103e64cc8".to_string()),
         };
