@@ -12,9 +12,9 @@ use uuid::Uuid;
 use crate::config::Configuration;
 use enclaver::api::ApiHandler;
 use enclaver::http_util::HttpServer;
+use enclaver::integrations::nova_kms::NovaKmsProxy;
+use enclaver::integrations::s3::S3Proxy;
 use enclaver::nsm::{Nsm, NsmAttestationProvider};
-use enclaver::proxy::nova_kms::NovaKmsProxy;
-use enclaver::proxy::s3::S3Proxy;
 
 pub struct ApiService {
     task: Option<JoinHandle<()>>,
@@ -46,13 +46,16 @@ impl ApiService {
                     proxy_uri
                 );
 
-                let http_client = enclaver::proxy::aws_util::new_proxied_client(proxy_uri.clone())?;
-                let imds = enclaver::proxy::aws_util::imds_client_with_proxy(proxy_uri).await?;
+                let http_client =
+                    enclaver::integrations::aws_util::new_proxied_client(proxy_uri.clone())?;
+                let imds =
+                    enclaver::integrations::aws_util::imds_client_with_proxy(proxy_uri).await?;
 
                 // Small delay to ensure egress proxy is fully up and ready to handle vsock requests
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-                let aws_config = enclaver::proxy::aws_util::load_config_from_imds(imds).await?;
+                let aws_config =
+                    enclaver::integrations::aws_util::load_config_from_imds(imds).await?;
 
                 let mut s3_config_builder = aws_sdk_s3::config::Builder::from(&aws_config);
                 s3_config_builder = s3_config_builder.http_client(http_client);
@@ -63,7 +66,7 @@ impl ApiService {
 
                 let client = S3Client::from_conf(s3_config_builder.build());
 
-                Some(Arc::new(enclaver::proxy::s3::S3Proxy::new(
+                Some(Arc::new(enclaver::integrations::s3::S3Proxy::new(
                     client,
                     s3_config.bucket.clone(),
                     s3_config.prefix.clone(),
