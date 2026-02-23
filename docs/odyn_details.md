@@ -167,8 +167,8 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
 
 - External deps
   - The project's http server util, the NSM attestation helper, `EncryptionKey` for P-384 ECDH, and route/handler types.
-  - `enclaver::proxy::nova_kms::NovaKmsProxy` for `/v1/kms/*` and `/v1/app-wallet/*`.
-  - `enclaver::proxy::s3::S3Proxy` and `aws_sdk_s3` for `/v1/s3/*` and audit-log archival.
+  - `enclaver::integrations::nova_kms::NovaKmsProxy` for `/v1/kms/*` and `/v1/app-wallet/*`.
+  - `enclaver::integrations::s3::S3Proxy` and `aws_sdk_s3` for `/v1/s3/*` and audit-log archival.
 
 - Lifecycle
   - `start()` binds the API listen port and spawns the server task.

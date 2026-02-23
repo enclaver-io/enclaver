@@ -131,7 +131,7 @@ KMS proxying / special handling (feature `odyn`)
 
 - `proxy::kms` inspects KMS requests that require attestation (Decrypt, GenerateDataKey, GenerateDataKeyPair, DeriveSharedSecret, GenerateRandom).
 - For attesting actions it requests an attestation document from `nsm` (or `StaticAttestationProvider` in tests), inserts a `Recipient` structure into the request body, re-signs the request (SigV4) with AWS credentials, forwards to KMS, and on response decrypts `CiphertextForRecipient` using PKCS#7 logic in `proxy::pkcs7`.
-- `proxy::nova_kms` serves internal API KMS/app-wallet endpoints and discovers/authorizes against `NovaAppRegistry` via `kms_integration` (`kms_app_id`, `nova_app_registry`) and built-in Helios registry RPC.
+- `integrations::nova_kms` serves internal API KMS/app-wallet endpoints and discovers/authorizes against `NovaAppRegistry` via `kms_integration` (`kms_app_id`, `nova_app_registry`) and built-in Helios registry RPC.
 - When `storage.s3.encryption.mode=kms`, `odyn` wires `S3Proxy` to `NovaKmsProxy`; a background task periodically archives internal KMS audit JSONL chunks to S3.
 
 Ports and constants

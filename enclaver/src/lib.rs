@@ -33,6 +33,9 @@ pub mod aux_api;
 #[cfg(feature = "proxy")]
 pub mod proxy;
 
+#[cfg(feature = "odyn")]
+pub mod integrations;
+
 #[cfg(feature = "vsock")]
 pub mod vsock;
 

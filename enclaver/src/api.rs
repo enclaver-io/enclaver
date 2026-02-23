@@ -16,9 +16,9 @@ use crate::encryption_key::EncryptionKey;
 use crate::eth_key::EthKey;
 use crate::eth_tx::{self, AccessListEntry, TxSignature, UnsignedEip1559Tx};
 use crate::http_util::{self, HttpHandler};
+use crate::integrations::nova_kms::NovaKmsProxy;
+use crate::integrations::s3::S3Proxy;
 use crate::nsm::{AttestationParams, AttestationProvider, Nsm};
-use crate::proxy::nova_kms::NovaKmsProxy;
-use crate::proxy::s3::S3Proxy;
 
 const MIME_APPLICATION_CBOR: &str = "application/cbor";
 const MAX_EMPTY_RANDOM_CHUNKS: usize = 128;
