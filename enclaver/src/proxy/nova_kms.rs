@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -12,7 +12,7 @@ use http_body_util::Full;
 use hyper::Response;
 use hyper::body::Bytes;
 use hyper::header::CONTENT_TYPE;
-use log::warn;
+use log::{info, warn};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -36,9 +36,12 @@ const DEFAULT_REGISTRY_CHAIN_RPC: &str = "http://127.0.0.1:18545";
 const DEFAULT_KMS_REQUEST_TIMEOUT_MS: u64 = 3000;
 const DEFAULT_KMS_MAX_ATTEMPTS: usize = 3;
 const DEFAULT_KMS_DISCOVERY_TTL_MS: u64 = 15_000;
+const DEFAULT_KMS_NODE_REACHABLE_CACHE_TTL_MS: u64 = 10_000;
+const DEFAULT_KMS_NODE_UNREACHABLE_CACHE_TTL_MS: u64 = 3_000;
 const DEFAULT_KMS_REQUIRE_MUTUAL_SIGNATURE: bool = true;
 const DEFAULT_KMS_RESERVED_DERIVE_PREFIXES: [&str; 1] = ["wallet/eth/app/"];
 const DEFAULT_KMS_AUDIT_LOG_PATH: &str = "/tmp/odyn_kms_audit.log";
+const KMS_DEBUG_LOG_MAX_LEN: usize = 1024;
 
 #[derive(Clone)]
 pub struct NovaKmsProxy {
@@ -52,6 +55,7 @@ pub struct NovaKmsProxy {
     audit_log_sender: Option<mpsc::UnboundedSender<String>>,
     registry_discovery: Option<RegistryDiscoveryConfig>,
     discovery_cache: Arc<Mutex<Option<DiscoveryCacheEntry>>>,
+    node_reachability_cache: Arc<Mutex<HashMap<String, NodeReachabilityCacheEntry>>>,
     discovery_refresh_lock: Arc<Mutex<()>>,
     authz_cache: Arc<Mutex<Option<CachedAuthzContext>>>,
     app_wallet_cache: Arc<Mutex<Option<CachedAppWallet>>>,
@@ -94,6 +98,13 @@ struct RegistryDiscoveryConfig {
 struct DiscoveryCacheEntry {
     node_urls: Vec<String>,
     expires_at_ms: u64,
+}
+
+#[derive(Clone)]
+struct NodeReachabilityCacheEntry {
+    reachable: bool,
+    expires_at_ms: u64,
+    last_error: Option<String>,
 }
 
 struct AuditLogEntry<'a> {
@@ -229,6 +240,7 @@ impl NovaKmsProxy {
             audit_log_sender,
             registry_discovery,
             discovery_cache: Arc::new(Mutex::new(None)),
+            node_reachability_cache: Arc::new(Mutex::new(HashMap::new())),
             discovery_refresh_lock: Arc::new(Mutex::new(())),
             authz_cache: Arc::new(Mutex::new(None)),
             app_wallet_cache: Arc::new(Mutex::new(None)),
@@ -405,8 +417,10 @@ impl NovaKmsProxy {
         };
 
         if let Err(err) = self.ensure_kms_access_authorized().await {
+            warn!("Nova KMS authz failed for /v1/kms/derive: {}", err);
             return Ok(http_util::bad_request(err.to_string()));
         }
+        info!("Nova KMS authz passed for /v1/kms/derive");
 
         if self.is_reserved_derive_path(&req.path) {
             return Ok(http_util::bad_request(
@@ -431,8 +445,10 @@ impl NovaKmsProxy {
         };
 
         if let Err(err) = self.ensure_kms_access_authorized().await {
+            warn!("Nova KMS authz failed for /v1/kms/kv/get: {}", err);
             return Ok(http_util::bad_request(err.to_string()));
         }
+        info!("Nova KMS authz passed for /v1/kms/kv/get");
 
         match self.kv_get(&req.key).await {
             Ok(value) => Ok(http_util::ok_json(&KvGetApiResponse {
@@ -450,8 +466,10 @@ impl NovaKmsProxy {
         };
 
         if let Err(err) = self.ensure_kms_access_authorized().await {
+            warn!("Nova KMS authz failed for /v1/kms/kv/put: {}", err);
             return Ok(http_util::bad_request(err.to_string()));
         }
+        info!("Nova KMS authz passed for /v1/kms/kv/put");
 
         match self.kv_put(&req.key, &req.value, req.ttl_ms).await {
             Ok(()) => Ok(http_util::ok_json(&KvPutApiResponse { success: true })?),
@@ -466,8 +484,10 @@ impl NovaKmsProxy {
         };
 
         if let Err(err) = self.ensure_kms_access_authorized().await {
+            warn!("Nova KMS authz failed for /v1/kms/kv/delete: {}", err);
             return Ok(http_util::bad_request(err.to_string()));
         }
+        info!("Nova KMS authz passed for /v1/kms/kv/delete");
 
         match self.kv_delete(&req.key).await {
             Ok(()) => Ok(http_util::ok_json(&KvDeleteApiResponse { success: true })?),
@@ -491,17 +511,45 @@ impl NovaKmsProxy {
             None
         };
         let mut last_error: Option<anyhow::Error> = None;
-        let node_urls = self.resolve_node_urls().await?;
+        let node_urls = self.resolve_node_urls(&request_id).await?;
+        let payload_preview = payload
+            .as_ref()
+            .map(preview_json_for_log)
+            .unwrap_or_else(|| "<none>".to_string());
+        info!(
+            "Nova KMS [{}] begin {} {} payload_hash={} payload={} nodes={}",
+            request_id,
+            method.as_str(),
+            path,
+            payload_hash,
+            payload_preview,
+            node_urls.len(),
+        );
 
         for attempt in 0..self.max_retries {
             for base_url in &node_urls {
                 let action = format!("{} {}", method.as_str(), path);
+                info!(
+                    "Nova KMS [{}] attempt {}/{} node={} action={}",
+                    request_id,
+                    attempt + 1,
+                    self.max_retries,
+                    base_url,
+                    action,
+                );
                 let result = self
-                    .call_kms_on_node(base_url, method.clone(), path, payload.clone())
+                    .call_kms_on_node(&request_id, base_url, method.clone(), path, payload.clone())
                     .await;
 
                 match result {
                     Ok(value) => {
+                        self.update_node_reachability_cache(base_url, true, None)
+                            .await;
+                        let response_preview = preview_json_for_log(&value);
+                        info!(
+                            "Nova KMS [{}] success node={} action={} response={}",
+                            request_id, base_url, action, response_preview,
+                        );
                         self.append_audit_log(AuditLogEntry {
                             request_id: &request_id,
                             instance_wallet: &instance_wallet,
@@ -516,6 +564,24 @@ impl NovaKmsProxy {
                         return Ok(value);
                     }
                     Err(err) => {
+                        let err_text = err.to_string();
+                        if looks_like_connectivity_error(&err_text) {
+                            self.update_node_reachability_cache(
+                                base_url,
+                                false,
+                                Some(truncate_for_log(&err_text, KMS_DEBUG_LOG_MAX_LEN)),
+                            )
+                            .await;
+                        }
+                        warn!(
+                            "Nova KMS [{}] failed node={} action={} attempt {}/{} error={}",
+                            request_id,
+                            base_url,
+                            action,
+                            attempt + 1,
+                            self.max_retries,
+                            err_text,
+                        );
                         last_error = Some(err);
                         let error_code = last_error.as_ref().map(ToString::to_string);
                         self.append_audit_log(AuditLogEntry {
@@ -543,13 +609,33 @@ impl NovaKmsProxy {
 
     async fn call_kms_on_node(
         &self,
+        request_id: &str,
         base_url: &str,
         method: Method,
         path: &str,
         payload: Option<Value>,
     ) -> Result<Value> {
+        info!(
+            "Nova KMS [{}] contacting node={} method={} path={}",
+            request_id,
+            base_url,
+            method.as_str(),
+            path
+        );
         let node = self.fetch_node_identity(base_url).await?;
+        info!(
+            "Nova KMS [{}] selected node identity wallet={} tee_pubkey_len={}",
+            request_id,
+            node.wallet,
+            node.tee_pubkey.len()
+        );
         let nonce_b64 = self.fetch_nonce(base_url).await?;
+        info!(
+            "Nova KMS [{}] fetched nonce for node={} nonce_b64_len={}",
+            request_id,
+            base_url,
+            nonce_b64.len()
+        );
         let timestamp = current_unix_timestamp();
         let message = format!(
             "NovaKMS:AppAuth:{}:{}:{}",
@@ -558,6 +644,10 @@ impl NovaKmsProxy {
             timestamp
         );
         let client_signature = self.local_sign_message(&message).await?;
+        info!(
+            "Nova KMS [{}] PoP signature generated for node={} timestamp={}",
+            request_id, base_url, timestamp
+        );
         let app_wallet = self.local_eth_address().await?;
 
         let mut req = self
@@ -569,13 +659,28 @@ impl NovaKmsProxy {
             .header("x-app-timestamp", timestamp.to_string())
             .header("x-app-wallet", app_wallet);
 
+        let mut upstream_request_preview = "<none>".to_string();
         if let Some(payload_json) = payload {
+            let payload_preview = preview_json_for_log(&payload_json);
+            info!(
+                "Nova KMS [{}] starting E2E encryption node={} payload={}",
+                request_id, base_url, payload_preview
+            );
             let envelope = self
                 .encrypt_payload_for_node(&payload_json, &node.tee_pubkey)
                 .await?;
+            upstream_request_preview = preview_json_for_log(&envelope);
+            info!(
+                "Nova KMS [{}] E2E encryption completed node={} envelope={}",
+                request_id, base_url, upstream_request_preview
+            );
             req = req.header(CONTENT_TYPE, "application/json").json(&envelope);
         }
 
+        info!(
+            "Nova KMS [{}] sending upstream request node={} request={}",
+            request_id, base_url, upstream_request_preview
+        );
         let response = req.send().await?;
         let status = response.status();
         let mutual_sig = response
@@ -585,6 +690,14 @@ impl NovaKmsProxy {
             .map(ToString::to_string);
 
         let response_text = response.text().await?;
+        let response_preview = preview_text_for_log(&response_text);
+        info!(
+            "Nova KMS [{}] upstream response node={} status={} body={}",
+            request_id,
+            base_url,
+            status.as_u16(),
+            response_preview
+        );
         if !status.is_success() {
             bail!("KMS HTTP {}: {}", status.as_u16(), response_text);
         }
@@ -605,10 +718,27 @@ impl NovaKmsProxy {
             ) {
                 bail!("KMS mutual response signature verification failed");
             }
+            info!(
+                "Nova KMS [{}] mutual response signature verification succeeded node={}",
+                request_id, base_url
+            );
         }
 
         let envelope: Value = serde_json::from_str(&response_text)?;
-        self.decrypt_envelope(&envelope).await
+        info!(
+            "Nova KMS [{}] starting E2E decrypt node={} envelope={}",
+            request_id,
+            base_url,
+            preview_json_for_log(&envelope)
+        );
+        let plaintext = self.decrypt_envelope(&envelope).await?;
+        info!(
+            "Nova KMS [{}] E2E decrypt succeeded node={} plaintext={}",
+            request_id,
+            base_url,
+            preview_json_for_log(&plaintext)
+        );
+        Ok(plaintext)
     }
 
     async fn fetch_node_identity(&self, base_url: &str) -> Result<KmsNodeIdentity> {
@@ -895,7 +1025,26 @@ impl NovaKmsProxy {
         None
     }
 
-    async fn resolve_node_urls(&self) -> Result<Vec<String>> {
+    async fn resolve_node_urls(&self, request_id: &str) -> Result<Vec<String>> {
+        let discovered_urls = self.resolve_discovered_node_urls(request_id).await?;
+        let connectable_urls = self
+            .resolve_connectable_node_urls(request_id, &discovered_urls)
+            .await;
+        if !connectable_urls.is_empty() {
+            return Ok(connectable_urls);
+        }
+
+        // Keep a safe fallback: if all probes fail, still attempt discovered nodes to avoid
+        // over-relying on stale/unlucky probe results.
+        warn!(
+            "Nova KMS [{}] no connectable node from probe cache; fallback to discovered nodes={}",
+            request_id,
+            discovered_urls.join(",")
+        );
+        Ok(discovered_urls)
+    }
+
+    async fn resolve_discovered_node_urls(&self, request_id: &str) -> Result<Vec<String>> {
         let discovery = self
             .registry_discovery
             .as_ref()
@@ -908,6 +1057,13 @@ impl NovaKmsProxy {
                 && now_ms < cached.expires_at_ms
                 && !cached.node_urls.is_empty()
             {
+                info!(
+                    "Nova KMS [{}] discovery cache hit rpc={} app_id={} nodes={}",
+                    request_id,
+                    discovery.rpc_url,
+                    discovery.kms_app_id,
+                    cached.node_urls.join(",")
+                );
                 return Ok(cached.node_urls.clone());
             }
         }
@@ -920,12 +1076,26 @@ impl NovaKmsProxy {
                 && now_ms < cached.expires_at_ms
                 && !cached.node_urls.is_empty()
             {
+                info!(
+                    "Nova KMS [{}] discovery cache hit after lock rpc={} app_id={} nodes={}",
+                    request_id,
+                    discovery.rpc_url,
+                    discovery.kms_app_id,
+                    cached.node_urls.join(",")
+                );
                 return Ok(cached.node_urls.clone());
             }
         }
 
         match self.discover_kms_nodes_from_registry(discovery).await {
             Ok(urls) if !urls.is_empty() => {
+                info!(
+                    "Nova KMS [{}] discovered active KMS nodes via registry app_id={} rpc={} nodes={}",
+                    request_id,
+                    discovery.kms_app_id,
+                    discovery.rpc_url,
+                    urls.join(",")
+                );
                 let mut guard = self.discovery_cache.lock().await;
                 *guard = Some(DiscoveryCacheEntry {
                     node_urls: urls.clone(),
@@ -933,12 +1103,126 @@ impl NovaKmsProxy {
                 });
                 Ok(urls)
             }
-            Ok(_) => bail!(
-                "registry discovery returned no ACTIVE KMS nodes for app_id {}",
-                discovery.kms_app_id
-            ),
-            Err(err) => Err(anyhow!("registry discovery failed: {}", err)),
+            Ok(_) => {
+                warn!(
+                    "Nova KMS [{}] discovery found no active nodes app_id={} rpc={}",
+                    request_id, discovery.kms_app_id, discovery.rpc_url
+                );
+                bail!(
+                    "registry discovery returned no ACTIVE KMS nodes for app_id {}",
+                    discovery.kms_app_id
+                )
+            }
+            Err(err) => {
+                warn!(
+                    "Nova KMS [{}] discovery failed app_id={} rpc={} error={}",
+                    request_id, discovery.kms_app_id, discovery.rpc_url, err
+                );
+                Err(anyhow!("registry discovery failed: {}", err))
+            }
         }
+    }
+
+    async fn resolve_connectable_node_urls(
+        &self,
+        request_id: &str,
+        discovered_urls: &[String],
+    ) -> Vec<String> {
+        let now_ms = current_unix_millis();
+        let mut connectable = Vec::new();
+        let mut needs_probe = Vec::new();
+
+        {
+            let mut guard = self.node_reachability_cache.lock().await;
+            guard.retain(|_, entry| now_ms < entry.expires_at_ms);
+            for base_url in discovered_urls {
+                if let Some(entry) = guard.get(base_url) {
+                    if entry.reachable {
+                        info!(
+                            "Nova KMS [{}] node reachability cache hit reachable node={}",
+                            request_id, base_url
+                        );
+                        connectable.push(base_url.clone());
+                    } else {
+                        warn!(
+                            "Nova KMS [{}] node reachability cache hit unreachable node={} reason={}",
+                            request_id,
+                            base_url,
+                            entry.last_error.as_deref().unwrap_or("<unknown>")
+                        );
+                    }
+                } else {
+                    needs_probe.push(base_url.clone());
+                }
+            }
+        }
+
+        for base_url in needs_probe {
+            let probe_result = self.probe_node_connectivity(request_id, &base_url).await;
+            let is_reachable = probe_result.is_ok();
+            let error_text = probe_result.err().map(|e| e.to_string());
+            self.update_node_reachability_cache(&base_url, is_reachable, error_text.clone())
+                .await;
+            if is_reachable {
+                connectable.push(base_url);
+            } else {
+                warn!(
+                    "Nova KMS [{}] node probe failed node={} error={}",
+                    request_id,
+                    base_url,
+                    error_text.unwrap_or_else(|| "<unknown>".to_string())
+                );
+            }
+        }
+
+        if connectable.is_empty() {
+            warn!(
+                "Nova KMS [{}] connectable node set is empty (discovered={})",
+                request_id,
+                discovered_urls.join(",")
+            );
+        } else {
+            info!(
+                "Nova KMS [{}] connectable nodes={}",
+                request_id,
+                connectable.join(",")
+            );
+        }
+        connectable
+    }
+
+    async fn probe_node_connectivity(&self, request_id: &str, base_url: &str) -> Result<()> {
+        // Minimal liveness probe for node reachability cache.
+        let status_url = format!("{base_url}/status");
+        info!(
+            "Nova KMS [{}] probing node connectivity via {}",
+            request_id, status_url
+        );
+        let response = self.client.get(status_url).send().await?;
+        if !response.status().is_success() {
+            bail!("probe returned HTTP {}", response.status().as_u16());
+        }
+        Ok(())
+    }
+
+    async fn update_node_reachability_cache(
+        &self,
+        base_url: &str,
+        reachable: bool,
+        last_error: Option<String>,
+    ) {
+        let ttl_ms = if reachable {
+            DEFAULT_KMS_NODE_REACHABLE_CACHE_TTL_MS
+        } else {
+            DEFAULT_KMS_NODE_UNREACHABLE_CACHE_TTL_MS
+        };
+        let entry = NodeReachabilityCacheEntry {
+            reachable,
+            expires_at_ms: current_unix_millis().saturating_add(ttl_ms),
+            last_error,
+        };
+        let mut guard = self.node_reachability_cache.lock().await;
+        guard.insert(base_url.to_string(), entry);
     }
 
     async fn discover_kms_nodes_from_registry(
@@ -1292,6 +1576,81 @@ fn current_unix_millis() -> u64 {
         .as_millis() as u64
 }
 
+fn truncate_for_log(value: &str, max_len: usize) -> String {
+    if value.len() <= max_len {
+        return value.to_string();
+    }
+    format!("{}...(truncated)", &value[..max_len])
+}
+
+fn is_sensitive_log_field(field: &str) -> bool {
+    matches!(
+        field.to_ascii_lowercase().as_str(),
+        "key"
+            | "value"
+            | "private_key"
+            | "signature"
+            | "encrypted_data"
+            | "onchain_proof"
+            | "proof"
+    )
+}
+
+fn redact_json_for_log(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut redacted = serde_json::Map::with_capacity(map.len());
+            for (k, v) in map {
+                if is_sensitive_log_field(k) {
+                    let approx_len = match v {
+                        Value::String(s) => s.len(),
+                        _ => v.to_string().len(),
+                    };
+                    redacted.insert(
+                        k.clone(),
+                        Value::String(format!("<redacted:{} chars>", approx_len)),
+                    );
+                } else {
+                    redacted.insert(k.clone(), redact_json_for_log(v));
+                }
+            }
+            Value::Object(redacted)
+        }
+        Value::Array(items) => Value::Array(items.iter().map(redact_json_for_log).collect()),
+        _ => value.clone(),
+    }
+}
+
+fn preview_json_for_log(value: &Value) -> String {
+    let redacted = redact_json_for_log(value);
+    truncate_for_log(&redacted.to_string(), KMS_DEBUG_LOG_MAX_LEN)
+}
+
+fn preview_text_for_log(text: &str) -> String {
+    if let Ok(json_value) = serde_json::from_str::<Value>(text) {
+        return preview_json_for_log(&json_value);
+    }
+    truncate_for_log(text, KMS_DEBUG_LOG_MAX_LEN)
+}
+
+fn looks_like_connectivity_error(message: &str) -> bool {
+    let lowered = message.to_ascii_lowercase();
+    let markers = [
+        "error sending request for url",
+        "connection refused",
+        "connection reset",
+        "timed out",
+        "timeout",
+        "dns error",
+        "tls",
+        "tcp connect",
+        "channel closed",
+        "broken pipe",
+        "network is unreachable",
+    ];
+    markers.iter().any(|marker| lowered.contains(marker))
+}
+
 fn canonical_wallet(wallet: &str) -> Result<String> {
     let value = wallet.trim().to_lowercase();
     let body = if let Some(stripped) = value.strip_prefix("0x") {
@@ -1355,6 +1714,7 @@ mod tests {
             audit_log_sender: None,
             registry_discovery: None,
             discovery_cache: Arc::new(Mutex::new(None)),
+            node_reachability_cache: Arc::new(Mutex::new(HashMap::new())),
             discovery_refresh_lock: Arc::new(Mutex::new(())),
             authz_cache: Arc::new(Mutex::new(None)),
             app_wallet_cache: Arc::new(Mutex::new(None)),
@@ -1415,6 +1775,45 @@ mod tests {
         let overflow = Token::Uint(U256::from(u64::MAX) + U256::from(1u64));
         assert!(token_to_u64(&overflow, "field").is_err());
         assert!(token_to_u64(&Token::Bool(true), "field").is_err());
+    }
+
+    #[test]
+    fn truncate_for_log_truncates_and_keeps_short_values() {
+        assert_eq!(truncate_for_log("short", 64), "short");
+        assert_eq!(truncate_for_log("abcdef", 3), "abc...(truncated)");
+    }
+
+    #[test]
+    fn preview_json_for_log_redacts_sensitive_fields() {
+        let value = json!({
+            "path": "demo/path",
+            "key": "base64-secret",
+            "value": "plaintext",
+            "nested": {
+                "signature": "0xabc",
+            }
+        });
+        let preview = preview_json_for_log(&value);
+        assert!(preview.contains("\"path\":\"demo/path\""));
+        assert!(preview.contains("<redacted:13 chars>"));
+        assert!(preview.contains("<redacted:9 chars>"));
+        assert!(preview.contains("<redacted:5 chars>"));
+        assert!(!preview.contains("base64-secret"));
+        assert!(!preview.contains("plaintext"));
+        assert!(!preview.contains("0xabc"));
+    }
+
+    #[test]
+    fn connectivity_error_detector_distinguishes_transport_failures() {
+        assert!(looks_like_connectivity_error(
+            "registry discovery failed: error sending request for url (http://127.0.0.1:18545/)"
+        ));
+        assert!(looks_like_connectivity_error(
+            "request failed: connection refused"
+        ));
+        assert!(!looks_like_connectivity_error(
+            "KMS HTTP 400: invalid key payload"
+        ));
     }
 
     #[test]
