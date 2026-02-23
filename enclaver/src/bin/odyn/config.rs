@@ -1,11 +1,9 @@
 use anyhow::Result;
 use http::Uri;
-use log::debug;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use enclaver::constants::{HTTP_EGRESS_PROXY_PORT, MANIFEST_FILE_NAME};
-use enclaver::manifest::{self, HeliosRpcKind, Manifest};
+use enclaver::manifest::{HeliosRpcKind, Manifest};
 
 #[derive(Clone, Debug)]
 pub struct HeliosRuntimeConfig {

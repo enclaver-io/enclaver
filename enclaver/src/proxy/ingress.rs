@@ -205,7 +205,7 @@ mod tests {
         });
 
         // connect to the proxy via vsock and send a stream of random bytes
-        let conn = crate::vsock::VsockStream::connect(crate::vsock::VMADDR_CID_HOST, PORT as u32)
+        let conn = tokio_vsock::VsockStream::connect(crate::vsock::VMADDR_CID_HOST, PORT as u32)
             .await
             .expect("connect failed");
         let (r, w) = tokio::io::split(conn);
