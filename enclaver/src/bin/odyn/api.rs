@@ -99,8 +99,7 @@ impl ApiService {
             }
 
             // Periodically rotate and archive audit logs into encrypted S3.
-            if let (Some(nova_kms_ref), Some(s3_proxy_ref)) =
-                (nova_kms.as_ref(), s3_proxy.as_ref())
+            if let (Some(nova_kms_ref), Some(s3_proxy_ref)) = (nova_kms.as_ref(), s3_proxy.as_ref())
                 && let Some(s3_cfg) = config.s3_config()
                 && matches!(
                     s3_cfg.encryption.as_ref().map(|v| &v.mode),
