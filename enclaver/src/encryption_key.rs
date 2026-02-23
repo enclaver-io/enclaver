@@ -177,7 +177,7 @@ impl EncryptionKey {
 
     /// Normalize nonce for AES-GCM.
     /// Accepts 12-byte nonces, plus 32-byte legacy nonces where the first 12 bytes are used.
-    fn normalize_nonce<'a>(nonce: &'a [u8]) -> Result<&'a [u8]> {
+    fn normalize_nonce(nonce: &[u8]) -> Result<&[u8]> {
         match nonce.len() {
             12 => Ok(nonce),
             32 => Ok(&nonce[..12]),

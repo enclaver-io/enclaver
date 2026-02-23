@@ -896,10 +896,10 @@ impl NovaKmsProxy {
 
     async fn cached_node_identity(&self, base_url: &str, now_ms: u64) -> Option<KmsNodeIdentity> {
         let guard = self.node_identity_cache.read().await;
-        if let Some(entry) = guard.get(base_url) {
-            if now_ms < entry.expires_at_ms {
-                return Some(entry.identity.clone());
-            }
+        if let Some(entry) = guard.get(base_url)
+            && now_ms < entry.expires_at_ms
+        {
+            return Some(entry.identity.clone());
         }
         drop(guard);
         let mut write_guard = self.node_identity_cache.write().await;
