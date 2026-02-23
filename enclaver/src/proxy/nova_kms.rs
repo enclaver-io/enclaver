@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, anyhow, bail};
@@ -35,9 +36,10 @@ const APP_WALLET_CACHE_TTL_MS: u64 = 10_000;
 const DEFAULT_REGISTRY_CHAIN_RPC: &str = "http://127.0.0.1:18545";
 const DEFAULT_KMS_REQUEST_TIMEOUT_MS: u64 = 3000;
 const DEFAULT_KMS_MAX_ATTEMPTS: usize = 3;
-const DEFAULT_KMS_DISCOVERY_TTL_MS: u64 = 15_000;
-const DEFAULT_KMS_NODE_REACHABLE_CACHE_TTL_MS: u64 = 10_000;
-const DEFAULT_KMS_NODE_UNREACHABLE_CACHE_TTL_MS: u64 = 3_000;
+const DEFAULT_KMS_DISCOVERY_TTL_MS: u64 = 60_000;
+const DEFAULT_KMS_NODE_REACHABLE_CACHE_TTL_MS: u64 = 30_000;
+const DEFAULT_KMS_NODE_UNREACHABLE_CACHE_TTL_MS: u64 = 10_000;
+const DEFAULT_KMS_BACKGROUND_REFRESH_INTERVAL_MS: u64 = 20_000;
 const DEFAULT_KMS_REQUIRE_MUTUAL_SIGNATURE: bool = true;
 const DEFAULT_KMS_RESERVED_DERIVE_PREFIXES: [&str; 1] = ["wallet/eth/app/"];
 const DEFAULT_KMS_AUDIT_LOG_PATH: &str = "/tmp/odyn_kms_audit.log";
@@ -56,6 +58,7 @@ pub struct NovaKmsProxy {
     registry_discovery: Option<RegistryDiscoveryConfig>,
     discovery_cache: Arc<Mutex<Option<DiscoveryCacheEntry>>>,
     node_reachability_cache: Arc<Mutex<HashMap<String, NodeReachabilityCacheEntry>>>,
+    background_refresh_started: Arc<AtomicBool>,
     discovery_refresh_lock: Arc<Mutex<()>>,
     authz_cache: Arc<Mutex<Option<CachedAuthzContext>>>,
     app_wallet_cache: Arc<Mutex<Option<CachedAppWallet>>>,
@@ -104,6 +107,8 @@ struct DiscoveryCacheEntry {
 struct NodeReachabilityCacheEntry {
     reachable: bool,
     expires_at_ms: u64,
+    last_checked_ms: u64,
+    last_http_status: Option<u16>,
     last_error: Option<String>,
 }
 
@@ -241,10 +246,54 @@ impl NovaKmsProxy {
             registry_discovery,
             discovery_cache: Arc::new(Mutex::new(None)),
             node_reachability_cache: Arc::new(Mutex::new(HashMap::new())),
+            background_refresh_started: Arc::new(AtomicBool::new(false)),
             discovery_refresh_lock: Arc::new(Mutex::new(())),
             authz_cache: Arc::new(Mutex::new(None)),
             app_wallet_cache: Arc::new(Mutex::new(None)),
         })
+    }
+
+    pub fn start_background_refresh(self: &Arc<Self>) {
+        if self.registry_discovery.is_none() {
+            info!("Nova KMS background refresh skipped: registry discovery is not configured");
+            return;
+        }
+        if self.background_refresh_started.swap(true, Ordering::AcqRel) {
+            info!("Nova KMS background refresh already started");
+            return;
+        }
+        info!(
+            "Nova KMS background refresh started (interval={}ms)",
+            DEFAULT_KMS_BACKGROUND_REFRESH_INTERVAL_MS
+        );
+
+        let proxy = self.clone();
+        tokio::spawn(async move {
+            loop {
+                let request_id = Uuid::new_v4().to_string();
+                info!("Nova KMS [{}] background refresh tick started", request_id);
+                proxy
+                    .log_cache_snapshot_debug(&request_id, "before_refresh")
+                    .await;
+                if let Err(err) = proxy
+                    .refresh_registry_and_node_status_once(&request_id)
+                    .await
+                {
+                    warn!(
+                        "Nova KMS [{}] background refresh failed: {}",
+                        request_id, err
+                    );
+                }
+                proxy
+                    .log_cache_snapshot_debug(&request_id, "after_refresh")
+                    .await;
+                info!("Nova KMS [{}] background refresh tick finished", request_id);
+                tokio::time::sleep(Duration::from_millis(
+                    DEFAULT_KMS_BACKGROUND_REFRESH_INTERVAL_MS,
+                ))
+                .await;
+            }
+        });
     }
 
     fn spawn_audit_log_writer(path: Option<PathBuf>) -> Option<mpsc::UnboundedSender<String>> {
@@ -543,7 +592,7 @@ impl NovaKmsProxy {
 
                 match result {
                     Ok(value) => {
-                        self.update_node_reachability_cache(base_url, true, None)
+                        self.update_node_reachability_cache(base_url, true, None, None)
                             .await;
                         let response_preview = preview_json_for_log(&value);
                         info!(
@@ -569,6 +618,7 @@ impl NovaKmsProxy {
                             self.update_node_reachability_cache(
                                 base_url,
                                 false,
+                                None,
                                 Some(truncate_for_log(&err_text, KMS_DEBUG_LOG_MAX_LEN)),
                             )
                             .await;
@@ -1027,21 +1077,99 @@ impl NovaKmsProxy {
 
     async fn resolve_node_urls(&self, request_id: &str) -> Result<Vec<String>> {
         let discovered_urls = self.resolve_discovered_node_urls(request_id).await?;
-        let connectable_urls = self
+        let prioritized_urls = self
             .resolve_connectable_node_urls(request_id, &discovered_urls)
             .await;
-        if !connectable_urls.is_empty() {
-            return Ok(connectable_urls);
+        if !prioritized_urls.is_empty() {
+            return Ok(prioritized_urls);
         }
 
         // Keep a safe fallback: if all probes fail, still attempt discovered nodes to avoid
-        // over-relying on stale/unlucky probe results.
+        // over-relying on stale or pessimistic connectivity cache entries.
         warn!(
-            "Nova KMS [{}] no connectable node from probe cache; fallback to discovered nodes={}",
+            "Nova KMS [{}] no eligible node from connectivity cache; fallback to discovered nodes={}",
             request_id,
             discovered_urls.join(",")
         );
         Ok(discovered_urls)
+    }
+
+    async fn refresh_registry_and_node_status_once(&self, request_id: &str) -> Result<()> {
+        let discovery = match self.registry_discovery.as_ref() {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+        info!(
+            "Nova KMS [{}] refreshing discovery cache app_id={} rpc={}",
+            request_id, discovery.kms_app_id, discovery.rpc_url
+        );
+
+        let now_ms = current_unix_millis();
+        let urls = self.discover_kms_nodes_from_registry(discovery).await?;
+        {
+            let mut guard = self.discovery_cache.lock().await;
+            *guard = Some(DiscoveryCacheEntry {
+                node_urls: urls.clone(),
+                expires_at_ms: now_ms.saturating_add(discovery.ttl_ms),
+            });
+        }
+        info!(
+            "Nova KMS [{}] discovery cache updated nodes={} ttl_ms={}",
+            request_id,
+            urls.len(),
+            discovery.ttl_ms
+        );
+
+        if urls.is_empty() {
+            warn!(
+                "Nova KMS [{}] background refresh found no active nodes app_id={} rpc={}",
+                request_id, discovery.kms_app_id, discovery.rpc_url
+            );
+            return Ok(());
+        }
+
+        // Drop stale node status cache entries no longer present in registry.
+        {
+            let url_set: HashSet<&str> = urls.iter().map(|u| u.as_str()).collect();
+            let mut guard = self.node_reachability_cache.lock().await;
+            guard.retain(|url, _| url_set.contains(url.as_str()));
+        }
+
+        let mut reachable = 0usize;
+        let mut unreachable = 0usize;
+        for base_url in &urls {
+            match self.probe_node_status_once(request_id, base_url).await {
+                Ok(status_code) => {
+                    reachable += 1;
+                    self.update_node_reachability_cache(base_url, true, Some(status_code), None)
+                        .await;
+                }
+                Err(err) => {
+                    unreachable += 1;
+                    self.update_node_reachability_cache(
+                        base_url,
+                        false,
+                        None,
+                        Some(truncate_for_log(&err.to_string(), KMS_DEBUG_LOG_MAX_LEN)),
+                    )
+                    .await;
+                    warn!(
+                        "Nova KMS [{}] node status refresh failed node={} error={}",
+                        request_id, base_url, err
+                    );
+                }
+            }
+        }
+
+        info!(
+            "Nova KMS [{}] background refresh complete app_id={} nodes={} reachable={} unreachable={}",
+            request_id,
+            discovery.kms_app_id,
+            urls.len(),
+            reachable,
+            unreachable
+        );
+        Ok(())
     }
 
     async fn resolve_discovered_node_urls(&self, request_id: &str) -> Result<Vec<String>> {
@@ -1129,8 +1257,9 @@ impl NovaKmsProxy {
         discovered_urls: &[String],
     ) -> Vec<String> {
         let now_ms = current_unix_millis();
-        let mut connectable = Vec::new();
-        let mut needs_probe = Vec::new();
+        let mut reachable = Vec::new();
+        let mut unknown = Vec::new();
+        let mut unreachable_count = 0usize;
 
         {
             let mut guard = self.node_reachability_cache.lock().await;
@@ -1142,73 +1271,117 @@ impl NovaKmsProxy {
                             "Nova KMS [{}] node reachability cache hit reachable node={}",
                             request_id, base_url
                         );
-                        connectable.push(base_url.clone());
+                        reachable.push(base_url.clone());
                     } else {
+                        unreachable_count += 1;
                         warn!(
-                            "Nova KMS [{}] node reachability cache hit unreachable node={} reason={}",
+                            "Nova KMS [{}] node reachability cache hit unreachable node={} http_status={:?} last_checked_ms={} reason={}",
                             request_id,
                             base_url,
+                            entry.last_http_status,
+                            entry.last_checked_ms,
                             entry.last_error.as_deref().unwrap_or("<unknown>")
                         );
                     }
                 } else {
-                    needs_probe.push(base_url.clone());
+                    unknown.push(base_url.clone());
                 }
             }
         }
 
-        for base_url in needs_probe {
-            let probe_result = self.probe_node_connectivity(request_id, &base_url).await;
-            let is_reachable = probe_result.is_ok();
-            let error_text = probe_result.err().map(|e| e.to_string());
-            self.update_node_reachability_cache(&base_url, is_reachable, error_text.clone())
-                .await;
-            if is_reachable {
-                connectable.push(base_url);
-            } else {
-                warn!(
-                    "Nova KMS [{}] node probe failed node={} error={}",
-                    request_id,
-                    base_url,
-                    error_text.unwrap_or_else(|| "<unknown>".to_string())
-                );
-            }
-        }
+        let mut prioritized = Vec::with_capacity(reachable.len() + unknown.len());
+        prioritized.extend(reachable.clone());
+        prioritized.extend(unknown.clone());
 
-        if connectable.is_empty() {
+        if prioritized.is_empty() {
             warn!(
-                "Nova KMS [{}] connectable node set is empty (discovered={})",
+                "Nova KMS [{}] connectable node set is empty (discovered={} unreachable_cached={})",
                 request_id,
-                discovered_urls.join(",")
+                discovered_urls.join(","),
+                unreachable_count
             );
         } else {
             info!(
-                "Nova KMS [{}] connectable nodes={}",
+                "Nova KMS [{}] prioritized nodes reachable_cached={} unknown={} unreachable_cached={} nodes={}",
                 request_id,
-                connectable.join(",")
+                reachable.len(),
+                unknown.len(),
+                unreachable_count,
+                prioritized.join(",")
             );
         }
-        connectable
+        prioritized
     }
 
-    async fn probe_node_connectivity(&self, request_id: &str, base_url: &str) -> Result<()> {
-        // Minimal liveness probe for node reachability cache.
+    async fn probe_node_status_once(&self, request_id: &str, base_url: &str) -> Result<u16> {
         let status_url = format!("{base_url}/status");
         info!(
-            "Nova KMS [{}] probing node connectivity via {}",
+            "Nova KMS [{}] probing node status url={}",
             request_id, status_url
         );
-        let response = self.client.get(status_url).send().await?;
-        if !response.status().is_success() {
-            bail!("probe returned HTTP {}", response.status().as_u16());
+        let response = self.client.get(&status_url).send().await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            bail!(
+                "status probe failed node={} http={} body={}",
+                base_url,
+                status.as_u16(),
+                truncate_for_log(&body, KMS_DEBUG_LOG_MAX_LEN)
+            );
         }
-        Ok(())
+        info!(
+            "Nova KMS [{}] node status refresh succeeded node={} http={}",
+            request_id,
+            base_url,
+            status.as_u16()
+        );
+        Ok(status.as_u16())
+    }
+
+    async fn log_cache_snapshot_debug(&self, request_id: &str, phase: &str) {
+        let now_ms = current_unix_millis();
+        let (discovery_nodes, discovery_ttl_ms) = {
+            let guard = self.discovery_cache.lock().await;
+            if let Some(cached) = guard.as_ref() {
+                (
+                    cached.node_urls.len(),
+                    cached.expires_at_ms.saturating_sub(now_ms),
+                )
+            } else {
+                (0usize, 0u64)
+            }
+        };
+        let (total_entries, reachable_entries, unreachable_entries) = {
+            let guard = self.node_reachability_cache.lock().await;
+            let mut reachable = 0usize;
+            let mut unreachable = 0usize;
+            for entry in guard.values() {
+                if entry.reachable {
+                    reachable += 1;
+                } else {
+                    unreachable += 1;
+                }
+            }
+            (guard.len(), reachable, unreachable)
+        };
+        info!(
+            "Nova KMS [{}] cache snapshot phase={} discovery_nodes={} discovery_ttl_ms={} node_cache_total={} node_cache_reachable={} node_cache_unreachable={}",
+            request_id,
+            phase,
+            discovery_nodes,
+            discovery_ttl_ms,
+            total_entries,
+            reachable_entries,
+            unreachable_entries
+        );
     }
 
     async fn update_node_reachability_cache(
         &self,
         base_url: &str,
         reachable: bool,
+        last_http_status: Option<u16>,
         last_error: Option<String>,
     ) {
         let ttl_ms = if reachable {
@@ -1219,6 +1392,8 @@ impl NovaKmsProxy {
         let entry = NodeReachabilityCacheEntry {
             reachable,
             expires_at_ms: current_unix_millis().saturating_add(ttl_ms),
+            last_checked_ms: current_unix_millis(),
+            last_http_status,
             last_error,
         };
         let mut guard = self.node_reachability_cache.lock().await;
@@ -1715,6 +1890,7 @@ mod tests {
             registry_discovery: None,
             discovery_cache: Arc::new(Mutex::new(None)),
             node_reachability_cache: Arc::new(Mutex::new(HashMap::new())),
+            background_refresh_started: Arc::new(AtomicBool::new(false)),
             discovery_refresh_lock: Arc::new(Mutex::new(())),
             authz_cache: Arc::new(Mutex::new(None)),
             app_wallet_cache: Arc::new(Mutex::new(None)),
