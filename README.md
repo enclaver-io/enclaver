@@ -76,7 +76,7 @@ The diagram below shows how the release Docker image runs as a single container,
 │   - launcher: start/monitor App                                              │
 │   - ingress:  inbound traffic --> App                                        │
 │   - egress:   App --> outbound traffic                                       │
-│   - kms-proxy: talk to external KMS over network                             │
+│   - kms-integration: internal `/v1/kms/*` + `/v1/app-wallet/*` backed by Nova KMS │
 │   - encryption: ECDH (P-384) encrypt/decrypt for secure client communication │
 │   - storage:  S3 persistent storage integration via Internal API             │
 │   - helios:   trustless Ethereum/OP Stack light client RPC                   │
@@ -90,6 +90,6 @@ Data paths overview:
 
   External clients --> Container networking --> odyn.ingress --> App
   App --> odyn.egress --> Container networking --> External services
-  odyn.kms-proxy <--> External KMS (network)
+  odyn./v1/kms/* <--> Nova KMS cluster (network, via registry discovery)
   App stdout/stderr --> odyn.console --> Docker container logs
 ```

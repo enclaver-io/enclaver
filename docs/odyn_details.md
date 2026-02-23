@@ -10,11 +10,11 @@ It covers overall responsibilities and architecture, a detailed per-module break
 Odyn is the supervisor that runs inside an enclave and manages the enclave application (the "entrypoint"). Its main responsibilities are:
 
 - Prepare enclave platform primitives (bring up loopback, seed RNG from NSM).
-- Provide local infrastructure services that the entrypoint expects (ingress listeners, optional egress proxy, optional KMS proxy, internal API server).
+- Provide local infrastructure services that the entrypoint expects (ingress listeners, optional egress proxy, optional Nova KMS integration through the internal API server).
 - Capture and expose application logs and runtime status over VSOCK to the host.
 - Launch and supervise the entrypoint process, ensure proper reaping of children to avoid zombies, and translate exit status into an observable final state.
 
-Design goals: reproducible startup order, clear dependencies between services (egress needed before kms_proxy), small surface area for host control via vsock/API, and a policy-driven egress allow list for safe outbound connectivity.
+Design goals: reproducible startup order, clear dependencies between services (egress before API/S3 initialization), small surface area for host control via vsock/API, and a policy-driven egress allow list for safe outbound connectivity.
 
 ---
 
@@ -28,12 +28,14 @@ ingress:
 
 egress:
   allow:
-    - "169.254.169.254"            # IMDS (if kms_proxy is used)
-    - "kms.us-east-1.amazonaws.com"
+    - "169.254.169.254"            # IMDS (for AWS SDK region/credentials discovery)
+    - "s3.us-east-1.amazonaws.com"
   proxy_port: 3128
 
-kms_proxy:
-  listen_port: 9000
+kms_integration:
+  enabled: true
+  kms_app_id: 1001
+  nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64cc8"
 
 api:
   listen_port: 8000
@@ -47,7 +49,7 @@ sources:
 ```
 
 Notes:
-- If you enable `kms_proxy`, ensure the egress allow list includes IMDS (`169.254.169.254`) and the KMS endpoints required by the region(s).
+- If you enable `kms_integration` and/or S3, ensure the egress allow list includes IMDS (`169.254.169.254`) and required upstream endpoints.
 - TLS ingress entries are supported; PEM files are read from `config_dir/tls/server/<port>/{cert.pem,key.pem}`.
 
 ---
@@ -103,12 +105,12 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
 
 - Responsibilities
   - Entry point: parse CLI args, load configuration, initialize logging/tracing, and orchestrate service startup/shutdown.
-  - Establish deterministic startup order so dependent services (e.g., kms_proxy) have required preconditions (egress) available.
+  - Establish deterministic startup order so dependent services (e.g., API integrations and S3) have required preconditions (egress) available.
   - Provide final exit plumbing that updates `AppStatus` and returns an appropriate process exit code.
 
 - Key data structures
   - `CliArgs` (clap) — flags: `--config-dir`, `--no-bootstrap`, `--no-console`, `--entrypoint`, `--verbose`, etc.
-  - Runtime handles/registrations for started services (EgressService, KmsProxyService, ApiService, IngressService, Console/AppLog, Entrypoint handle).
+  - Runtime handles/registrations for started services (EgressService, ApiService, IngressService, Console/AppLog, Entrypoint handle).
 
 - External deps
   - `tokio` runtime, `clap` for CLI, `tracing`/`log` for logging, `anyhow`/`thiserror` for errors, and the other internal modules.
@@ -116,7 +118,7 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
 - Lifecycle / behaviors
   - Load manifest via `Configuration::load(config_dir)`.
   - Optionally run `enclave::bootstrap()` unless `--no-bootstrap`.
-  - Start services in order: Egress (if enabled) → KMS proxy (if configured) → API → Console/AppLog/Status → Ingress → Launch the entrypoint. Monitor the sentinel and on exit stop services in reverse order.
+  - Start services in order: Egress (if enabled) → API (includes optional Nova KMS integration and S3 setup) → Console/AppLog/Status → Ingress → Launch the entrypoint. Monitor the sentinel and on exit stop services in reverse order.
 
 - Common errors
   - Failures in manifest loading, missing TLS files, or inability to reach NSM are treated as fatal startup errors.
@@ -143,7 +145,7 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
   - `Configuration::load()` validates each manifest section, loads TLS material from `config_dir/tls/server/<port>`, and exposes helper getters (`api_port()`, `egress_proxy_uri()`, etc.).
 
 - Common errors
-  - Missing PEM files, malformed URIs in egress endpoints, or an empty `egress.allow` when kms_proxy is expected.
+  - Missing PEM files, malformed URIs in egress endpoints, or an empty `egress.allow` when integrations need outbound access.
 
 - Extensions
   - Support alternate config sources (environment variables, remote config service) or richer validation rules.
@@ -288,37 +290,14 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
   - `start()` constructs the policy from the manifest, binds the proxy port, sets global env vars, and spawns the proxy serve loop. `stop()` aborts the proxy and may clear env vars.
 
 - Common errors
-  - Environment vars are global and can race; forgetting to include IMDS/KMS hosts in allow list breaks `kms_proxy`.
+  - Environment vars are global and can race; forgetting to include IMDS/AWS endpoints in allow list breaks S3 and AWS SDK flows.
 
 - Extensions
   - Richer rule syntax (CIDR), request/response logs, authentication to upstreams, or caching.
 
 ---
 
-### 4.8 `kms_proxy.rs`
-
-- Responsibilities
-  - Run a local KMS-compatible proxy that receives SDK KMS requests and forwards them to AWS KMS using IMDS-derived credentials (retrieved through the egress path).
-  - Expose an attestation-backed `KeyPair` and `CredentialsGetter` so the proxy can sign or assert attestation material when needed.
-
-- Key data structures
-  - `KmsProxyService { proxy: Option<JoinHandle<()>> }`, `KmsProxyConfig`, and `KmsProxyHandler` types.
-
-- External deps
-  - `enclaver::proxy::kms` handler types, `enclaver::proxy::aws_util` for credentials, `enclaver::keypair::KeyPair`, and `enclaver::nsm::Nsm`.
-
-- Lifecycle
-  - `start()` validates egress availability (IMDS/KMS reachability), loads or generates a KeyPair, constructs an IMDS-aware SDK config, binds the KMS listen port, sets `AWS_KMS_ENDPOINT` to the local proxy address, and spawns the handler.
-
-- Common errors
-  - Missing egress or omitted IMDS/KMS endpoints cause fatal startup failure. IMDS or network failures will stymie runtime behavior.
-
-- Extensions
-  - Request caching, rate-limiting, auditing, or pluggable credential backends (HashiCorp Vault, etc.).
-
----
-
-### 4.9 `launcher.rs`
+### 4.8 `launcher.rs`
 
 - Responsibilities
   - Launch the configured entrypoint process with the required uid/gid and supervise its lifetime.
@@ -342,7 +321,7 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
 
 ---
 
-### 4.10 `enclave.rs`
+### 4.9 `enclave.rs`
 
 - Responsibilities
   - Low-level bootstrap: bring up the loopback (`lo`) interface and seed the kernel RNG from the Nitro Secure Module (NSM).
@@ -369,13 +348,12 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
 1. `main.rs` parses CLI and loads configuration.
 2. Optionally `enclave::bootstrap()` (loopback up, seed RNG).
 3. Start `EgressService` (if enabled) — sets global proxy env vars.
-4. Start `KmsProxyService` (if configured) — requires egress and IMDS.
-5. Start `ApiService` (if configured).
-6. Start `AuxApiService` (if configured) — requires API service to be running.
-7. Start `AppStatus` / `AppLog` (make vsock listeners available early).
-8. Start `IngressService` (bind listeners and spawn proxies).
-9. Launch entrypoint with `launcher::start_child()` and monitor sentinel.
-10. On entrypoint exit, update status, stop services in reverse order, and exit with sentinel's `ExitStatus`.
+4. Start `ApiService` (if configured) — this includes optional Nova KMS integration and S3 wiring.
+5. Start `AuxApiService` (if configured) — requires API service to be running.
+6. Start `AppStatus` / `AppLog` (make vsock listeners available early).
+7. Start `IngressService` (bind listeners and spawn proxies).
+8. Launch entrypoint with `launcher::start_child()` and monitor sentinel.
+9. On entrypoint exit, update status, stop services in reverse order, and exit with sentinel's `ExitStatus`.
 
 ---
 
@@ -384,7 +362,7 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
 - Global env vars (`http_proxy`, `https_proxy`, `no_proxy`) are process-global and can race if changed at runtime. Start egress early and set them once.
 - The `ByteLog` ring buffer is a fixed size; heavy logging drops old content.
 - TLS files must be present in the expected config dir location or TLS listeners will fail to bind.
-- KMS proxy requires both egress configuration and the `egress.allow` list to include IMDS and KMS endpoints.
+- Nova KMS and S3 integrations require correct outbound egress policy; include IMDS and required upstream domains/IPs.
 - Running dup2 for stdout/stderr is process-global; do this deterministically at startup.
 
 ---
@@ -392,7 +370,7 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
 ## 7. Troubleshooting checklist
 
 - No logs on host: confirm `APP_LOG_PORT` bound and that dup2/stdout redirection occurred.
-- KMS errors: verify egress `allow` contains IMDS/KMS endpoints and that egress proxy is running.
+- KMS errors: verify `kms_integration` fields, Helios registry chain config, and egress allow rules.
 - TLS/Ingress failures: validate PEM files and file permissions.
 - Cross-compilation/build issues: use the repository scripts and `cross` as required by the build scripts.
 
@@ -414,7 +392,6 @@ sequenceDiagram
     Odyn->>Odyn: enclave::bootstrap (lo up, seed RNG)
   end
   Odyn->>Odyn: start EgressService (if configured)
-  Odyn->>Odyn: start KmsProxyService (if configured)
   Odyn->>Odyn: start ApiService (if configured)
   Odyn->>Odyn: start AuxApiService (if configured)
   Odyn->>Host: open APP_LOG_PORT / STATUS_PORT (vsock)
@@ -422,7 +399,7 @@ sequenceDiagram
   Odyn->>Entrypoint: launcher::start_child(entrypoint)
   Entrypoint-->>Odyn: stdout/stderr (captured into ByteLog)
   Odyn->>Host: stream logs & status via vsock
-  note right of Odyn: services run (egress, kms_proxy, api, aux_api, ingress)
+  note right of Odyn: services run (egress, api, aux_api, ingress)
   Entrypoint-->>Odyn: exit (code)
   Odyn->>Odyn: update AppStatus (exited)
   Odyn->>Odyn: stop services (reverse order)
@@ -437,7 +414,6 @@ sequenceDiagram
 - `enclaver/src/bin/odyn/config.rs` — manifest loading & validation.
 - `enclaver/src/bin/odyn/console.rs` — ByteLog, AppLog, AppStatus & VSOCK bindings.
 - `enclaver/src/bin/odyn/egress.rs` — egress proxy wiring.
-- `enclaver/src/bin/odyn/kms_proxy.rs` — local KMS proxy.
 - `enclaver/src/bin/odyn/ingress.rs` — listener binds and EnclaveProxy workers.
 - `enclaver/src/bin/odyn/launcher.rs` — spawn/reap entrypoint.
 - `enclaver/src/bin/odyn/enclave.rs` — bootstrap helpers (loopback, RNG seed).

@@ -11,7 +11,7 @@
 # Notes
 # - If `ingress` is omitted, there is no inbound connectivity into the enclave.
 # - If `egress.allow` is empty or omitted, egress is entirely disabled and no proxy env vars are set.
-# - If you enable `kms_proxy`, ensure egress allows IMDS (169.254.169.254) and your KMS endpoints.
+# - If you use S3 or other AWS SDK flows that rely on IMDS, ensure egress allows 169.254.169.254.
 # - Domain allow/deny rules support `*` (single label) and `**` (any suffix). See examples below.
 # - IP allow/deny rules support exact IP and CIDR (IPv4/IPv6).
 #
@@ -90,24 +90,11 @@ egress:
     #- "**"                   # Allow all domains (does not match IP addresses)
     #- "0.0.0.0/0"           # Allow all IPv4 traffic
     #- "::/0"                # Allow all IPv6 traffic
-    #- "169.254.169.254"      # IMDS (needed if kms_proxy is enabled)
+    #- "169.254.169.254"      # IMDS (needed for AWS SDK region/credentials discovery)
   deny:
     # Optional block list evaluated after allow. Same grammar as allow.
     #- "*.example.net"        # [ODYN] Domain/IP patterns for egress deny list.
     #- "10.0.0.0/8"
-
-# Optional: local KMS-compatible proxy inside the enclave
-# - Listens on HTTP and forwards to AWS KMS using IMDS-derived credentials via egress proxy.
-# - Sets AWS_KMS_ENDPOINT=http://127.0.0.1:<listen_port> for the entrypoint process.
-# - Requires egress.allow to include 169.254.169.254 (IMDS) and the KMS endpoints used.
-kms_proxy:
-  listen_port: 9000          # [ODYN] Required. TCP port (u16) for local KMS proxy.
-                             # ODYN: binds KmsProxyService, sets AWS_KMS_ENDPOINT env var.
-  # Optional per-region endpoint overrides (value is host only; scheme/path are set by the proxy)
-  # If omitted, defaults to kms.<region>.amazonaws.com
-  endpoints:                 # [ODYN] Optional. Map of region name to KMS endpoint hostname.
-    us-east-1: kms.us-east-1.amazonaws.com
-    #eu-west-1: kms.eu-west-1.amazonaws.com
 
 # Optional: Nova KMS integration used by Internal API `/v1/kms/*` and `/v1/app-wallet/*`
 # - Enables registry-backed app/instance authorization for Nova KMS operations.
@@ -191,8 +178,6 @@ storage:
 # | egress.proxy_port      | ODYN        | Local HTTP proxy port inside enclave           |
 # | egress.allow           | ODYN        | Egress allow list (domain/IP patterns)         |
 # | egress.deny            | ODYN        | Egress deny list (domain/IP patterns)          |
-# | kms_proxy.listen_port  | ODYN        | Local KMS proxy port inside enclave            |
-# | kms_proxy.endpoints    | ODYN        | Regional KMS endpoint overrides                |
 # | kms_integration.enabled | ODYN       | Enable Nova KMS integration                    |
 # | kms_integration.kms_app_id | ODYN    | Nova app ID used for authz/discovery           |
 # | kms_integration.nova_app_registry | ODYN | NovaAppRegistry contract address           |

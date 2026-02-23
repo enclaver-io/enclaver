@@ -74,7 +74,7 @@ impl ApiService {
             };
 
             // Create Nova KMS proxy if configured.
-            let kms_proxy = if let Some(kms_config) = config.kms_integration_config() {
+            let nova_kms = if let Some(kms_config) = config.kms_integration_config() {
                 info!("Nova KMS integration enabled (registry discovery mode)");
                 Some(Arc::new(NovaKmsProxy::new(kms_config, odyn_endpoint)?))
             } else {
@@ -89,8 +89,8 @@ impl ApiService {
                     Some(S3EncryptionMode::Kms)
                 )
             {
-                if let Some(kms_proxy_ref) = kms_proxy.as_ref() {
-                    s3_proxy_ref.attach_kms_proxy(kms_proxy_ref.clone()).await;
+                if let Some(nova_kms_ref) = nova_kms.as_ref() {
+                    s3_proxy_ref.attach_nova_kms(nova_kms_ref.clone()).await;
                 } else {
                     anyhow::bail!(
                         "storage.s3.encryption.mode=kms requires kms_integration.enabled=true"
@@ -99,14 +99,13 @@ impl ApiService {
             }
 
             // Periodically rotate and archive audit logs into encrypted S3.
-            if let (Some(kms_proxy_ref), Some(s3_proxy_ref)) =
-                (kms_proxy.as_ref(), s3_proxy.as_ref())
+            if let (Some(nova_kms_ref), Some(s3_proxy_ref)) = (nova_kms.as_ref(), s3_proxy.as_ref())
                 && let Some(s3_cfg) = config.s3_config()
                 && matches!(
                     s3_cfg.encryption.as_ref().map(|v| &v.mode),
                     Some(S3EncryptionMode::Kms)
                 )
-                && let Some(audit_log_path) = kms_proxy_ref.audit_log_path()
+                && let Some(audit_log_path) = nova_kms_ref.audit_log_path()
             {
                 let s3_clone = s3_proxy_ref.clone();
                 audit_archive_task = Some(tokio::task::spawn(async move {
@@ -132,7 +131,7 @@ impl ApiService {
                 Box::new(NsmAttestationProvider::new(nsm.clone())),
                 Some(nsm),
                 s3_proxy,
-                kms_proxy,
+                nova_kms,
             )?;
 
             Some(tokio::task::spawn(async move {
