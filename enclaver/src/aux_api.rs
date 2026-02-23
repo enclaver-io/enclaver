@@ -4,8 +4,8 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper::header::CONTENT_TYPE;
 use hyper::{Method, Request, Response, StatusCode, Uri};
-use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
+use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use serde_json::Value;
 
@@ -126,10 +126,9 @@ impl AuxApiHandler {
 
     fn add_cors_headers(&self, response: Response<Full<Bytes>>) -> Response<Full<Bytes>> {
         let (mut parts, body) = response.into_parts();
-        parts.headers.insert(
-            "Access-Control-Allow-Origin",
-            "*".parse().unwrap(),
-        );
+        parts
+            .headers
+            .insert("Access-Control-Allow-Origin", "*".parse().unwrap());
         Response::from_parts(parts, body)
     }
 
@@ -176,4 +175,3 @@ impl HttpHandler for AuxApiHandler {
         self.handle_request(&head, body).await
     }
 }
-

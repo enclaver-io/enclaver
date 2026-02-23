@@ -9,4 +9,7 @@ pub mod kms;
 mod pkcs7;
 
 #[cfg(feature = "odyn")]
+pub mod nova_kms;
+
+#[cfg(feature = "odyn")]
 pub mod s3;

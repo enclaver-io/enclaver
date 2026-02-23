@@ -1,24 +1,24 @@
 #![allow(dead_code, unused)]
 
-use anyhow::{anyhow, Result};
-use asn1_rs::{oid, BerSequence};
+use anyhow::{Result, anyhow};
 use asn1_rs::{
     Any, Class, FromBer, Integer, OctetString, Oid, OptTaggedParser, SetOf, Tag, Tagged,
 };
+use asn1_rs::{BerSequence, oid};
 use cbc::cipher::crypto_common::KeyIvInit;
-use cbc::cipher::{block_padding, BlockDecryptMut};
-use rsa::padding::PaddingScheme;
+use cbc::cipher::{BlockDecryptMut, block_padding};
 use rsa::RsaPrivateKey;
+use rsa::padding::PaddingScheme;
 use sha2::Sha256;
 
 type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
 
-const OID_NIST_SHA_256: Oid<'static> = oid!(2.16.840 .1 .101 .3 .4 .2 .1);
-const OID_NIST_AES256_CBC: Oid<'static> = oid!(2.16.840 .1 .101 .3 .4 .1 .42);
-const OID_PKCS1_RSA_OAEP: Oid<'static> = oid!(1.2.840 .113549 .1 .1 .7);
-const OID_PKCS1_MGF: Oid<'static> = oid!(1.2.840 .113549 .1 .1 .8);
-const OID_PKCS7_ENVELOPED_DATA: Oid<'static> = oid!(1.2.840 .113549 .1 .7 .3);
-const OID_PKCS7_DATA: Oid<'static> = oid!(1.2.840 .113549 .1 .7 .1);
+const OID_NIST_SHA_256: Oid<'static> = oid!(2.16.840.1.101.3.4.2.1);
+const OID_NIST_AES256_CBC: Oid<'static> = oid!(2.16.840.1.101.3.4.1.42);
+const OID_PKCS1_RSA_OAEP: Oid<'static> = oid!(1.2.840.113549.1.1.7);
+const OID_PKCS1_MGF: Oid<'static> = oid!(1.2.840.113549.1.1.8);
+const OID_PKCS7_ENVELOPED_DATA: Oid<'static> = oid!(1.2.840.113549.1.7.3);
+const OID_PKCS7_DATA: Oid<'static> = oid!(1.2.840.113549.1.7.1);
 
 /*
 ContentInfo ::= SEQUENCE {
@@ -189,8 +189,10 @@ impl<'a> KeyTransRecipientInfo<'a> {
         let key_algo = &self.key_encryption_algorithm;
 
         if key_algo.algorithm != OID_PKCS1_RSA_OAEP {
-            return Err(anyhow!("unexpected KeyTransRecipientInfo.key_encryption_algorithm.algorithm: {}, expected {OID_PKCS1_RSA_OAEP}",
-                key_algo.algorithm));
+            return Err(anyhow!(
+                "unexpected KeyTransRecipientInfo.key_encryption_algorithm.algorithm: {}, expected {OID_PKCS1_RSA_OAEP}",
+                key_algo.algorithm
+            ));
         }
 
         if let Some(ref params) = key_algo.parameters {
@@ -248,30 +250,42 @@ impl RsaesOaepParameters<'_> {
     fn validate(&self) -> Result<()> {
         if let Some(ref alg) = self.hash_alg {
             if alg.algorithm != OID_NIST_SHA_256 {
-                return Err(anyhow!("unexpected KeyTransRecipientInfo.key_encryption_algorithm.hash_func: {}, expected {OID_NIST_SHA_256}",
-                    alg.algorithm));
+                return Err(anyhow!(
+                    "unexpected KeyTransRecipientInfo.key_encryption_algorithm.hash_func: {}, expected {OID_NIST_SHA_256}",
+                    alg.algorithm
+                ));
             }
         } else {
-            return Err(anyhow!("missing KeyTransRecipientInfo.key_encryption_algorithm.hash_func, expected {OID_NIST_SHA_256}"));
+            return Err(anyhow!(
+                "missing KeyTransRecipientInfo.key_encryption_algorithm.hash_func, expected {OID_NIST_SHA_256}"
+            ));
         }
 
         if let Some(ref alg) = self.mask_gen_alg {
             if alg.algorithm != OID_PKCS1_MGF {
-                return Err(anyhow!("unexpected KeyTransRecipientInfo.key_encryption_algorithm.mask_gen_func: {}, expected {OID_PKCS1_MGF}",
-                    alg.algorithm));
+                return Err(anyhow!(
+                    "unexpected KeyTransRecipientInfo.key_encryption_algorithm.mask_gen_func: {}, expected {OID_PKCS1_MGF}",
+                    alg.algorithm
+                ));
             }
 
             if let Some(ref params) = alg.parameters {
                 let (_, mgf_hash) = Oid::from_ber(params.as_bytes())?;
                 if mgf_hash != OID_NIST_SHA_256 {
-                    return Err(anyhow!("unexpected KeyTransRecipientInfo.key_encryption_algorithm.mask_gen_func.hash: {}, expected {OID_NIST_SHA_256}",
-                        mgf_hash));
+                    return Err(anyhow!(
+                        "unexpected KeyTransRecipientInfo.key_encryption_algorithm.mask_gen_func.hash: {}, expected {OID_NIST_SHA_256}",
+                        mgf_hash
+                    ));
                 }
             } else {
-                return Err(anyhow!("missing KeyTransRecipientInfo.key_encryption_algorithm.mask_gen_func.parameters"));
+                return Err(anyhow!(
+                    "missing KeyTransRecipientInfo.key_encryption_algorithm.mask_gen_func.parameters"
+                ));
             }
         } else {
-            return Err(anyhow!("missing KeyTransRecipientInfo.key_encryption_algorithm.parameters.mask_gen_func, expected {OID_PKCS1_MGF}"));
+            return Err(anyhow!(
+                "missing KeyTransRecipientInfo.key_encryption_algorithm.parameters.mask_gen_func, expected {OID_PKCS1_MGF}"
+            ));
         }
 
         Ok(())
@@ -342,8 +356,10 @@ impl EncryptedContentInfo<'_> {
         }
 
         if self.content_encryption_algorithm.algorithm != OID_NIST_AES256_CBC {
-            return Err(anyhow!("unexpected EncryptedContentInfo.content_encryption_algorithm: {}, expected {OID_NIST_AES256_CBC}",
-                    self.content_encryption_algorithm.algorithm));
+            return Err(anyhow!(
+                "unexpected EncryptedContentInfo.content_encryption_algorithm: {}, expected {OID_NIST_AES256_CBC}",
+                self.content_encryption_algorithm.algorithm
+            ));
         }
 
         // Ignoring the OPTIONAL directive, it should always be there in our use case
@@ -421,7 +437,7 @@ pub(crate) struct Attribute<'a> {
 pub(crate) mod tests {
     use super::ContentInfo;
     use assert2::assert;
-    use base64::{engine::general_purpose, Engine as _};
+    use base64::{Engine as _, engine::general_purpose};
     use pkcs8::DecodePrivateKey;
     use rsa::RsaPrivateKey;
 

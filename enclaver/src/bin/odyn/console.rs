@@ -342,7 +342,7 @@ impl AppStatus {
         }
     }
 
-    async fn stream(&self, mut sock: VsockStream) {
+    async fn stream<W: AsyncWrite + Unpin>(&self, mut sock: W) {
         let mut w = self.inner.lock().unwrap().watches.add();
 
         loop {
@@ -387,16 +387,17 @@ impl WatchSet {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::{anyhow, Result};
+    use anyhow::{Result, anyhow};
     use assert2::assert;
-    use enclaver::constants::STATUS_PORT;
-    use json::{object, JsonValue};
+    use json::{JsonValue, object};
     use nix::sys::signal::Signal;
-    use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader, Lines};
-    use tokio_vsock::VsockStream;
+    use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader, DuplexStream, Lines};
+    use tokio::task::JoinHandle;
 
     use super::{ByteLog, LogCursor};
     use crate::launcher::ExitStatus;
+
+    type StatusLines = Lines<BufReader<DuplexStream>>;
 
     fn check_log(log: &ByteLog, mut expected: u8) {
         // check that the log contents monotonically increase
@@ -512,20 +513,20 @@ mod tests {
         Ok(json::parse(&line)?)
     }
 
-    async fn app_status_lines() -> Result<Lines<impl AsyncBufRead + Unpin>> {
-        let sock = VsockStream::connect(enclaver::vsock::VMADDR_CID_HOST, STATUS_PORT).await?;
-        // bug in VsockStream::connect: it can return Ok even if connect failed
-        _ = sock.peer_addr()?;
-        Ok(BufReader::new(sock).lines())
+    fn start_app_status_client(app_status: &super::AppStatus) -> (JoinHandle<()>, StatusLines) {
+        let (server_side, client_side) = tokio::io::duplex(1024);
+        let app_status = app_status.clone();
+        let task = tokio::task::spawn(async move {
+            app_status.stream(server_side).await;
+        });
+        (task, BufReader::new(client_side).lines())
     }
 
     #[tokio::test]
     async fn test_app_status() {
         let app_status = super::AppStatus::new();
-        let status_task = app_status.start_serving(STATUS_PORT);
-
-        let mut client1 = app_status_lines().await.unwrap();
-        let mut client2 = app_status_lines().await.unwrap();
+        let (status_task1, mut client1) = start_app_status_client(&app_status);
+        let (status_task2, mut client2) = start_app_status_client(&app_status);
 
         // Running
         let mut expected = object! { status: "running" };
@@ -557,7 +558,9 @@ mod tests {
         status = read_json(&mut client2).await.unwrap();
         assert!(status == expected);
 
-        status_task.abort();
-        _ = status_task.await;
+        status_task1.abort();
+        _ = status_task1.await;
+        status_task2.abort();
+        _ = status_task2.await;
     }
 }

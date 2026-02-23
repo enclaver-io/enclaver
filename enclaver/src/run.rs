@@ -2,9 +2,9 @@ use crate::constants::{
     APP_LOG_PORT, EIF_FILE_NAME, HTTP_EGRESS_VSOCK_PORT, MANIFEST_FILE_NAME, RELEASE_BUNDLE_DIR,
     STATUS_PORT,
 };
-use crate::manifest::{load_manifest, Defaults, Manifest};
+use crate::manifest::{Defaults, Manifest, load_manifest};
 use crate::utils;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use futures_util::stream::StreamExt;
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
@@ -119,7 +119,9 @@ impl Enclave {
             .and_then(|vp| vp.http_egress_port)
             .unwrap_or(HTTP_EGRESS_VSOCK_PORT);
 
-        debug!("using vsock ports: status={status_port}, app_log={app_log_port}, http_egress={http_egress_vsock_port}");
+        debug!(
+            "using vsock ports: status={status_port}, app_log={app_log_port}, http_egress={http_egress_vsock_port}"
+        );
 
         Ok(Self {
             cli: NitroCLI::new(),

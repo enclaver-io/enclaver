@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde_bytes::ByteBuf;
 
 pub use aws_nitro_enclaves_nsm_api::api::{Request, Response};

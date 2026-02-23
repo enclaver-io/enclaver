@@ -134,9 +134,9 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::watch::Sender;
     use tokio::task::JoinHandle;
+    use tokio_rustls::TlsConnector;
     use tokio_rustls::rustls::pki_types::ServerName;
     use tokio_rustls::rustls::{ClientConfig, ServerConfig};
-    use tokio_rustls::TlsConnector;
 
     use super::{EnclaveProxy, HostProxy};
 

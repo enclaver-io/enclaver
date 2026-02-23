@@ -1,12 +1,12 @@
+use base64::{Engine as _, engine::general_purpose};
 use std::sync::Arc;
-use base64::{engine::general_purpose, Engine as _};
 use std::time::{Duration, SystemTime};
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result, anyhow};
 use async_trait::async_trait;
 use aws_config::SdkConfig;
-use aws_credential_types::provider::ProvideCredentials;
 use aws_credential_types::Credentials;
+use aws_credential_types::provider::ProvideCredentials;
 use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings};
 use aws_sigv4::sign::v4::SigningParams;
 use aws_smithy_runtime_api::client::identity::Identity;
@@ -15,7 +15,7 @@ use hyper::body::Bytes;
 use hyper::header::{HeaderName, HeaderValue};
 use hyper::http::uri::{Authority, Scheme};
 use hyper::{Method, Request, Response, StatusCode, Uri};
-use json::{object, JsonValue};
+use json::{JsonValue, object};
 use lazy_static::lazy_static;
 use log::{debug, trace};
 use regex::Regex;
@@ -362,7 +362,8 @@ impl KmsProxyHandler {
                 _ => "Plaintext",
             };
 
-            body_obj[field_name] = json::JsonValue::String(general_purpose::STANDARD.encode(plaintext));
+            body_obj[field_name] =
+                json::JsonValue::String(general_purpose::STANDARD.encode(plaintext));
             Ok(json_response(head, JsonValue::Object(body_obj)))
         } else {
             Err(anyhow!("The response body is not a JSON object"))
@@ -575,7 +576,9 @@ mod tests {
     }
 
     fn new_test_handler() -> KmsProxyHandler {
-        let key_der = general_purpose::STANDARD.decode(crate::proxy::pkcs7::tests::PRIVATE_KEY).unwrap();
+        let key_der = general_purpose::STANDARD
+            .decode(crate::proxy::pkcs7::tests::PRIVATE_KEY)
+            .unwrap();
         let priv_key = RsaPrivateKey::from_pkcs8_der(&key_der).unwrap();
 
         let config = KmsProxyConfig {
@@ -656,7 +659,10 @@ mod tests {
 
         if head.status == hyper::StatusCode::OK {
             let body = body_as_json(body).await.unwrap();
-            assert!(body["Plaintext"].as_str().unwrap() == general_purpose::STANDARD.encode("Hello, World"));
+            assert!(
+                body["Plaintext"].as_str().unwrap()
+                    == general_purpose::STANDARD.encode("Hello, World")
+            );
             assert!(body["KeyId"].as_str().unwrap() == KEY_ID);
         } else {
             let msg = std::str::from_utf8(&body).unwrap();

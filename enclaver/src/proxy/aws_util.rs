@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
-use log::{debug, error, info};
+use anyhow::{Result, anyhow};
 use http::Uri;
 use http_body_util::BodyExt;
 use hyper::body::Bytes;
+use log::{debug, error, info};
 
 use aws_config::imds;
 use aws_config::imds::credentials::ImdsCredentialsProvider;
@@ -49,8 +49,13 @@ impl HttpConnector for ProxiedHttpClient {
     fn call(&self, request: Request) -> HttpConnectorFuture {
         let client = self.0.clone();
         let result = async move {
-            let request = request.try_into_http1x().map_err(|err| ConnectorError::user(err.into()))?;
-            let response = client.request(request).await.map_err(|err| ConnectorError::user(err.into()))?;
+            let request = request
+                .try_into_http1x()
+                .map_err(|err| ConnectorError::user(err.into()))?;
+            let response = client
+                .request(request)
+                .await
+                .map_err(|err| ConnectorError::user(err.into()))?;
             let (head, body) = response.into_parts();
             body.collect()
                 .await
@@ -95,11 +100,17 @@ pub async fn load_config_from_imds(imds_client: imds::Client) -> Result<SdkConfi
     let mut retry_delay = std::time::Duration::from_millis(250);
     let max_attempts = 15;
 
-    info!("Starting IMDS configuration fetch (max {} attempts)", max_attempts);
+    info!(
+        "Starting IMDS configuration fetch (max {} attempts)",
+        max_attempts
+    );
 
     for attempt in 0..max_attempts {
         if attempt > 0 {
-            debug!("IMDS fetch attempt {} failed, retrying in {:?}...", attempt, retry_delay);
+            debug!(
+                "IMDS fetch attempt {} failed, retrying in {:?}...",
+                attempt, retry_delay
+            );
             tokio::time::sleep(retry_delay).await;
             retry_delay *= 2;
             if retry_delay > std::time::Duration::from_secs(3) {
@@ -127,10 +138,16 @@ pub async fn load_config_from_imds(imds_client: imds::Client) -> Result<SdkConfi
 
             return Ok(config);
         } else {
-            last_err = anyhow!("IMDS region provider returned None (attempt {})", attempt + 1);
+            last_err = anyhow!(
+                "IMDS region provider returned None (attempt {})",
+                attempt + 1
+            );
         }
     }
 
-    error!("Failed to fetch IMDS configuration after {} attempts: {}", max_attempts, last_err);
+    error!(
+        "Failed to fetch IMDS configuration after {} attempts: {}",
+        max_attempts, last_err
+    );
     Err(last_err)
 }

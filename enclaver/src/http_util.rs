@@ -96,7 +96,10 @@ pub fn not_found() -> Response<Full<Bytes>> {
         .unwrap()
 }
 
-pub fn json_response<T: serde::Serialize>(status: StatusCode, body: &T) -> Result<Response<Full<Bytes>>> {
+pub fn json_response<T: serde::Serialize>(
+    status: StatusCode,
+    body: &T,
+) -> Result<Response<Full<Bytes>>> {
     Ok(Response::builder()
         .status(status)
         .header(hyper::header::CONTENT_TYPE, "application/json")

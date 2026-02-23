@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use log::{debug, error};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;

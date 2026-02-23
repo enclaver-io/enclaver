@@ -153,6 +153,7 @@ egress:
 - Runs an HTTP server on a configured port
 - Provides attestation, signing, encryption, and random number generation
 - Uses the Nitro Secure Module (NSM) for hardware-backed security
+- Optionally exposes Nova KMS + app-wallet endpoints when `kms_integration` is enabled
 
 **Configuration**:
 ```yaml
@@ -176,6 +177,14 @@ api:
 | `/v1/s3/put` | POST | Put object to S3 storage |
 | `/v1/s3/list` | POST | List objects in S3 storage |
 | `/v1/s3/delete` | POST | Delete object from S3 storage |
+| `/v1/kms/derive` | POST | Derive key material from Nova KMS (`kms_integration`) |
+| `/v1/kms/kv/get` | POST | Read KMS-backed KV value (`kms_integration`) |
+| `/v1/kms/kv/put` | POST | Write KMS-backed KV value (`kms_integration`) |
+| `/v1/kms/kv/delete` | POST | Delete KMS-backed KV value (`kms_integration`) |
+| `/v1/app-wallet/address` | GET | Get anchored app wallet metadata (`kms_integration`) |
+| `/v1/app-wallet/sign` | POST | Sign EIP-191 message with app wallet (`kms_integration`) |
+| `/v1/app-wallet/proof` | POST | Build app-wallet binding proof (`kms_integration`) |
+| `/v1/app-wallet/sign-tx` | POST | Sign Ethereum tx with app wallet (`kms_integration`) |
 
 **For your app**: Make HTTP requests to `http://127.0.0.1:<api_port>/v1/...`
 
@@ -254,6 +263,12 @@ storage:
     bucket: "my-app-data"
     prefix: "apps/my-service/"
     region: "us-east-1"
+    encryption:              # Optional
+      mode: "kms"            # plaintext | kms
+      key_scope: "object"    # app | object
+      aad_mode: "key"        # none | key | key+version
+      key_version: "v1"
+      accept_plaintext: true
 ```
 
 **For your app**: Use the Internal API `/v1/s3/...` endpoints.
@@ -261,6 +276,10 @@ storage:
 **Requirements**:
 - Egress must allow `169.254.169.254` (IMDS)
 - Egress must allow your S3 endpoint (e.g., `s3.us-east-1.amazonaws.com` or `s3.amazonaws.com`)
+- If `storage.s3.encryption.mode=kms`, `kms_integration.enabled=true` is required.
+- If `kms_integration.enabled=true`, `helios_rpc.enabled=true` is required and
+  `helios_rpc.chains[]` must include a chain on `local_rpc_port: 18545`
+  (used for registry discovery).
 
 ---
 
@@ -320,6 +339,29 @@ aux_api:
 kms_proxy:
   listen_port: 9000
 
+# Nova KMS integration (optional)
+kms_integration:
+  enabled: true
+  kms_app_id: 49
+  nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64cc8"
+
+# Helios light-client RPC (required when kms_integration.enabled=true)
+helios_rpc:
+  enabled: true
+  chains:
+    - name: "L2-base-sepolia"
+      network_id: "84532"
+      kind: "opstack"
+      network: "base-sepolia"
+      execution_rpc: "https://sepolia.base.org"
+      local_rpc_port: 18545
+    - name: "ethereum-mainnet"
+      network_id: "1"
+      kind: "ethereum"
+      network: "mainnet"
+      execution_rpc: "https://eth.llamarpc.com"
+      local_rpc_port: 18546
+
 # S3 Storage (optional)
 storage:
   s3:
@@ -340,7 +382,7 @@ storage:
 | **Aux API** | `aux_api.listen_port` | Restricted API for sidecars | HTTP to `http://127.0.0.1:<port>` |
 | **KMS Proxy** | `kms_proxy.listen_port` | AWS KMS with attestation | Use AWS SDK normally |
 | **Storage** | N/A (Internal API) | Persistent S3 storage | HTTP to `/v1/s3/...` |
-| **Helios RPC** | `helios_rpc.listen_port` | Trustless Ethereum RPC | HTTP to `http://127.0.0.1:8545` |
+| **Helios RPC** | `helios_rpc.chains[].local_rpc_port` | Trustless multi-chain RPC | HTTP to `http://127.0.0.1:<chain_port>` |
 | **Console** | N/A (automatic) | Log streaming | Print to stdout/stderr |
 
 ---
@@ -349,7 +391,7 @@ storage:
 
 - [Internal API Reference](internal_api.md) — Complete API endpoint documentation
 - [Internal API Mock Service](internal_api_mockup.md) — Local development without an enclave
-- [Helios RPC Integration](helios_rpc.md) — Trustless Ethereum light client
+- [Helios RPC Integration](helios_rpc.md) — Trustless multi-chain light client
 - [enclaver.yaml Reference](enclaver.yaml) — Complete manifest configuration
 - [Architecture Overview](architecture.md) — System architecture and component relationships
 - [Odyn Implementation Details](odyn_details.md) — Deep dive into code structure (for contributors)

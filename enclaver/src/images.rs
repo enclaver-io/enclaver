@@ -1,16 +1,16 @@
 use crate::utils::StringablePathExt;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
+use bollard::Docker;
 use bollard::models::{BuildInfo, CreateImageInfo, ImageId};
 use bollard::query_parameters::{BuildImageOptions, CreateImageOptions, TagImageOptions};
-use bollard::Docker;
 use futures_util::stream::{StreamExt, TryStreamExt};
 use log::{debug, trace};
 use std::fmt;
 use std::fmt::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::fs::{create_dir, File};
-use tokio::io::{duplex, AsyncWrite, AsyncWriteExt, BufWriter};
+use tokio::fs::{File, create_dir};
+use tokio::io::{AsyncWrite, AsyncWriteExt, BufWriter, duplex};
 use tokio_util::codec;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

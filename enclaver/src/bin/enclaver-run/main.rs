@@ -10,7 +10,7 @@ use std::{
     path::PathBuf,
     process::{ExitCode, Termination},
 };
-use tokio::io::{stdout, AsyncWriteExt};
+use tokio::io::{AsyncWriteExt, stdout};
 use tokio_util::sync::CancellationToken;
 
 const ENCLAVE_SIGNALED_EXIT_CODE: u8 = 107;
