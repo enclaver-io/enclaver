@@ -85,6 +85,7 @@ aes-gcm = "0.10"
 hkdf = "0.12"
 reqwest = { version = "0.12.23", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
 ethabi = "18.0.0"
+zeroize = "1.8"
 
 # Helios light client for trustless Ethereum RPC (optional, only for odyn)
 helios = { git = "https://github.com/sparsity-xyz/helios", branch = "master", optional = true }
