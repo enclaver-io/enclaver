@@ -25,11 +25,8 @@ regex = "1.11"
 tokio = { version = "1.47.1", features = ["full"] }
 tokio-pipe = "0.2"
 tokio-vsock = { version = "0.4", optional = true }
-tokio-rustls = { version = "0.26" }
 tokio-util = { version = "0.7", features = ["codec"] }
 tokio-tar = "0.3"
-rustls = { version = "0.23.32" }
-rustls-pemfile = "2.2.0"
 log = "0.4"
 pretty_env_logger = "0.5"
 nix = "0.24"
@@ -92,7 +89,6 @@ helios = { git = "https://github.com/sparsity-xyz/helios", branch = "master", op
 
 [dev-dependencies]
 assert2 = "0.3"
-tls-listener = { version = "0.11", features = ["rustls-core"] }
 aws-credential-types = { version = "1.2.6", features = ["hardcoded-credentials"] }
 
 [features]

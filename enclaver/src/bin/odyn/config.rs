@@ -3,11 +3,9 @@ use http::Uri;
 use log::debug;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use enclaver::constants::{HTTP_EGRESS_PROXY_PORT, MANIFEST_FILE_NAME};
 use enclaver::manifest::{self, HeliosRpcKind, Manifest};
-use enclaver::tls;
 
 #[derive(Clone, Debug)]
 pub struct HeliosRuntimeConfig {
@@ -23,13 +21,7 @@ pub struct HeliosRuntimeConfig {
 pub struct Configuration {
     pub config_dir: PathBuf,
     pub manifest: Manifest,
-    pub listener_configs: HashMap<u16, ListenerConfig>,
-}
-
-#[derive(Clone)]
-pub enum ListenerConfig {
-    TCP,
-    TLS(Arc<rustls::ServerConfig>),
+    pub listener_ports: Vec<u16>,
 }
 
 impl Configuration {
@@ -39,48 +31,19 @@ impl Configuration {
 
         let manifest = enclaver::manifest::load_manifest(manifest_path.to_str().unwrap()).await?;
 
-        let mut tls_path = config_dir.as_ref().to_path_buf();
-        tls_path.extend(["tls", "server"]);
-
-        let mut listener_configs = HashMap::new();
+        let mut listener_ports = Vec::new();
 
         if let Some(ref ingress) = manifest.ingress {
             for item in ingress {
-                let cfg = match item.tls {
-                    Some(_) => {
-                        let tls_config = Configuration::load_tls_server_config(&tls_path, item)?;
-                        ListenerConfig::TLS(tls_config)
-                    }
-                    None => ListenerConfig::TCP,
-                };
-
-                listener_configs.insert(item.listen_port, cfg);
+                listener_ports.push(item.listen_port);
             }
         }
 
         Ok(Self {
             config_dir: config_dir.as_ref().to_path_buf(),
             manifest,
-            listener_configs,
+            listener_ports,
         })
-    }
-
-    fn load_tls_server_config(
-        tls_path: &Path,
-        ingress: &manifest::Ingress,
-    ) -> Result<Arc<rustls::ServerConfig>> {
-        let mut ingress_path = tls_path.to_path_buf();
-        ingress_path.push(ingress.listen_port.to_string());
-
-        let mut key_path = ingress_path.clone();
-        key_path.push("key.pem");
-
-        let mut cert_path = ingress_path.clone();
-        cert_path.push("cert.pem");
-
-        debug!("Loading key_file: {}", key_path.to_string_lossy());
-        debug!("Loading cert_file: {}", cert_path.to_string_lossy());
-        tls::load_server_config(key_path, cert_path)
     }
 
     pub fn egress_proxy_uri(&self) -> Option<Uri> {
@@ -200,7 +163,7 @@ mod tests {
                 kms_integration: None,
                 helios_rpc: None,
             },
-            listener_configs: HashMap::new(),
+            listener_ports: Vec::new(),
         }
     }
 

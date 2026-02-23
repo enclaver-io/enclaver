@@ -48,20 +48,18 @@ defaults:
   cpu_count: 2               # [SLEEVE] Optional. Number of vCPUs (i32) to assign to the enclave
   memory_mb: 4096            # [SLEEVE] Optional. Enclave memory in MiB (i32)
 
-# Ingress: host->enclave TCP/TLS listeners exposed by odyn inside the enclave
+# Ingress: host->enclave TCP listeners exposed by odyn inside the enclave
 # Each entry binds inside the enclave on the given listen_port and is proxied via host localhost.
 # At run time, the host-side runner publishes the same port to the host network as needed.
+#
+# Recommendation: Use the built-in E2E encryption endpoints (/v1/encryption/encrypt,
+# /v1/encryption/decrypt) for secure client-to-enclave communication instead of
+# TLS termination at the ingress layer.
 ingress:
   - listen_port: 18001       # aux API (for attestation)
   - listen_port: 8080        # [ODYN + SLEEVE] Required. TCP port (u16) inside the enclave.
                              # ODYN: binds EnclaveProxy on this port inside enclave.
                              # SLEEVE: binds HostProxy on host to forward to enclave vsock.
-    # Optional TLS for the VSOCK leg (host<->enclave). The app still receives plain TCP on localhost.
-    # Runtime expects PEM files at: <config_dir>/tls/server/<listen_port>/{cert.pem,key.pem}
-    # By default odyn uses config_dir=/etc/enclaver inside the enclave.
-    tls:
-      key_file: key.pem      # [ODYN] Optional. TLS key file for ingress listener.
-      cert_file: cert.pem    # [ODYN] Optional. TLS cert file for ingress listener.
 
   # Example (NOT for production): expose internal API, and Helios RPC externally.
   # WARNING: Do not expose these endpoints in production environments.
@@ -107,6 +105,7 @@ egress:
 # - If `storage.s3.encryption.mode=kms`, this integration must also be enabled.
 kms_integration:
   enabled: true              # [ODYN] Enable Nova KMS integration for Internal API KMS/app-wallet routes.
+  use_app_wallet: true       # [ODYN] Optional. Enable anchored app-wallet derived from KMS (default: false).
   kms_app_id: 1001           # [ODYN] Required when enabled. App ID on NovaAppRegistry.
   nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64cc8" # [ODYN] Required when enabled.
 
@@ -174,11 +173,11 @@ storage:
 # | defaults.cpu_count     | SLEEVE      | Enclave vCPU allocation                        |
 # | defaults.memory_mb     | SLEEVE      | Enclave memory allocation                      |
 # | ingress[].listen_port  | ODYN+SLEEVE | Ingress port (both sides bind proxies)         |
-# | ingress[].tls.*        | ODYN        | TLS configuration for ingress                  |
 # | egress.proxy_port      | ODYN        | Local HTTP proxy port inside enclave           |
 # | egress.allow           | ODYN        | Egress allow list (domain/IP patterns)         |
 # | egress.deny            | ODYN        | Egress deny list (domain/IP patterns)          |
 # | kms_integration.enabled | ODYN       | Enable Nova KMS integration                    |
+# | kms_integration.use_app_wallet | ODYN | Enable anchored app-wallet from KMS (default: false) |
 # | kms_integration.kms_app_id | ODYN    | Nova app ID used for authz/discovery           |
 # | kms_integration.nova_app_registry | ODYN | NovaAppRegistry contract address           |
 # | api.listen_port        | ODYN        | Internal API port (attestation, signing, etc.) |

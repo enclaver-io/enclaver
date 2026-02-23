@@ -1,6 +1,6 @@
 ## Enclaver — Architecture and Module Reference
 
-Date: 2025-10-27
+Date: 2026-02-23 (updated)
 
 This document describes the key modules in the `enclaver` crate, how they interact, and the Docker image / layer layout used when building and running Enclaver packages.
 
@@ -22,11 +22,33 @@ Repository layout (important files)
 - `enclaver/src/manifest.rs` — `enclaver.yaml` schema and loader.
 - `enclaver/src/run.rs` — enclave runtime orchestration (feature `run_enclave`).
 - `enclaver/src/run_container.rs` — start and stream the sleeve container image on the host.
-- `enclaver/src/bin/odyn/helios_rpc.rs` — Helios Ethereum/OP Stack light client RPC service.
-- `enclaver/src/proxy/` — network proxy implementations: `ingress`, `egress_http`, (optionally) `kms`, `nova_kms`, `pkcs7`, `s3`.
+- `enclaver/src/api.rs` — Primary Internal API handler (all `/v1/*` routes).
+- `enclaver/src/aux_api.rs` — Auxiliary API handler (restricted subset, proxies to Primary API).
+- `enclaver/src/eth_key.rs` — secp256k1 key management for Ethereum signing.
+- `enclaver/src/eth_tx.rs` — EIP-1559 transaction building and RLP encoding.
+- `enclaver/src/encryption_key.rs` — P-384 ECDH key pair for client-enclave encryption.
+- `enclaver/src/http_util.rs` — HTTP server infrastructure and response helpers.
+- `enclaver/src/http_client.rs` — Shared HTTP client type.
+- `enclaver/src/keypair.rs` — Generic key pair trait abstraction.
+- `enclaver/src/proxy/` — network proxy implementations: `ingress.rs`, `egress_http.rs`.
+- `enclaver/src/integrations/` — external service integrations:
+  - `nova_kms.rs` — Nova KMS proxy (derive, KV, audit, node discovery).
+  - `nova_kms/app_wallet.rs` — Deterministic app wallet derivation from KMS.
+  - `s3.rs` — S3 storage proxy with optional KMS-derived encryption.
+  - `aws_util.rs` — AWS credential and region resolution via IMDS.
 - `enclaver/src/policy/` — egress allow/deny (domain/ip pattern filters).
-- `enclaver/src/vsock.rs` — vsock helper wrappers and TLS-on-vsock helpers.
-- `enclaver/src/tls.rs` — rustls config helpers and test helpers.
+- `enclaver/src/vsock.rs` — vsock helper wrappers.
+- `enclaver/src/bin/odyn/` — Odyn supervisor binary:
+  - `main.rs` — bootstrap, service startup, and shutdown orchestration.
+  - `config.rs` — manifest-to-runtime configuration mapping.
+  - `api.rs` — Internal API service startup.
+  - `aux_api.rs` — Auxiliary API service startup.
+  - `helios_rpc.rs` — Helios Ethereum/OP Stack light client RPC service.
+  - `console.rs` — stdout/stderr capture, ring buffer, VSOCK log streaming.
+  - `ingress.rs` — Ingress proxy service startup.
+  - `egress.rs` — Egress proxy service startup.
+  - `launcher.rs` — Entrypoint process launch and supervision.
+  - `enclave.rs` — Enclave bootstrap (loopback, RNG seed).
 - `dockerfiles/` and `scripts/build-docker-images.sh` — Dockerfiles & scripts used to prepare runtime/dev images.
 
 Top-level modules and responsibilities
@@ -59,12 +81,14 @@ Top-level modules and responsibilities
   - Types: `Enclave`, `EnclaveOpts`, `EnclaveExitStatus`.
 
 - proxy (`src/proxy/*`)
-  - `ingress.rs`: `EnclaveProxy` (vsock listener inside enclave; TLS termination) and `HostProxy` (host listener forwarding to vsock).
+  - `ingress.rs`: `EnclaveProxy` (vsock listener inside enclave) and `HostProxy` (host listener forwarding to vsock).
   - `egress_http.rs`: inside-enclave HTTP proxy + host-side vsock proxy for outbound HTTP(S); supports CONNECT and normal proxying; enforces `policy::EgressPolicy`.
-  - `kms.rs` (feature `odyn`): KMS request proxy that inserts attestation and decrypts `CiphertextForRecipient` using PKCS#7.
-  - `nova_kms.rs` (feature `odyn`): Nova KMS integration used by the internal API (`/v1/kms/*`, `/v1/app-wallet/*`), including registry-backed authorization/discovery, node failover, and audit logging.
-  - `s3.rs` (feature `odyn`): S3-backed storage APIs with optional KMS-derived encryption mode.
-  - `pkcs7.rs`: parsing and decrypting PKCS#7 EnvelopedData.
+
+- integrations (`src/integrations/*`) (feature `odyn`)
+  - `nova_kms.rs`: Nova KMS integration used by the internal API (`/v1/kms/*`, `/v1/app-wallet/*`), including registry-backed authorization/discovery, node failover, mutual signature verification, and audit logging.
+  - `nova_kms/app_wallet.rs`: Deterministic app wallet key derivation from Nova KMS.
+  - `s3.rs`: S3-backed storage APIs with optional KMS-derived AES-256-GCM encryption.
+  - `aws_util.rs`: AWS IMDS-based credential and region resolution.
 
 - policy (`src/policy/*`)
   - `domain_filter.rs`: domain pattern matching with `*` and `**` semantics.
@@ -75,7 +99,25 @@ Top-level modules and responsibilities
   - Wrapper around AWS Nitro Enclaves NSM driver. Exposes `AttestationProvider` trait and `NsmAttestationProvider` plus a `StaticAttestationProvider` used in tests.
 
 - api (`src/api.rs`) (feature `odyn`)
-  - Small HTTP handler exposing `/v1/attestation` (POST) to return attestation docs, `/v1/encryption/*` endpoints for ECDH-based encryption/decryption, and `/v1/eth/*` for Ethereum key operations.
+  - HTTP handler exposing all `/v1/*` routes: `/v1/attestation`, `/v1/eth/*`, `/v1/encryption/*`, `/v1/random`, `/v1/s3/*`, `/v1/kms/*`, and `/v1/app-wallet/*`.
+
+- aux_api (`src/aux_api.rs`) (feature `odyn`)
+  - Restricted auxiliary HTTP handler that proxies a subset of endpoints (`/v1/eth/address`, `/v1/attestation`, `/v1/encryption/public_key`) to the Primary API with input sanitization.
+
+- eth_key (`src/eth_key.rs`)
+  - secp256k1 key pair management: Ethereum address derivation, EIP-191 message signing, and DER public key export.
+
+- eth_tx (`src/eth_tx.rs`) (feature `odyn`)
+  - EIP-1559 transaction building, RLP encoding/decoding, keccak256 hashing, and signature recovery.
+
+- encryption_key (`src/encryption_key.rs`) (feature `odyn`)
+  - P-384 ECDH key pair management for secure client-enclave encryption. Provides DER/PEM encoding, shared key derivation via ECDH + HKDF, and AES-256-GCM encrypt/decrypt operations.
+
+- http_util (`src/http_util.rs`)
+  - HTTP server infrastructure, `HttpHandler` trait, and response helpers (`ok_json`, `bad_request`, `not_found`, `method_not_allowed`).
+
+- keypair (`src/keypair.rs`)
+  - Generic key pair trait abstraction shared by `eth_key` and `encryption_key`.
 
 - helios_rpc (`src/bin/odyn/helios_rpc.rs`)
   - Trustless Ethereum/OP Stack light client RPC service that runs inside the enclave and verifies execution data via consensus proofs.
@@ -83,8 +125,6 @@ Top-level modules and responsibilities
 - encryption_key (`src/encryption_key.rs`) (feature `odyn`)
   - P-384 ECDH key pair management for secure client-enclave encryption. Provides DER/PEM encoding, shared key derivation via ECDH + HKDF, and AES-256-GCM encrypt/decrypt operations.
 
-- tls (`src/tls.rs`) (feature `proxy`)
-  - rustls config loaders and `NoCertificateVerification` test helper.
 
 - utils (`src/utils.rs`)
   - Logging init, spawn macro, path helpers, reading logs from streams and shutdown signal registration.
@@ -109,7 +149,7 @@ Runtime flow (running a release image locally)
 4. After enclave start, `Enclave`:
    - attaches debug console if requested;
    - starts a log stream by connecting to vsock `APP_LOG_PORT` for application logs;
-   - starts ingress proxies for any `ingress` entries in the manifest; the host provides `HostProxy` listening on host ports and forwarding to the enclave vsock; inside the enclave `EnclaveProxy` terminates TLS and forwards to local app TCP sockets;
+   - starts ingress proxies for any `ingress` entries in the manifest; the host provides `HostProxy` listening on host ports and forwarding to the enclave vsock; inside the enclave `EnclaveProxy` accepts connections and forwards to local app TCP sockets;
    - monitors the status vsock `STATUS_PORT` for process status updates (exited/signaled/fatal).
 
 Egress (HTTP) topology
@@ -124,13 +164,14 @@ Ingress topology
 ----------------
 
 - Host listens on configured host TCP ports (via `HostProxy`), accepts incoming connections and forwards them over vsock to the enclave.
-- Inside the enclave, `EnclaveProxy` accepts vsock connections (optionally TLS-terminated) and forwards to the enclave-local app TCP socket.
+- Inside the enclave, `EnclaveProxy` accepts vsock connections and forwards to the enclave-local app TCP socket.
 
 KMS integration (feature `odyn`)
 --------------------------------
 
-- `integrations::nova_kms` serves internal API KMS/app-wallet endpoints and discovers/authorizes against `NovaAppRegistry` via `kms_integration` (`kms_app_id`, `nova_app_registry`) and built-in Helios registry RPC.
+- `integrations::nova_kms` serves internal API KMS/app-wallet endpoints and discovers/authorizes against `NovaAppRegistry` via `kms_integration` (`kms_app_id`, `nova_app_registry`, `use_app_wallet`) and built-in Helios registry RPC.
 - `integrations::nova_kms` maintains a background-refreshed KMS node cache (wallet + URL + reachability) and uses it for node selection and mutual signature verification.
+- `integrations::nova_kms::app_wallet` derives deterministic app wallet keys from KMS when `use_app_wallet=true`.
 - When `storage.s3.encryption.mode=kms`, `odyn` wires `integrations::s3::S3Proxy` to `NovaKmsProxy`; a background task periodically archives internal KMS audit JSONL chunks to S3.
 
 Ports and constants
@@ -177,8 +218,13 @@ Important files to inspect quickly
 - `enclaver/src/build.rs` — build pipeline and image amendment logic.
 - `enclaver/src/images.rs` — image append and tar/context builder.
 - `enclaver/src/nitro_cli_container.rs` — containerized `nitro-cli` invocation.
+- `enclaver/src/api.rs` — Primary Internal API handler (all `/v1/*` endpoints).
+- `enclaver/src/aux_api.rs` — Auxiliary API handler (restricted subset with sanitization).
 - `enclaver/src/proxy/egress_http.rs` — HTTP proxying logic and CONNECT handling.
-- `enclaver/src/proxy/kms.rs`, `enclaver/src/proxy/nova_kms.rs`, `enclaver/src/proxy/s3.rs`, `enclaver/src/proxy/pkcs7.rs` — KMS proxies, Nova KMS integration, S3 integration, and PKCS#7 decrypt logic.
+- `enclaver/src/integrations/nova_kms.rs` — Nova KMS integration, audit, and node lifecycle.
+- `enclaver/src/integrations/nova_kms/app_wallet.rs` — Deterministic app wallet derivation.
+- `enclaver/src/integrations/s3.rs` — S3 storage proxy with KMS encryption.
+- `enclaver/src/integrations/aws_util.rs` — AWS IMDS credential/region helpers.
 
 Assumptions and notes
 ---------------------
@@ -201,4 +247,4 @@ References
 - Dockerfiles & scripts: `dockerfiles/`, `scripts/build-docker-images.sh`
 
 ---
-Generated by code inspection on 2025-10-27.
+Updated 2026-02-23 (originally generated 2025-10-27).

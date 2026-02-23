@@ -101,16 +101,14 @@ Odyn consists of several configurable modules, each providing specific functiona
 **How it works**:
 - Listens on configured TCP ports inside the enclave
 - Receives connections forwarded from the host via VSOCK
-- Optionally terminates TLS
 - Forwards traffic to your application's localhost port
+
+> **Recommendation**: Use the built-in E2E encryption endpoints (`/v1/encryption/encrypt`, `/v1/encryption/decrypt`) for secure client-to-enclave communication instead of TLS termination at the ingress layer.
 
 **Configuration**:
 ```yaml
 ingress:
   - listen_port: 8080        # Your app listens on 127.0.0.1:8080
-    tls:                     # Optional TLS termination
-      cert_file: cert.pem
-      key_file: key.pem
 ```
 
 **For your app**: Simply bind to `127.0.0.1:<listen_port>` — Odyn handles the rest.
@@ -197,7 +195,7 @@ api:
 
 **How it works**:
 - Proxies requests to the Internal API
-- Sanitizes attestation requests (removes `public_key` and `user_data` to prevent spoofing)
+- Sanitizes attestation requests (removes `public_key` to prevent key spoofing; `user_data` is forwarded)
 - Only exposes safe, read-only endpoints
 
 **Configuration**:
@@ -211,7 +209,7 @@ aux_api:
 | Endpoint | Method | Restrictions |
 |----------|--------|--------------|
 | `/v1/eth/address` | GET | Same as Internal API |
-| `/v1/attestation` | POST | `public_key` and `user_data` are removed |
+| `/v1/attestation` | POST | `public_key` is removed; `user_data` is forwarded |
 | `/v1/encryption/public_key` | GET | Same as Internal API |
 
 ---
@@ -308,6 +306,7 @@ aux_api:
 # Nova KMS integration (optional)
 kms_integration:
   enabled: true
+  use_app_wallet: true
   kms_app_id: 49
   nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64cc8"
 

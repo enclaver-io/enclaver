@@ -229,11 +229,13 @@ Encrypt data to send to a client using ECDH + AES-256-GCM.
   - **Body:**
     ```json
     {
-      "encrypted_data": "...",     // Hex-encoded ciphertext
-      "enclave_public_key": "...", // Hex-encoded DER public key
-      "nonce": "..."               // Hex-encoded nonce
+      "encrypted_data": "a1b2c3...",     // Hex-encoded ciphertext (no 0x prefix)
+      "enclave_public_key": "3076...", // Hex-encoded DER public key (no 0x prefix)
+      "nonce": "d4e5f6..."               // Hex-encoded nonce (no 0x prefix)
     }
     ```
+
+  > **Note**: Unlike other endpoints that use `0x` prefixes, the encrypt response returns raw hex strings without the `0x` prefix.
 
 ## KMS Integration API Endpoints (Primary API only)
 
@@ -381,6 +383,7 @@ Signs a plain-text message using EIP-191 personal-sign prefix.
 - **URL:** `/v1/app-wallet/sign-tx`
 - **Method:** `POST`
 - **Request Body:** Same schema as `/v1/eth/sign-tx`.
+  > **Note**: The `include_attestation` field is accepted but silently ignored — app wallet sign-tx never produces attestation documents.
 - **Success Response:**
   ```json
   {
@@ -407,14 +410,15 @@ The Auxiliary API exposes a **subset** of the Primary API endpoints with the fol
 - **URL:** `/v1/attestation`
 - **Method:** `POST`
 - **Restrictions:**
-  - The `public_key` and `user_data` fields in the request body are **ignored and removed** before forwarding to the Primary API.
-  - Only the `nonce` field is preserved.
-  - This ensures that the attestation always uses the enclave's default public key and user data (which typically includes the enclave's Ethereum address).
+  - The `public_key` field in the request body is **removed** before forwarding to the Primary API, ensuring the attestation always uses the enclave's default P-384 encryption public key.
+  - The `user_data` field is **preserved and forwarded** to the Primary API, where `eth_addr` (and optionally `app_wallet`) are automatically injected into it.
+  - The `nonce` field is preserved.
 
 - **Request Body:**
   ```json
   {
-    "nonce": "base64_encoded_nonce" // Optional
+    "nonce": "base64_encoded_nonce", // Optional
+    "user_data": { "custom": "data" } // Optional, forwarded to Primary API
   }
   ```
 
@@ -470,7 +474,8 @@ Retrieve a base64-encoded object from S3.
   - **Body:**
     ```json
     {
-      "value": "base64_encoded_data"
+      "value": "base64_encoded_data",
+      "content_type": "text/plain"  // Optional, present if set during upload
     }
     ```
 - **Example:**

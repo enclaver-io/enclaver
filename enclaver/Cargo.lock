@@ -3280,8 +3280,6 @@ dependencies = [
  "rlp",
  "rsa",
  "rtnetlink 0.11.0",
- "rustls 0.23.32",
- "rustls-pemfile 2.2.0",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -3289,10 +3287,8 @@ dependencies = [
  "sha2 0.10.9",
  "sha3",
  "tempfile",
- "tls-listener",
  "tokio",
  "tokio-pipe",
- "tokio-rustls 0.26.4",
  "tokio-tar",
  "tokio-util",
  "tokio-vsock",
@@ -7954,7 +7950,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd3c25631629d034ce7cd9940adc9d45762d46de2b0f57193c4443b92c6d4d40"
 dependencies = [
  "aws-lc-rs",
- "log",
  "once_cell",
  "ring 0.17.14",
  "rustls-pki-types",
@@ -9029,19 +9024,6 @@ name = "tinyvec_macros"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
-
-[[package]]
-name = "tls-listener"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab41256c16d6fc2b3021545f20bf77a73200b18bd54040ac656dddfca6205bfa"
-dependencies = [
- "futures-util",
- "pin-project-lite",
- "thiserror 2.0.17",
- "tokio",
- "tokio-rustls 0.26.4",
-]
 
 [[package]]
 name = "tokio"

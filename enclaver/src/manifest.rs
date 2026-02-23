@@ -50,14 +50,6 @@ pub struct Signature {
 #[serde(deny_unknown_fields)]
 pub struct Ingress {
     pub listen_port: u16,
-    pub tls: Option<ServerTls>,
-}
-
-#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ServerTls {
-    pub key_file: String,
-    pub cert_file: String,
 }
 
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]

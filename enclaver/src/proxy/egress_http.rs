@@ -413,7 +413,6 @@ mod tests {
     use std::convert::Infallible;
     use std::net::{Ipv4Addr, SocketAddr};
     use std::sync::Arc;
-    use tls_listener::TlsListener;
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
 
@@ -442,31 +441,8 @@ mod tests {
         Ok(())
     }
 
-    async fn tls_echo_server(port: u16) -> anyhow::Result<()> {
-        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-
-        let server_config = crate::tls::test_server_config().unwrap();
-        let listener = TcpListener::bind(&addr).await.unwrap();
-        let acceptor: tokio_rustls::TlsAcceptor = server_config.into();
-        let mut incoming = TlsListener::new(acceptor, listener);
-
-        let (stream, _) = incoming.accept().await?;
-
-        let io = TokioIo::new(stream);
-
-        http1_server::Builder::new()
-            .serve_connection(io, service_fn(echo))
-            .await?;
-
-        Ok(())
-    }
-
-    fn start_echo_server(port: u16, use_tls: bool) -> JoinHandle<anyhow::Result<()>> {
-        if !use_tls {
-            tokio::task::spawn(echo_server(port))
-        } else {
-            tokio::task::spawn(tls_echo_server(port))
-        }
+    fn start_echo_server(port: u16) -> JoinHandle<anyhow::Result<()>> {
+        tokio::task::spawn(echo_server(port))
     }
 
     async fn start_enclave_proxy(proxy_port: u16, egress_port: u32) -> JoinHandle<()> {
@@ -492,14 +468,14 @@ mod tests {
     }
 
     impl HttpProxyFixture {
-        async fn start(base_port: u16, use_tls: bool) -> Self {
+        async fn start(base_port: u16) -> Self {
             _ = pretty_env_logger::try_init();
 
             let fixture = Self {
                 base_port,
                 enclave_proxy_task: start_enclave_proxy(base_port, base_port as u32).await,
                 host_proxy_task: start_host_proxy(base_port as u32),
-                echo_task: start_echo_server(base_port + 1, use_tls),
+                echo_task: start_echo_server(base_port + 1),
             };
 
             // Give background listeners a brief window to start before issuing requests.
@@ -538,7 +514,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_http_proxy() {
-        let fixture = HttpProxyFixture::start(13000, false).await;
+        let fixture = HttpProxyFixture::start(13000).await;
 
         let client = reqwest::Client::builder()
             .proxy(reqwest::Proxy::http(fixture.proxy_uri().to_string()).unwrap())
@@ -571,45 +547,6 @@ mod tests {
             .unwrap();
 
         assert!(resp2.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE);
-
-        fixture.stop().await;
-    }
-
-    #[tokio::test]
-    async fn test_https_proxy() {
-        let fixture = HttpProxyFixture::start(14000, true).await;
-
-        let client = reqwest::Client::builder()
-            .proxy(reqwest::Proxy::http(fixture.proxy_uri().to_string()).unwrap())
-            .danger_accept_invalid_certs(true)
-            .build()
-            .unwrap();
-
-        let expected = random_bytes(128 * 1000);
-
-        let resp1 = client
-            .post(format!(
-                "https://127.0.0.1:{}/echo",
-                fixture.webserver_port()
-            ))
-            .body(expected.clone())
-            .send()
-            .await
-            .unwrap();
-
-        let actual = resp1.bytes().await.unwrap();
-
-        assert!(&expected == &actual);
-
-        // Connection failure
-        let resp_result = client
-            .post("https://adfadfadfadfadsfa.local/echo".to_string())
-            .body(expected.clone())
-            .send()
-            .await;
-
-        assert!(resp_result.is_err());
-        assert!(resp_result.unwrap_err().is_connect());
 
         fixture.stop().await;
     }

@@ -1,22 +1,16 @@
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::sync::Arc;
 
 use crate::{utils, vsock};
 use anyhow::Result;
 use futures::{Stream, StreamExt};
 use log::{debug, error};
-use rustls::ServerConfig;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use tokio_vsock::VsockStream;
 
-use crate::vsock::TlsServerStream;
-
 // The enclave side of the proxy. Listens on a vsock and
-// connects over the localhost to the app. The connection
-// over vsock is over the TLS. EnclaveProxy terminates the
-// TLS and connects out to the app over plain TCP.
+// connects over the localhost to the app.
 pub struct EnclaveProxy<S> {
     incoming: Box<dyn Stream<Item = S> + Send>,
     port: u16,
@@ -25,19 +19,6 @@ pub struct EnclaveProxy<S> {
 impl EnclaveProxy<VsockStream> {
     pub fn bind(port: u16) -> Result<EnclaveProxy<VsockStream>> {
         let incoming = vsock::serve(port as u32)?;
-        Ok(Self {
-            incoming: Box::new(incoming),
-            port,
-        })
-    }
-}
-
-impl EnclaveProxy<TlsServerStream> {
-    pub fn bind_tls(
-        port: u16,
-        tls_config: Arc<ServerConfig>,
-    ) -> Result<EnclaveProxy<TlsServerStream>> {
-        let incoming = vsock::tls_serve(port as u32, tls_config)?;
         Ok(Self {
             incoming: Box::new(incoming),
             port,
@@ -83,8 +64,7 @@ where
 }
 
 // The host side of the proxy. Listens on the localhost and connects
-// out to the vsock. The proxied connection will be over TLS but HostProxy
-// just proxies raw bytes (no TLS termination)
+// out to the vsock. Proxies raw bytes (no TLS).
 pub struct HostProxy {
     listener: TcpListener,
 }
@@ -129,14 +109,10 @@ mod tests {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::Hasher;
     use std::net::{Ipv4Addr, SocketAddrV4};
-    use std::sync::Arc;
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::watch::Sender;
     use tokio::task::JoinHandle;
-    use tokio_rustls::TlsConnector;
-    use tokio_rustls::rustls::pki_types::ServerName;
-    use tokio_rustls::rustls::{ClientConfig, ServerConfig};
 
     use super::{EnclaveProxy, HostProxy};
 
@@ -168,8 +144,8 @@ mod tests {
         v
     }
 
-    fn start_enclave_proxy(port: u16, cfg: Arc<ServerConfig>) -> (JoinHandle<()>, Sender<()>) {
-        let proxy = EnclaveProxy::bind_tls(port, cfg).unwrap();
+    fn start_enclave_proxy(port: u16) -> (JoinHandle<()>, Sender<()>) {
+        let proxy = EnclaveProxy::bind(port).unwrap();
         let (tx, rx) = tokio::sync::watch::channel(());
         let handle = tokio::task::spawn(async move {
             proxy.serve(rx).await;
@@ -218,8 +194,7 @@ mod tests {
     async fn test_enclave_proxy() {
         const PORT: u16 = 7777;
 
-        let server_config = crate::tls::test_server_config().unwrap();
-        let (proxy_task, proxy_stop) = start_enclave_proxy(PORT, server_config);
+        let (proxy_task, proxy_stop) = start_enclave_proxy(PORT);
 
         // start a simple TCP echo server
         let mut echo = TcpEchoServer::bind(PORT)
@@ -229,19 +204,10 @@ mod tests {
             echo.serve().await;
         });
 
-        // connect to the proxy and send a stream of random bytes
-        // and make sure it comes back the same (via a hash)
-        let client_config =
-            crate::tls::load_insecure_client_config().expect("client config load failed");
-        let server_name = ServerName::try_from("test.local").expect("invalid server name");
-        let conn = crate::vsock::tls_connect(
-            crate::vsock::VMADDR_CID_HOST,
-            PORT as u32,
-            server_name,
-            client_config,
-        )
-        .await
-        .expect("connect failed");
+        // connect to the proxy via vsock and send a stream of random bytes
+        let conn = crate::vsock::VsockStream::connect(crate::vsock::VMADDR_CID_HOST, PORT as u32)
+            .await
+            .expect("connect failed");
         let (r, w) = tokio::io::split(conn);
 
         let (expected, actual) = tokio::join!(start_source(w), start_sink(r));
@@ -255,28 +221,11 @@ mod tests {
         _ = proxy_task.await;
     }
 
-    //type TlsServerStream = tokio_rustls::server::TlsStream<TcpStream>;
-    type TlsClientStream = tokio_rustls::client::TlsStream<TcpStream>;
-
-    async fn tls_connect(
-        host: Ipv4Addr,
-        port: u16,
-        name: ServerName<'static>,
-        cfg: Arc<ClientConfig>,
-    ) -> Result<TlsClientStream> {
-        let addr = SocketAddrV4::new(host, port);
-        let stream = TcpStream::connect(addr).await?;
-        let connector = TlsConnector::from(cfg);
-        let tls_stream = connector.connect(name, stream).await?;
-        Ok(tls_stream)
-    }
-
     #[tokio::test]
     async fn test_full_proxy() {
         const PORT: u16 = 7787;
 
-        let server_config = crate::tls::test_server_config().unwrap();
-        let (enclave_proxy_task, enclave_proxy_stop) = start_enclave_proxy(PORT + 1, server_config);
+        let (enclave_proxy_task, enclave_proxy_stop) = start_enclave_proxy(PORT + 1);
         let host_proxy_task = start_host_proxy(PORT, (PORT + 1) as u32).await;
 
         // start a simple TCP echo server
@@ -287,12 +236,9 @@ mod tests {
             echo.serve().await;
         });
 
-        // connect to the proxy and send a stream of random bytes
-        // and make sure it comes back the same (via a hash)
-        let client_config =
-            crate::tls::load_insecure_client_config().expect("client config load failed");
-        let server_name = ServerName::try_from("test.local").expect("invalid server name");
-        let conn = tls_connect(Ipv4Addr::LOCALHOST, PORT, server_name, client_config)
+        // connect to the host proxy and send random bytes through
+        let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, PORT);
+        let conn = TcpStream::connect(&addr)
             .await
             .expect("connect failed");
         let (r, w) = tokio::io::split(conn);
