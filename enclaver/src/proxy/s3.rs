@@ -29,7 +29,7 @@ pub struct S3Proxy {
     bucket: String,
     prefix: String,
     encryption: Option<S3EncryptionConfig>,
-    kms_proxy: RwLock<Option<Arc<NovaKmsProxy>>>,
+    nova_kms: RwLock<Option<Arc<NovaKmsProxy>>>,
 }
 
 impl S3Proxy {
@@ -48,13 +48,13 @@ impl S3Proxy {
             bucket,
             prefix,
             encryption,
-            kms_proxy: RwLock::new(None),
+            nova_kms: RwLock::new(None),
         }
     }
 
-    pub async fn attach_kms_proxy(&self, kms_proxy: Arc<NovaKmsProxy>) {
-        let mut guard = self.kms_proxy.write().await;
-        *guard = Some(kms_proxy);
+    pub async fn attach_nova_kms(&self, nova_kms: Arc<NovaKmsProxy>) {
+        let mut guard = self.nova_kms.write().await;
+        *guard = Some(nova_kms);
     }
 
     pub fn client(&self) -> &S3Client {
@@ -211,8 +211,8 @@ impl S3Proxy {
             .unwrap_or(true)
     }
 
-    async fn current_kms_proxy(&self) -> Result<Arc<NovaKmsProxy>> {
-        let guard = self.kms_proxy.read().await;
+    async fn current_nova_kms(&self) -> Result<Arc<NovaKmsProxy>> {
+        let guard = self.nova_kms.read().await;
         guard.as_ref().cloned().ok_or_else(|| {
             anyhow!("S3 KMS encryption is enabled, but KMS integration is not configured")
         })
@@ -260,8 +260,8 @@ impl S3Proxy {
         let key_version = self.key_version();
         let aad_mode = self.aad_mode();
         let aad = Self::build_aad(key, &key_version, &aad_mode);
-        let kms_proxy = self.current_kms_proxy().await?;
-        let dek = kms_proxy
+        let nova_kms = self.current_nova_kms().await?;
+        let dek = nova_kms
             .derive_key(&Self::dek_path(key, &key_version), "", 32)
             .await?;
         if dek.len() != 32 {
@@ -327,8 +327,8 @@ impl S3Proxy {
         };
         let aad = Self::build_aad(key, &key_version, &aad_mode);
 
-        let kms_proxy = self.current_kms_proxy().await?;
-        let dek = kms_proxy
+        let nova_kms = self.current_nova_kms().await?;
+        let dek = nova_kms
             .derive_key(&Self::dek_path(key, &key_version), "", 32)
             .await?;
         if dek.len() != 32 {

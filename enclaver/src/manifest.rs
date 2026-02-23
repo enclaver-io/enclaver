@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow, bail};
@@ -21,7 +21,6 @@ pub struct Manifest {
     pub ingress: Option<Vec<Ingress>>,
     pub egress: Option<Egress>,
     pub defaults: Option<Defaults>,
-    pub kms_proxy: Option<KmsProxy>,
     pub api: Option<Api>,
     pub aux_api: Option<AuxApi>,
     pub vsock_ports: Option<VsockPorts>,
@@ -74,13 +73,6 @@ pub struct Egress {
 pub struct Defaults {
     pub cpu_count: Option<i32>,
     pub memory_mb: Option<i32>,
-}
-
-#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct KmsProxy {
-    pub listen_port: u16,
-    pub endpoints: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]

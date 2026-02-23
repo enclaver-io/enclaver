@@ -22,10 +22,10 @@ Odyn is the supervisor process that runs inside the AWS Nitro Enclave. It acts a
 │   │                 Odyn Supervisor                     │   │
 │   │                    (PID 1)                          │   │
 │   │                                                     │   │
-│   │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌──────────┐ ┌─────────┐  │   │
-│   │  │ Ingress │ │ Egress  │ │   API   │ │   KMS    │ │ Storage │  │   │
-│   │  │  Proxy  │ │  Proxy  │ │ Server  │ │  Proxy   │ │  (S3)   │  │   │
-│   │  └─────────┘ └─────────┘ └─────────┘ └──────────┘ └─────────┘  │   │
+│   │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐  │   │
+│   │  │ Ingress │ │ Egress  │ │   API   │ │ Storage │  │   │
+│   │  │  Proxy  │ │  Proxy  │ │ Server  │ │  (S3)   │  │   │
+│   │  └─────────┘ └─────────┘ └─────────┘ └─────────┘  │   │
 │   │                      │                              │   │
 │   │                      ▼                              │   │
 │   │  ┌─────────────────────────────────────────────┐   │   │
@@ -53,7 +53,6 @@ sequenceDiagram
     Enclave->>Odyn: Start (as PID 1)
     Odyn->>Odyn: Bootstrap (loopback, RNG seed)
     Odyn->>Odyn: Start Egress Proxy (if configured)
-    Odyn->>Odyn: Start KMS Proxy (if configured)
     Odyn->>Odyn: Start Internal API Server
     Odyn->>Odyn: Start Ingress Proxies
     Odyn->>App: Launch your application
@@ -80,7 +79,6 @@ Odyn automatically sets the following environment variables for your application
 | `HTTPS_PROXY` | `http://127.0.0.1:<proxy_port>` | If egress is enabled |
 | `no_proxy` | `localhost,127.0.0.1` | If egress is enabled |
 | `NO_PROXY` | `localhost,127.0.0.1` | If egress is enabled |
-| `AWS_KMS_ENDPOINT` | `http://127.0.0.1:<kms_port>` | If kms_proxy is enabled |
 
 > [!TIP]
 > **Recommended Convention**: Use an `IN_ENCLAVE` environment variable in your Dockerfile to help your application detect whether it's running inside an enclave:
@@ -219,33 +217,7 @@ aux_api:
 
 ---
 
-### 5. KMS Proxy
-
-**Purpose**: Allows your application to use AWS KMS with automatic attestation.
-
-**How it works**:
-- Runs a KMS-compatible proxy inside the enclave
-- Intercepts KMS SDK requests and adds attestation documents
-- Retrieves AWS credentials from IMDS (via egress proxy)
-- Signs requests and handles encrypted responses
-
-**Configuration**:
-```yaml
-kms_proxy:
-  listen_port: 9000
-  endpoints:                  # Optional regional overrides
-    us-east-1: kms.us-east-1.amazonaws.com
-```
-
-**Requirements**:
-- Egress must allow `169.254.169.254` (IMDS)
-- Egress must allow your KMS endpoint (e.g., `kms.us-east-1.amazonaws.com`)
-
-**For your app**: Set `AWS_KMS_ENDPOINT` (automatically done by Odyn) and use the standard AWS SDK.
-
----
-
-### 6. S3 Storage
+### 5. S3 Storage
 
 **Purpose**: Provides automated persistent storage for enclave applications.
 
@@ -283,7 +255,7 @@ storage:
 
 ---
 
-### 7. Console & Log Streaming
+### 6. Console & Log Streaming
 
 **Purpose**: Captures your application's stdout/stderr and streams it to the host.
 
@@ -324,8 +296,7 @@ egress:
   proxy_port: 10000
   allow:
     - "api.openai.com"
-    - "169.254.169.254"        # Required for KMS
-    - "kms.us-east-1.amazonaws.com"
+    - "169.254.169.254"        # Required for IMDS-backed AWS access (e.g. S3)
 
 # Internal API for attestation and signing
 api:
@@ -334,10 +305,6 @@ api:
 # Auxiliary API for sidecars (optional)
 aux_api:
   listen_port: 18001
-
-# KMS Proxy with attestation (optional)
-kms_proxy:
-  listen_port: 9000
 
 # Nova KMS integration (optional)
 kms_integration:
@@ -380,7 +347,6 @@ storage:
 | **Egress** | `egress.proxy_port` | Make outbound HTTP requests | Automatic via `http_proxy` env var |
 | **Internal API** | `api.listen_port` | Attestation, signing, encryption | HTTP to `http://127.0.0.1:<port>` |
 | **Aux API** | `aux_api.listen_port` | Restricted API for sidecars | HTTP to `http://127.0.0.1:<port>` |
-| **KMS Proxy** | `kms_proxy.listen_port` | AWS KMS with attestation | Use AWS SDK normally |
 | **Storage** | N/A (Internal API) | Persistent S3 storage | HTTP to `/v1/s3/...` |
 | **Helios RPC** | `helios_rpc.chains[].local_rpc_port` | Trustless multi-chain RPC | HTTP to `http://127.0.0.1:<chain_port>` |
 | **Console** | N/A (automatic) | Log streaming | Print to stdout/stderr |

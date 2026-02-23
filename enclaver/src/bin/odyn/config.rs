@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use enclaver::constants::{HTTP_EGRESS_PROXY_PORT, MANIFEST_FILE_NAME};
 use enclaver::manifest::{self, HeliosRpcKind, Manifest};
-use enclaver::proxy::kms::KmsEndpointProvider;
 use enclaver::tls;
 
 #[derive(Clone, Debug)]
@@ -117,10 +116,6 @@ impl Configuration {
         }
     }
 
-    pub fn kms_proxy_port(&self) -> Option<u16> {
-        self.manifest.kms_proxy.as_ref().map(|kp| kp.listen_port)
-    }
-
     pub fn api_port(&self) -> Option<u16> {
         self.manifest.api.as_ref().map(|a| a.listen_port)
     }
@@ -177,19 +172,6 @@ impl Configuration {
     }
 }
 
-impl KmsEndpointProvider for Configuration {
-    fn endpoint(&self, region: &str) -> String {
-        let ep = self
-            .manifest
-            .kms_proxy
-            .as_ref()
-            .and_then(|kp| kp.endpoints.as_ref().map(|eps| eps.get(region).cloned()))
-            .flatten();
-
-        ep.unwrap_or_else(|| format!("kms.{region}.amazonaws.com"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,7 +193,6 @@ mod tests {
                 ingress: None,
                 egress: None,
                 defaults: None,
-                kms_proxy: None,
                 api: Some(Api { listen_port: 9000 }),
                 aux_api: None,
                 vsock_ports: None,

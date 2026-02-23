@@ -63,7 +63,7 @@ graph TB
 | Component | Location | Description |
 |-----------|----------|-------------|
 | **User Application** | User's Docker image | Your backend service/application to be run inside the enclave |
-| **enclaver.yaml** | User's project | Configuration file defining ingress, egress, API, and KMS proxy settings |
+| **enclaver.yaml** | User's project | Configuration file defining ingress, egress, API, and Nova KMS integration settings |
 | **Odyn Supervisor** | Inside EIF | Enclave supervisor that manages the application lifecycle, networking, and services |
 | **EIF (application.eif)** | Docker image | AWS Nitro Enclave Image File containing the enclave workload |
 | **Sleeve (enclaver-run)** | Docker image | Host-side orchestrator that launches and manages the enclave |
@@ -141,7 +141,7 @@ sequenceDiagram
     Odyn->>Odyn: Bring up loopback interface
     Odyn->>Odyn: Seed RNG from NSM
     Odyn->>Odyn: Start egress proxy (if configured)
-    Odyn->>Odyn: Start KMS proxy (if configured)
+    Odyn->>Odyn: Initialize Nova KMS integration (if configured)
     Odyn->>Odyn: Start API server (if configured)
     Odyn->>Odyn: Start ingress proxies
     Odyn->>App: Launch user application
@@ -177,7 +177,7 @@ sequenceDiagram
   - Parse and apply configuration from embedded `enclaver.yaml`
   - Start enclave-side ingress proxies (accept vsock connections, forward to app)
   - Start enclave-side egress proxy (intercept app's outbound traffic)
-  - Start KMS proxy (handle AWS KMS requests with attestation)
+  - Initialize Nova KMS integration for `/v1/kms/*` and app-wallet routes
   - Start internal API server (attestation, encryption, Ethereum endpoints)
   - Start Helios RPC service (trustless Ethereum/OP Stack light client)
   - Launch and supervise the user application
@@ -202,7 +202,7 @@ sequenceDiagram
 │  │  │ Services:                                  │  │  │
 │  │  │  • Ingress Proxy (vsock → app TCP)         │  │  │
 │  │  │  • Egress Proxy (app HTTP → vsock)         │  │  │
-│  │  │  • KMS Proxy (AWS KMS with attestation)    │  │  │
+│  │  │  • Nova KMS Integration (`/v1/kms/*`)      │  │  │
 │  │  │  • API Server (attestation, encryption)    │  │  │
 │  │  │  • Helios RPC (trustless Ethereum/OP Stack light client)  │  │  │
 │  │  │  • Console (log capture & streaming)       │  │  │
@@ -338,32 +338,37 @@ graph LR
     HOST_EGRESS -->|"TCP"| EXTERNAL
 ```
 
-### KMS Attestation Flow
+### Nova KMS Integration Flow
 
 ```mermaid
 graph LR
     subgraph "Enclave"
         APP["User Application"]
-        KMS_PROXY["KMS Proxy<br/>(adds attestation)"]
-        NSM["NSM Driver<br/>(attestation)"]
+        API["Odyn API<br/>(/v1/kms/*)"]
+        NOVA_KMS["Nova KMS Integration"]
+        HELIOS["Helios RPC<br/>(Registry Discovery)"]
     end
     
-    subgraph "Egress Path"
+    subgraph "Network Path"
         EGRESS["Egress Proxies"]
     end
     
-    subgraph "AWS"
-        KMS["AWS KMS"]
+    subgraph "External"
+        REGISTRY["Nova App Registry RPC"]
+        KMS["Nova KMS Cluster"]
     end
     
-    APP -->|"KMS Request"| KMS_PROXY
-    KMS_PROXY -->|"Get attestation"| NSM
-    NSM -->|"Attestation doc"| KMS_PROXY
-    KMS_PROXY -->|"Request + Recipient"| EGRESS
-    EGRESS -->|"HTTPS"| KMS
-    KMS -->|"Response"| EGRESS
-    EGRESS -->|"Encrypted response"| KMS_PROXY
-    KMS_PROXY -->|"Decrypted data"| APP
+    APP -->|"HTTP JSON"| API
+    API --> NOVA_KMS
+    NOVA_KMS --> HELIOS
+    HELIOS -->|"JSON-RPC"| EGRESS
+    EGRESS --> REGISTRY
+    NOVA_KMS -->|"KMS operations"| EGRESS
+    EGRESS --> KMS
+    KMS --> EGRESS
+    EGRESS --> NOVA_KMS
+    NOVA_KMS --> API
+    API --> APP
 ```
 
 ---
@@ -394,7 +399,7 @@ graph TB
         subgraph "Odyn Services"
             ENCLAVE_INGRESS["Ingress Proxy"]
             ENCLAVE_EGRESS["Egress Proxy"]
-            KMS_PROXY["KMS Proxy"]
+            NOVA_KMS["Nova KMS Integration"]
             API["API Server"]
             HELIOS["Helios RPC"]
             CONSOLE["Console<br/>(Log Capture)"]
@@ -414,7 +419,7 @@ graph TB
     
     ODYN --> ENCLAVE_INGRESS
     ODYN --> ENCLAVE_EGRESS
-    ODYN --> KMS_PROXY
+    ODYN --> NOVA_KMS
     ODYN --> API
     ODYN --> HELIOS
     ODYN --> CONSOLE
@@ -455,7 +460,7 @@ The Enclaver architecture provides a complete isolation solution:
 2. **Odyn Supervisor**: The enclave-side component that:
    - Bootstraps the enclave environment
    - Provides networking proxies (ingress/egress)
-   - Manages KMS attestation
+   - Manages Nova KMS integration and app-wallet operations
    - Supervises the application lifecycle
 
 3. **EIF File**: The encrypted enclave image containing:

@@ -8,7 +8,6 @@ pub mod egress;
 pub mod enclave;
 pub mod helios_rpc;
 pub mod ingress;
-pub mod kms_proxy;
 pub mod launcher;
 
 use anyhow::Result;
@@ -28,7 +27,6 @@ use console::{AppLog, AppStatus};
 use egress::EgressService;
 use helios_rpc::HeliosRpcService;
 use ingress::IngressService;
-use kms_proxy::KmsProxyService;
 
 #[derive(Parser)]
 struct CliArgs {
@@ -66,8 +64,7 @@ async fn launch(args: &CliArgs) -> Result<launcher::ExitStatus> {
     // Start Helios in background (non-blocking, app starts immediately)
     let helios_rpc = HeliosRpcService::start(&config).await?;
 
-    let (kms_proxy, api, aux_api) = tokio::try_join!(
-        KmsProxyService::start(config.clone(), nsm.clone()),
+    let (api, aux_api) = tokio::try_join!(
         ApiService::start(&config, nsm.clone()),
         AuxApiService::start(&config),
     )?;
@@ -84,7 +81,6 @@ async fn launch(args: &CliArgs) -> Result<launcher::ExitStatus> {
 
     aux_api.stop().await;
     api.stop().await;
-    kms_proxy.stop().await;
     helios_rpc.stop().await;
     ingress.stop().await;
     egress.stop().await;

@@ -29,7 +29,7 @@ pub struct ApiHandler {
     encryption_key: Arc<EncryptionKey>,
     nsm: Option<Arc<Nsm>>,
     s3_proxy: Option<Arc<S3Proxy>>,
-    kms_proxy: Option<Arc<NovaKmsProxy>>,
+    nova_kms: Option<Arc<NovaKmsProxy>>,
 }
 
 impl ApiHandler {
@@ -52,7 +52,7 @@ impl ApiHandler {
         attester: Box<dyn AttestationProvider + Send + Sync>,
         nsm: Option<Arc<Nsm>>,
         s3_proxy: Option<Arc<S3Proxy>>,
-        kms_proxy: Option<Arc<NovaKmsProxy>>,
+        nova_kms: Option<Arc<NovaKmsProxy>>,
     ) -> Result<Self> {
         let eth_key = match nsm.as_ref() {
             Some(nsm_ref) => match Self::collect_random_bytes(nsm_ref, 32).and_then(|bytes| {
@@ -112,7 +112,7 @@ impl ApiHandler {
             encryption_key,
             nsm,
             s3_proxy,
-            kms_proxy,
+            nova_kms,
         })
     }
 
@@ -218,28 +218,28 @@ impl ApiHandler {
                 _ => Ok(http_util::method_not_allowed()),
             },
             "/v1/kms/derive" => match head.method {
-                Method::POST => match &self.kms_proxy {
+                Method::POST => match &self.nova_kms {
                     Some(proxy) => proxy.handle_derive(body).await,
                     None => Self::kms_not_configured(),
                 },
                 _ => Ok(http_util::method_not_allowed()),
             },
             "/v1/kms/kv/get" => match head.method {
-                Method::POST => match &self.kms_proxy {
+                Method::POST => match &self.nova_kms {
                     Some(proxy) => proxy.handle_kv_get(body).await,
                     None => Self::kms_not_configured(),
                 },
                 _ => Ok(http_util::method_not_allowed()),
             },
             "/v1/kms/kv/put" => match head.method {
-                Method::POST => match &self.kms_proxy {
+                Method::POST => match &self.nova_kms {
                     Some(proxy) => proxy.handle_kv_put(body).await,
                     None => Self::kms_not_configured(),
                 },
                 _ => Ok(http_util::method_not_allowed()),
             },
             "/v1/kms/kv/delete" => match head.method {
-                Method::POST => match &self.kms_proxy {
+                Method::POST => match &self.nova_kms {
                     Some(proxy) => proxy.handle_kv_delete(body).await,
                     None => Self::kms_not_configured(),
                 },
@@ -405,7 +405,7 @@ impl ApiHandler {
     }
 
     async fn handle_app_wallet_address(&self) -> Result<Response<Full<Bytes>>> {
-        let proxy = match &self.kms_proxy {
+        let proxy = match &self.nova_kms {
             Some(proxy) => proxy,
             None => return Self::kms_not_configured(),
         };
@@ -431,7 +431,7 @@ impl ApiHandler {
     }
 
     async fn handle_app_wallet_sign(&self, body: Bytes) -> Result<Response<Full<Bytes>>> {
-        let proxy = match &self.kms_proxy {
+        let proxy = match &self.nova_kms {
             Some(proxy) => proxy,
             None => return Self::kms_not_configured(),
         };
@@ -483,7 +483,7 @@ impl ApiHandler {
     }
 
     async fn handle_app_wallet_proof(&self, body: Bytes) -> Result<Response<Full<Bytes>>> {
-        let proxy = match &self.kms_proxy {
+        let proxy = match &self.nova_kms {
             Some(proxy) => proxy,
             None => return Self::kms_not_configured(),
         };
@@ -586,7 +586,7 @@ impl ApiHandler {
     }
 
     async fn handle_app_wallet_sign_tx(&self, body: Bytes) -> Result<Response<Full<Bytes>>> {
-        let proxy = match &self.kms_proxy {
+        let proxy = match &self.nova_kms {
             Some(proxy) => proxy,
             None => return Self::kms_not_configured(),
         };
@@ -830,7 +830,7 @@ impl ApiHandler {
     }
 
     async fn attestation_app_wallet(&self) -> Option<String> {
-        let proxy = match &self.kms_proxy {
+        let proxy = match &self.nova_kms {
             Some(proxy) => proxy,
             None => return None,
         };
