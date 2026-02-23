@@ -238,9 +238,7 @@ mod tests {
 
         // connect to the host proxy and send random bytes through
         let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, PORT);
-        let conn = TcpStream::connect(&addr)
-            .await
-            .expect("connect failed");
+        let conn = TcpStream::connect(&addr).await.expect("connect failed");
         let (r, w) = tokio::io::split(conn);
 
         let (expected, actual) = tokio::join!(start_source(w), start_sink(r));
