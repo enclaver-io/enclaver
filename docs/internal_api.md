@@ -284,9 +284,10 @@ Read a value from KMS-backed key/value storage.
   ```json
   {
     "found": true,
-    "value": "opaque_string_value"
+    "value": "base64_encoded_opaque_string_value"
   }
   ```
+  Note: The returned `value` is base64-encoded. If the original data was stored as bytes or a string, you must base64-decode the `value` to retrieve it.
   When not found:
   ```json
   {
@@ -305,10 +306,11 @@ Write a value to KMS-backed key/value storage.
   ```json
   {
     "key": "config/service_token",
-    "value": "opaque_string_value",
+    "value": "base64_encoded_opaque_string_value",
     "ttl_ms": 60000
   }
   ```
+  `value` **must** be a base64-encoded string representing the bytes you wish to store.
   `ttl_ms` is optional (defaults to `0`).
 - **Success Response:**
   ```json
