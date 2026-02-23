@@ -374,34 +374,6 @@ Signs a plain-text message using EIP-191 personal-sign prefix.
   }
   ```
 
-### Generate App Wallet Binding Proof
-
-Produces a signed proof payload for app-wallet binding flows in `NovaAppRegistry`.
-
-- **URL:** `/v1/app-wallet/proof`
-- **Method:** `POST`
-- **Request Body:**
-  ```json
-  {
-    "app_id": 1001,
-    "version_id": 1,
-    "tee_wallet_address": "0x...",
-    "registry_address": "0x...",
-    "chain_id": 84532,
-    "deadline": 1767225600
-  }
-  ```
-- **Success Response:**
-  ```json
-  {
-    "app_id": 1001,
-    "app_wallet": "0x...",
-    "deadline": 1767225600,
-    "message_hash": "0x...",
-    "proof": "0x..."
-  }
-  ```
-
 ### Sign Transaction with App Wallet
 
 - **URL:** `/v1/app-wallet/sign-tx`
@@ -464,7 +436,6 @@ The following endpoints are **NOT** available on the Auxiliary API:
 - `/v1/kms/kv/delete`
 - `/v1/app-wallet/address`
 - `/v1/app-wallet/sign`
-- `/v1/app-wallet/proof`
 - `/v1/app-wallet/sign-tx`
 
 Attempts to access these endpoints on the Auxiliary API port will result in a 404 Not Found error.

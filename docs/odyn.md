@@ -181,7 +181,6 @@ api:
 | `/v1/kms/kv/delete` | POST | Delete KMS-backed KV value (`kms_integration`) |
 | `/v1/app-wallet/address` | GET | Get anchored app wallet metadata (`kms_integration`) |
 | `/v1/app-wallet/sign` | POST | Sign EIP-191 message with app wallet (`kms_integration`) |
-| `/v1/app-wallet/proof` | POST | Build app-wallet binding proof (`kms_integration`) |
 | `/v1/app-wallet/sign-tx` | POST | Sign Ethereum tx with app wallet (`kms_integration`) |
 
 **For your app**: Make HTTP requests to `http://127.0.0.1:<api_port>/v1/...`

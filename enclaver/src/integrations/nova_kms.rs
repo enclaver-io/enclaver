@@ -2136,4 +2136,216 @@ mod tests {
             .expect("proxy should build");
         assert!(proxy.registry_discovery.is_some());
     }
+
+    fn test_node(
+        wallet: &str,
+        base_url: &str,
+        reachable: Option<bool>,
+        expires_at_ms: u64,
+        last_checked_ms: u64,
+        last_http_status: Option<u16>,
+        last_error: Option<&str>,
+    ) -> KmsNodeCacheEntry {
+        KmsNodeCacheEntry {
+            wallet: wallet.to_string(),
+            base_url: base_url.to_string(),
+            reachable,
+            expires_at_ms,
+            last_checked_ms,
+            last_http_status,
+            last_error: last_error.map(ToString::to_string),
+        }
+    }
+
+    #[test]
+    fn merge_discovered_nodes_with_previous_copies_fresh_status() {
+        let now_ms = 1_000;
+        let discovered = vec![test_node(
+            "0xaaaa000000000000000000000000000000000001",
+            "https://kms-1.example.com",
+            None,
+            0,
+            0,
+            None,
+            None,
+        )];
+        let previous = DiscoveryCacheEntry {
+            nodes: vec![test_node(
+                "0xaaaa000000000000000000000000000000000001",
+                "https://kms-1.example.com",
+                Some(true),
+                1_500,
+                900,
+                Some(200),
+                None,
+            )],
+            expires_at_ms: 2_000,
+        };
+
+        let merged = merge_discovered_nodes_with_previous(discovered, Some(&previous), now_ms);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].reachable, Some(true));
+        assert_eq!(merged[0].expires_at_ms, 1_500);
+        assert_eq!(merged[0].last_checked_ms, 900);
+        assert_eq!(merged[0].last_http_status, Some(200));
+    }
+
+    #[test]
+    fn merge_discovered_nodes_with_previous_ignores_expired_status() {
+        let now_ms = 1_000;
+        let discovered = vec![test_node(
+            "0xbbbb000000000000000000000000000000000002",
+            "https://kms-2.example.com",
+            None,
+            0,
+            0,
+            None,
+            None,
+        )];
+        let previous = DiscoveryCacheEntry {
+            nodes: vec![test_node(
+                "0xbbbb000000000000000000000000000000000002",
+                "https://kms-2.example.com",
+                Some(false),
+                999,
+                800,
+                None,
+                Some("timeout"),
+            )],
+            expires_at_ms: 2_000,
+        };
+
+        let merged = merge_discovered_nodes_with_previous(discovered, Some(&previous), now_ms);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].reachable, None);
+        assert_eq!(merged[0].last_checked_ms, 0);
+        assert_eq!(merged[0].last_http_status, None);
+        assert_eq!(merged[0].last_error, None);
+    }
+
+    #[test]
+    fn merge_refresh_with_live_cache_prefers_newer_live_status() {
+        let now_ms = 1_000;
+        let refreshed = vec![test_node(
+            "0xcccc000000000000000000000000000000000003",
+            "https://kms-3.example.com",
+            Some(false),
+            1_200,
+            900,
+            None,
+            Some("connectivity error"),
+        )];
+        let live_cache = DiscoveryCacheEntry {
+            nodes: vec![test_node(
+                "0xcccc000000000000000000000000000000000003",
+                "https://kms-3.example.com",
+                Some(true),
+                1_800,
+                950,
+                Some(200),
+                None,
+            )],
+            expires_at_ms: 2_000,
+        };
+
+        let merged = merge_refresh_with_live_cache(refreshed, Some(&live_cache), now_ms);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].reachable, Some(true));
+        assert_eq!(merged[0].expires_at_ms, 1_800);
+        assert_eq!(merged[0].last_checked_ms, 950);
+        assert_eq!(merged[0].last_http_status, Some(200));
+        assert_eq!(merged[0].last_error, None);
+    }
+
+    #[test]
+    fn merge_refresh_with_live_cache_keeps_refreshed_when_live_is_stale_or_expired() {
+        let now_ms = 1_000;
+        let refreshed = vec![test_node(
+            "0xdddd000000000000000000000000000000000004",
+            "https://kms-4.example.com",
+            Some(false),
+            1_700,
+            980,
+            None,
+            Some("dial tcp"),
+        )];
+
+        let live_older = DiscoveryCacheEntry {
+            nodes: vec![test_node(
+                "0xdddd000000000000000000000000000000000004",
+                "https://kms-4.example.com",
+                Some(true),
+                1_800,
+                970,
+                Some(200),
+                None,
+            )],
+            expires_at_ms: 2_000,
+        };
+        let merged_with_older =
+            merge_refresh_with_live_cache(refreshed.clone(), Some(&live_older), now_ms);
+        assert_eq!(merged_with_older[0].reachable, Some(false));
+        assert_eq!(merged_with_older[0].last_checked_ms, 980);
+        assert_eq!(merged_with_older[0].last_error.as_deref(), Some("dial tcp"));
+
+        let live_expired = DiscoveryCacheEntry {
+            nodes: vec![test_node(
+                "0xdddd000000000000000000000000000000000004",
+                "https://kms-4.example.com",
+                Some(true),
+                999,
+                1_200,
+                Some(200),
+                None,
+            )],
+            expires_at_ms: 2_000,
+        };
+        let merged_with_expired =
+            merge_refresh_with_live_cache(refreshed, Some(&live_expired), now_ms);
+        assert_eq!(merged_with_expired[0].reachable, Some(false));
+        assert_eq!(merged_with_expired[0].last_checked_ms, 980);
+        assert_eq!(
+            merged_with_expired[0].last_error.as_deref(),
+            Some("dial tcp")
+        );
+    }
+
+    #[test]
+    fn format_node_refresh_list_renders_reachability_states() {
+        let now_ms = 1_000;
+        let nodes = vec![
+            test_node(
+                "0xeeee000000000000000000000000000000000005",
+                "https://kms-5.example.com",
+                Some(true),
+                1_100,
+                950,
+                Some(200),
+                None,
+            ),
+            test_node(
+                "0xffff000000000000000000000000000000000006",
+                "https://kms-6.example.com",
+                Some(false),
+                1_100,
+                940,
+                None,
+                Some("timeout"),
+            ),
+            test_node(
+                "0x1111000000000000000000000000000000000007",
+                "https://kms-7.example.com",
+                Some(true),
+                999,
+                930,
+                Some(200),
+                None,
+            ),
+        ];
+
+        let formatted = format_node_refresh_list(&nodes, now_ms);
+        assert!(formatted.contains("wallet=0xeeee000000000000000000000000000000000005,url=https://kms-5.example.com,reachability=reachable"));
+        assert!(formatted.contains("wallet=0xffff000000000000000000000000000000000006,url=https://kms-6.example.com,reachability=unreachable"));
+        assert!(formatted.contains("wallet=0x1111000000000000000000000000000000000007,url=https://kms-7.example.com,reachability=unknown"));
+    }
 }
