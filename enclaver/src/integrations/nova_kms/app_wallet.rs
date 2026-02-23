@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose};
+use zeroize::Zeroize;
 
 use crate::eth_key::EthKey;
 
@@ -35,7 +36,7 @@ impl NovaKmsProxy {
             bail!("app wallet integration is disabled");
         }
 
-        Ok(self.resolve_app_wallet_material().await?.address)
+        Ok(self.resolve_app_wallet_material().await?.address.clone())
     }
 
     async fn resolve_app_wallet_material(&self) -> Result<AppWalletMaterial> {
@@ -51,10 +52,11 @@ impl NovaKmsProxy {
 
         if private_key_b64.is_none() && address_b64.is_none() {
             let generated = EthKey::new();
-            let generated_private_key_hex = generated.private_key_hex();
+            let mut generated_private_key_hex = generated.private_key_hex();
             let generated_address = canonical_wallet(&generated.address())?;
             self.write_app_wallet_record(&generated_private_key_hex, &generated_address)
                 .await?;
+            generated_private_key_hex.zeroize();
 
             // Re-read to tolerate concurrent writers and guarantee we return
             // exactly what KMS persisted.
@@ -96,11 +98,13 @@ impl NovaKmsProxy {
     }
 
     async fn write_app_wallet_record(&self, private_key_hex: &str, address: &str) -> Result<()> {
-        let private_key_bytes = hex::decode(trim_0x(private_key_hex))
+        let mut private_key_bytes = hex::decode(trim_0x(private_key_hex))
             .map_err(|err| anyhow!("invalid app wallet private key hex: {}", err))?;
-        let private_key_b64 = general_purpose::STANDARD.encode(private_key_bytes);
+        let mut private_key_b64 = general_purpose::STANDARD.encode(&private_key_bytes);
+        private_key_bytes.zeroize();
         self.kv_put(APP_WALLET_KV_PRIVATE_KEY, &private_key_b64, 0)
             .await?;
+        private_key_b64.zeroize();
         self.write_app_wallet_address(address).await
     }
 
@@ -112,7 +116,7 @@ impl NovaKmsProxy {
 
     async fn cache_app_wallet_material(&self, material: AppWalletMaterial) {
         let expires_at_ms = current_unix_millis().saturating_add(APP_WALLET_CACHE_TTL_MS);
-        let mut guard = self.app_wallet_cache.lock().await;
+        let mut guard = self.app_wallet_cache.write().await;
         *guard = Some(CachedAppWallet {
             material,
             expires_at_ms,
@@ -121,13 +125,15 @@ impl NovaKmsProxy {
 
     async fn cached_app_wallet_material(&self) -> Option<AppWalletMaterial> {
         let now_ms = current_unix_millis();
-        let mut guard = self.app_wallet_cache.lock().await;
+        let guard = self.app_wallet_cache.read().await;
         if let Some(cached) = guard.as_ref()
             && now_ms < cached.expires_at_ms
         {
             return Some(cached.material.clone());
         }
-        *guard = None;
+        drop(guard);
+        let mut write_guard = self.app_wallet_cache.write().await;
+        *write_guard = None;
         None
     }
 }

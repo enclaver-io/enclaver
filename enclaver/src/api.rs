@@ -576,7 +576,7 @@ impl ApiHandler {
     ///
     /// Request body JSON:
     /// {
-    ///   "nonce": "hex-encoded nonce (at least 12 bytes)",
+    ///   "nonce": "hex-encoded nonce (12 bytes, or 32-byte legacy nonce)",
     ///   "client_public_key": "hex-encoded DER public key",
     ///   "encrypted_data": "hex-encoded ciphertext"
     /// }

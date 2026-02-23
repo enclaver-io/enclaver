@@ -169,16 +169,30 @@ impl EthKey {
     }
 
     pub fn verify_message(sig_hex: String, message: &[u8], address: String) -> bool {
-        let sig_bytes: Vec<u8> =
-            hex::decode(sig_hex.strip_prefix("0x").unwrap_or(&sig_hex)).expect("invalid hex");
+        let sig_bytes: Vec<u8> = match hex::decode(sig_hex.strip_prefix("0x").unwrap_or(&sig_hex)) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        if sig_bytes.len() != 65 {
+            return false;
+        }
         let digest = Keccak256::new_with_prefix(message);
         let r_s = &sig_bytes[..64];
-        let sig = Signature::from_bytes(r_s.into()).unwrap();
-        let recid = RecoveryId::from_byte(sig_bytes[64]).expect("invalid recovery id");
-        let verifying_key = VerifyingKey::recover_from_digest(digest.clone(), &sig, recid).unwrap();
+        let sig = match Signature::from_bytes(r_s.into()) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let recid = match RecoveryId::from_byte(sig_bytes[64]) {
+            Some(v) => v,
+            None => return false,
+        };
+        let verifying_key = match VerifyingKey::recover_from_digest(digest.clone(), &sig, recid) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
         let pub_bytes = verifying_key.to_encoded_point(false);
         let hash = Self::keccak256(&pub_bytes.as_bytes()[1..]);
-        format!("0x{}", hex::encode(&hash[12..])) == address
+        format!("0x{}", hex::encode(&hash[12..])) == address.to_lowercase()
     }
 }
 
@@ -229,5 +243,25 @@ mod tests {
 
         let verified = EthKey::verify_message(sig_hex, message.as_bytes(), key.address());
         println!("verified: {}", verified);
+    }
+
+    #[test]
+    fn test_verify_message_rejects_invalid_hex_without_panic() {
+        let verified = EthKey::verify_message(
+            "0x-not-hex".to_string(),
+            b"message",
+            "0x0000000000000000000000000000000000000000".to_string(),
+        );
+        assert!(!verified);
+    }
+
+    #[test]
+    fn test_verify_message_rejects_wrong_length_without_panic() {
+        let verified = EthKey::verify_message(
+            "0x1234".to_string(),
+            b"message",
+            "0x0000000000000000000000000000000000000000".to_string(),
+        );
+        assert!(!verified);
     }
 }

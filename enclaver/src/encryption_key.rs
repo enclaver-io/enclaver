@@ -175,10 +175,23 @@ impl EncryptionKey {
         Ok(aes_key)
     }
 
+    /// Normalize nonce for AES-GCM.
+    /// Accepts 12-byte nonces, plus 32-byte legacy nonces where the first 12 bytes are used.
+    fn normalize_nonce(nonce: &[u8]) -> Result<&[u8]> {
+        match nonce.len() {
+            12 => Ok(nonce),
+            32 => Ok(&nonce[..12]),
+            len => Err(anyhow!(
+                "Nonce must be exactly 12 bytes (or 32-byte legacy nonce), got {}",
+                len
+            )),
+        }
+    }
+
     /// Decrypt data encrypted by a client using ECDH + AES-GCM
     ///
     /// Args:
-    ///   nonce: 12-byte nonce (or 32-byte, first 12 used)
+    ///   nonce: 12-byte nonce (or 32-byte legacy nonce; first 12 bytes are used)
     ///   client_public_key_der: Client's ephemeral public key (DER/SPKI format)
     ///   encrypted_data: AES-GCM encrypted ciphertext with tag
     ///
@@ -193,12 +206,7 @@ impl EncryptionKey {
         // Derive shared key
         let aes_key = self.derive_shared_key(client_public_key_der)?;
 
-        // Use first 12 bytes of nonce for AES-GCM (standard nonce size)
-        let nonce_bytes = if nonce.len() >= 12 {
-            &nonce[..12]
-        } else {
-            return Err(anyhow!("Nonce must be at least 12 bytes"));
-        };
+        let nonce_bytes = Self::normalize_nonce(nonce)?;
 
         // Decrypt using AES-256-GCM
         let cipher = Aes256Gcm::new_from_slice(&aes_key)
@@ -217,7 +225,7 @@ impl EncryptionKey {
     /// Args:
     ///   plaintext: Data to encrypt
     ///   client_public_key_der: Client's public key (DER/SPKI format)
-    ///   nonce: 12-byte nonce (or 32-byte, first 12 used)
+    ///   nonce: 12-byte nonce (or 32-byte legacy nonce; first 12 bytes are used)
     ///
     /// Returns:
     ///   Encrypted ciphertext with authentication tag
@@ -230,12 +238,7 @@ impl EncryptionKey {
         // Derive shared key
         let aes_key = self.derive_shared_key(client_public_key_der)?;
 
-        // Use first 12 bytes of nonce for AES-GCM (standard nonce size)
-        let nonce_bytes = if nonce.len() >= 12 {
-            &nonce[..12]
-        } else {
-            return Err(anyhow!("Nonce must be at least 12 bytes"));
-        };
+        let nonce_bytes = Self::normalize_nonce(nonce)?;
 
         // Encrypt using AES-256-GCM
         let cipher = Aes256Gcm::new_from_slice(&aes_key)
@@ -799,6 +802,19 @@ mod tests {
     }
 
     #[test]
+    fn test_encrypt_rejects_non_standard_nonce_length() {
+        let key1 = EncryptionKey::new();
+        let key2 = EncryptionKey::new();
+
+        let pub2_der = key2.public_key_as_der().unwrap();
+        let plaintext = b"Test";
+        let nonce_16 = [0x00u8; 16];
+
+        let result = key1.encrypt(plaintext, &pub2_der, &nonce_16);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_decrypt_short_nonce() {
         let key1 = EncryptionKey::new();
         let short_nonce = [0x00u8; 8]; // Less than 12 bytes
@@ -809,6 +825,20 @@ mod tests {
         let pub2_der = key2.public_key_as_der().unwrap();
 
         let result = key1.decrypt(&short_nonce, &pub2_der, &fake_ciphertext);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_rejects_non_standard_nonce_length() {
+        let key1 = EncryptionKey::new();
+        let nonce_16 = [0x00u8; 16];
+        let fake_ciphertext = [0x00u8; 32];
+
+        // Create a valid DER for peer key
+        let key2 = EncryptionKey::new();
+        let pub2_der = key2.public_key_as_der().unwrap();
+
+        let result = key1.decrypt(&nonce_16, &pub2_der, &fake_ciphertext);
         assert!(result.is_err());
     }
 

@@ -20,8 +20,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use uuid::Uuid;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::eth_key::EthKey;
 use crate::http_util;
@@ -39,11 +40,20 @@ const DEFAULT_KMS_MAX_ATTEMPTS: usize = 3;
 const DEFAULT_KMS_DISCOVERY_TTL_MS: u64 = 60_000;
 const DEFAULT_KMS_NODE_REACHABLE_CACHE_TTL_MS: u64 = 30_000;
 const DEFAULT_KMS_NODE_UNREACHABLE_CACHE_TTL_MS: u64 = 10_000;
+const DEFAULT_KMS_NODE_IDENTITY_CACHE_TTL_MS: u64 = 30_000;
 const DEFAULT_KMS_BACKGROUND_REFRESH_INTERVAL_MS: u64 = 20_000;
 const DEFAULT_KMS_REQUIRE_MUTUAL_SIGNATURE: bool = true;
 const DEFAULT_KMS_RESERVED_DERIVE_PREFIXES: [&str; 1] = ["wallet/eth/app/"];
 const DEFAULT_KMS_AUDIT_LOG_PATH: &str = "/tmp/odyn_kms_audit.log";
 const KMS_DEBUG_LOG_MAX_LEN: usize = 1024;
+const GET_INSTANCE_BY_WALLET_TUPLE_MIN_LEN: usize = 10;
+const GET_INSTANCE_BY_WALLET_APP_ID_IDX: usize = 1;
+const GET_INSTANCE_BY_WALLET_INSTANCE_URL_IDX: usize = 4;
+const GET_INSTANCE_BY_WALLET_ZK_VERIFIED_IDX: usize = 7;
+const GET_INSTANCE_BY_WALLET_STATUS_IDX: usize = 8;
+const GET_APP_TUPLE_MIN_LEN: usize = 9;
+const GET_APP_STATUS_IDX: usize = 7;
+const GET_APP_APP_WALLET_IDX: usize = 8;
 
 #[derive(Clone)]
 pub struct NovaKmsProxy {
@@ -56,11 +66,12 @@ pub struct NovaKmsProxy {
     audit_log_path: Option<PathBuf>,
     audit_log_sender: Option<mpsc::UnboundedSender<String>>,
     registry_discovery: Option<RegistryDiscoveryConfig>,
-    discovery_cache: Arc<Mutex<Option<DiscoveryCacheEntry>>>,
+    discovery_cache: Arc<RwLock<Option<DiscoveryCacheEntry>>>,
     background_refresh_started: Arc<AtomicBool>,
     discovery_refresh_lock: Arc<Mutex<()>>,
-    authz_cache: Arc<Mutex<Option<CachedAuthzContext>>>,
-    app_wallet_cache: Arc<Mutex<Option<CachedAppWallet>>>,
+    node_identity_cache: Arc<RwLock<HashMap<String, CachedNodeIdentity>>>,
+    authz_cache: Arc<RwLock<Option<CachedAuthzContext>>>,
+    app_wallet_cache: Arc<RwLock<Option<CachedAppWallet>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -80,6 +91,12 @@ struct CachedAuthzContext {
 struct AppWalletMaterial {
     private_key_hex: String,
     address: String,
+}
+
+impl Drop for AppWalletMaterial {
+    fn drop(&mut self) {
+        self.private_key_hex.zeroize();
+    }
 }
 
 #[derive(Clone)]
@@ -111,6 +128,12 @@ struct KmsNodeCacheEntry {
     last_checked_ms: u64,
     last_http_status: Option<u16>,
     last_error: Option<String>,
+}
+
+#[derive(Clone)]
+struct CachedNodeIdentity {
+    identity: KmsNodeIdentity,
+    expires_at_ms: u64,
 }
 
 impl KmsNodeCacheEntry {
@@ -273,11 +296,12 @@ impl NovaKmsProxy {
             audit_log_path,
             audit_log_sender,
             registry_discovery,
-            discovery_cache: Arc::new(Mutex::new(None)),
+            discovery_cache: Arc::new(RwLock::new(None)),
             background_refresh_started: Arc::new(AtomicBool::new(false)),
             discovery_refresh_lock: Arc::new(Mutex::new(())),
-            authz_cache: Arc::new(Mutex::new(None)),
-            app_wallet_cache: Arc::new(Mutex::new(None)),
+            node_identity_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            authz_cache: Arc::new(RwLock::new(None)),
+            app_wallet_cache: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -635,6 +659,15 @@ impl NovaKmsProxy {
                     }
                     Err(err) => {
                         let err_text = err.to_string();
+                        if err_text.contains("mutual response signature verification failed")
+                            || err_text.contains("KMS response missing X-KMS-Response-Signature")
+                        {
+                            self.invalidate_node_identity_cache(base_url).await;
+                            warn!(
+                                "Nova KMS [{}] invalidated node identity cache for node={} due to signature verification failure",
+                                request_id, base_url
+                            );
+                        }
                         if looks_like_connectivity_error(&err_text) {
                             self.update_node_reachability_cache(
                                 base_url,
@@ -695,19 +728,13 @@ impl NovaKmsProxy {
             method.as_str(),
             path
         );
-        let status_identity = self.fetch_node_identity(base_url).await?;
+        let status_identity = self.resolve_node_identity(request_id, node).await?;
         info!(
             "Nova KMS [{}] selected node identity status_wallet={} tee_pubkey_len={}",
             request_id,
             status_identity.wallet,
             status_identity.tee_pubkey.len()
         );
-        if status_identity.wallet != node.wallet {
-            warn!(
-                "Nova KMS [{}] registry/status wallet mismatch for node={} registry_wallet={} status_wallet={}",
-                request_id, base_url, node.wallet, status_identity.wallet
-            );
-        }
         let nonce_b64 = self.fetch_nonce(base_url).await?;
         info!(
             "Nova KMS [{}] fetched nonce for node={} nonce_b64_len={}",
@@ -811,6 +838,78 @@ impl NovaKmsProxy {
             preview_json_for_log(&plaintext)
         );
         Ok(plaintext)
+    }
+
+    async fn resolve_node_identity(
+        &self,
+        request_id: &str,
+        node: &KmsNodeCacheEntry,
+    ) -> Result<KmsNodeIdentity> {
+        let now_ms = current_unix_millis();
+        if let Some(cached_identity) = self.cached_node_identity(&node.base_url, now_ms).await {
+            info!(
+                "Nova KMS [{}] node identity cache hit node={} wallet={} tee_pubkey_len={}",
+                request_id,
+                node.base_url,
+                cached_identity.wallet,
+                cached_identity.tee_pubkey.len(),
+            );
+            if cached_identity.wallet != node.wallet {
+                warn!(
+                    "Nova KMS [{}] registry/cached-status wallet mismatch for node={} registry_wallet={} cached_status_wallet={}",
+                    request_id, node.base_url, node.wallet, cached_identity.wallet
+                );
+            }
+            return Ok(cached_identity);
+        }
+
+        let fetched_identity = self.fetch_node_identity(&node.base_url).await?;
+        self.cache_node_identity(&node.base_url, fetched_identity.clone(), now_ms)
+            .await;
+        info!(
+            "Nova KMS [{}] node identity cache updated node={} wallet={} ttl_ms={}",
+            request_id,
+            node.base_url,
+            fetched_identity.wallet,
+            DEFAULT_KMS_NODE_IDENTITY_CACHE_TTL_MS,
+        );
+        if fetched_identity.wallet != node.wallet {
+            warn!(
+                "Nova KMS [{}] registry/status wallet mismatch for node={} registry_wallet={} status_wallet={}",
+                request_id, node.base_url, node.wallet, fetched_identity.wallet
+            );
+        }
+        Ok(fetched_identity)
+    }
+
+    async fn cache_node_identity(&self, base_url: &str, identity: KmsNodeIdentity, now_ms: u64) {
+        let expires_at_ms = now_ms.saturating_add(DEFAULT_KMS_NODE_IDENTITY_CACHE_TTL_MS);
+        let mut guard = self.node_identity_cache.write().await;
+        guard.insert(
+            base_url.to_string(),
+            CachedNodeIdentity {
+                identity,
+                expires_at_ms,
+            },
+        );
+    }
+
+    async fn cached_node_identity(&self, base_url: &str, now_ms: u64) -> Option<KmsNodeIdentity> {
+        let guard = self.node_identity_cache.read().await;
+        if let Some(entry) = guard.get(base_url)
+            && now_ms < entry.expires_at_ms
+        {
+            return Some(entry.identity.clone());
+        }
+        drop(guard);
+        let mut write_guard = self.node_identity_cache.write().await;
+        write_guard.remove(base_url);
+        None
+    }
+
+    async fn invalidate_node_identity_cache(&self, base_url: &str) {
+        let mut guard = self.node_identity_cache.write().await;
+        guard.remove(base_url);
     }
 
     async fn fetch_node_identity(&self, base_url: &str) -> Result<KmsNodeIdentity> {
@@ -1076,7 +1175,7 @@ impl NovaKmsProxy {
         };
 
         let expires_at_ms = current_unix_millis().saturating_add(AUTHZ_CACHE_TTL_MS);
-        let mut guard = self.authz_cache.lock().await;
+        let mut guard = self.authz_cache.write().await;
         *guard = Some(CachedAuthzContext {
             context: context.clone(),
             expires_at_ms,
@@ -1087,13 +1186,15 @@ impl NovaKmsProxy {
 
     async fn cached_authz_context(&self) -> Option<AppAuthzContext> {
         let now_ms = current_unix_millis();
-        let mut guard = self.authz_cache.lock().await;
+        let guard = self.authz_cache.read().await;
         if let Some(cached) = guard.as_ref()
             && now_ms < cached.expires_at_ms
         {
             return Some(cached.context.clone());
         }
-        *guard = None;
+        drop(guard);
+        let mut write_guard = self.authz_cache.write().await;
+        *write_guard = None;
         None
     }
 
@@ -1122,7 +1223,7 @@ impl NovaKmsProxy {
             None => return Ok(()),
         };
         let now_ms = current_unix_millis();
-        let previous_snapshot = { self.discovery_cache.lock().await.clone() };
+        let previous_snapshot = { self.discovery_cache.read().await.clone() };
         let discovered_nodes = self.discover_kms_nodes_from_registry(discovery).await?;
 
         // Build and probe the refreshed list off-lock so existing cache remains fully usable
@@ -1162,7 +1263,7 @@ impl NovaKmsProxy {
 
         let swap_now_ms = current_unix_millis();
         let node_list = {
-            let mut guard = self.discovery_cache.lock().await;
+            let mut guard = self.discovery_cache.write().await;
             let merged_nodes =
                 merge_refresh_with_live_cache(refreshed_nodes, guard.as_ref(), swap_now_ms);
             let node_list = format_node_refresh_list(&merged_nodes, swap_now_ms);
@@ -1187,7 +1288,7 @@ impl NovaKmsProxy {
 
         let now_ms = current_unix_millis();
         {
-            let guard = self.discovery_cache.lock().await;
+            let guard = self.discovery_cache.read().await;
             if let Some(cached) = guard.as_ref()
                 && now_ms < cached.expires_at_ms
                 && !cached.nodes.is_empty()
@@ -1206,7 +1307,7 @@ impl NovaKmsProxy {
         let _refresh_guard = self.discovery_refresh_lock.lock().await;
         let now_ms = current_unix_millis();
         {
-            let guard = self.discovery_cache.lock().await;
+            let guard = self.discovery_cache.read().await;
             if let Some(cached) = guard.as_ref()
                 && now_ms < cached.expires_at_ms
                 && !cached.nodes.is_empty()
@@ -1231,7 +1332,7 @@ impl NovaKmsProxy {
                     discovery.rpc_url,
                     format_node_wallet_urls(&nodes)
                 );
-                let mut guard = self.discovery_cache.lock().await;
+                let mut guard = self.discovery_cache.write().await;
                 let merged_nodes =
                     merge_discovered_nodes_with_previous(nodes.clone(), guard.as_ref(), now_ms);
                 *guard = Some(DiscoveryCacheEntry {
@@ -1350,7 +1451,7 @@ impl NovaKmsProxy {
             DEFAULT_KMS_NODE_UNREACHABLE_CACHE_TTL_MS
         };
         let expires_at_ms = current_unix_millis().saturating_add(ttl_ms);
-        let mut guard = self.discovery_cache.lock().await;
+        let mut guard = self.discovery_cache.write().await;
         if let Some(cached) = guard.as_mut()
             && let Some(node) = cached.nodes.iter_mut().find(|n| n.base_url == base_url)
         {
@@ -1495,17 +1596,29 @@ impl NovaKmsProxy {
             )
             .await?;
         let tuple = extract_single_tuple(output, "getInstanceByWallet")?;
-        if tuple.len() < 10 {
+        if tuple.len() < GET_INSTANCE_BY_WALLET_TUPLE_MIN_LEN {
             bail!(
                 "registry getInstanceByWallet tuple too short: expected >=10, got {}",
                 tuple.len()
             );
         }
         Ok(RegistryInstance {
-            app_id: token_to_u64(&tuple[1], "getInstanceByWallet.appId")?,
-            instance_url: token_to_string(&tuple[4], "getInstanceByWallet.instanceUrl")?,
-            zk_verified: token_to_bool(&tuple[7], "getInstanceByWallet.zkVerified")?,
-            status: token_to_u64(&tuple[8], "getInstanceByWallet.status")?,
+            app_id: token_to_u64(
+                &tuple[GET_INSTANCE_BY_WALLET_APP_ID_IDX],
+                "getInstanceByWallet.appId",
+            )?,
+            instance_url: token_to_string(
+                &tuple[GET_INSTANCE_BY_WALLET_INSTANCE_URL_IDX],
+                "getInstanceByWallet.instanceUrl",
+            )?,
+            zk_verified: token_to_bool(
+                &tuple[GET_INSTANCE_BY_WALLET_ZK_VERIFIED_IDX],
+                "getInstanceByWallet.zkVerified",
+            )?,
+            status: token_to_u64(
+                &tuple[GET_INSTANCE_BY_WALLET_STATUS_IDX],
+                "getInstanceByWallet.status",
+            )?,
         })
     }
 
@@ -1519,15 +1632,15 @@ impl NovaKmsProxy {
             .registry_call(discovery, &function, vec![Token::Uint(U256::from(app_id))])
             .await?;
         let tuple = extract_single_tuple(output, "getApp")?;
-        if tuple.len() < 9 {
+        if tuple.len() < GET_APP_TUPLE_MIN_LEN {
             bail!(
                 "registry getApp tuple too short: expected >=9, got {}",
                 tuple.len()
             );
         }
         Ok(RegistryApp {
-            status: token_to_u64(&tuple[7], "getApp.status")?,
-            app_wallet: token_to_address(&tuple[8], "getApp.appWallet")?,
+            status: token_to_u64(&tuple[GET_APP_STATUS_IDX], "getApp.status")?,
+            app_wallet: token_to_address(&tuple[GET_APP_APP_WALLET_IDX], "getApp.appWallet")?,
         })
     }
 
@@ -1937,15 +2050,17 @@ fn decode_kms_wallet_address(value_b64: &str) -> Result<String> {
 }
 
 fn decode_kms_private_key_hex(value_b64: &str) -> Result<String> {
-    let decoded = general_purpose::STANDARD
-        .decode(value_b64)
-        .map_err(|e| anyhow!("invalid KMS app wallet key encoding: {}", e))?;
+    let decoded = Zeroizing::new(
+        general_purpose::STANDARD
+            .decode(value_b64)
+            .map_err(|e| anyhow!("invalid KMS app wallet key encoding: {}", e))?,
+    );
 
     if decoded.len() == 32 {
-        return Ok(format!("0x{}", hex::encode(decoded)));
+        return Ok(format!("0x{}", hex::encode(decoded.as_slice())));
     }
 
-    let key_text = std::str::from_utf8(&decoded)
+    let key_text = std::str::from_utf8(decoded.as_slice())
         .map_err(|e| anyhow!("invalid KMS app wallet key utf8: {}", e))?;
     let clean = trim_0x(key_text).to_lowercase();
     if clean.len() != 64 {
@@ -1981,11 +2096,12 @@ mod tests {
             audit_log_path: None,
             audit_log_sender: None,
             registry_discovery: None,
-            discovery_cache: Arc::new(Mutex::new(None)),
+            discovery_cache: Arc::new(RwLock::new(None)),
             background_refresh_started: Arc::new(AtomicBool::new(false)),
             discovery_refresh_lock: Arc::new(Mutex::new(())),
-            authz_cache: Arc::new(Mutex::new(None)),
-            app_wallet_cache: Arc::new(Mutex::new(None)),
+            node_identity_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            authz_cache: Arc::new(RwLock::new(None)),
+            app_wallet_cache: Arc::new(RwLock::new(None)),
         };
 
         assert!(proxy.is_reserved_derive_path("wallet/eth/app/main"));
@@ -2062,6 +2178,53 @@ mod tests {
         )
         .into_bytes();
         assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn registry_tuple_indices_match_declared_abi_layout() {
+        let instance_fn = registry_fn_get_instance_by_wallet();
+        let instance_tuple_len = match instance_fn.outputs.as_slice() {
+            [output] => match &output.kind {
+                ethabi::ParamType::Tuple(values) => values.len(),
+                other => panic!(
+                    "getInstanceByWallet output kind mismatch: expected tuple, got {:?}",
+                    other
+                ),
+            },
+            other => panic!(
+                "getInstanceByWallet output shape mismatch: expected 1 output, got {}",
+                other.len()
+            ),
+        };
+        assert_eq!(
+            instance_tuple_len, GET_INSTANCE_BY_WALLET_TUPLE_MIN_LEN,
+            "update tuple constants after registry ABI changes"
+        );
+        assert!(GET_INSTANCE_BY_WALLET_APP_ID_IDX < instance_tuple_len);
+        assert!(GET_INSTANCE_BY_WALLET_INSTANCE_URL_IDX < instance_tuple_len);
+        assert!(GET_INSTANCE_BY_WALLET_ZK_VERIFIED_IDX < instance_tuple_len);
+        assert!(GET_INSTANCE_BY_WALLET_STATUS_IDX < instance_tuple_len);
+
+        let app_fn = registry_fn_get_app();
+        let app_tuple_len = match app_fn.outputs.as_slice() {
+            [output] => match &output.kind {
+                ethabi::ParamType::Tuple(values) => values.len(),
+                other => panic!(
+                    "getApp output kind mismatch: expected tuple, got {:?}",
+                    other
+                ),
+            },
+            other => panic!(
+                "getApp output shape mismatch: expected 1 output, got {}",
+                other.len()
+            ),
+        };
+        assert_eq!(
+            app_tuple_len, GET_APP_TUPLE_MIN_LEN,
+            "update tuple constants after registry ABI changes"
+        );
+        assert!(GET_APP_STATUS_IDX < app_tuple_len);
+        assert!(GET_APP_APP_WALLET_IDX < app_tuple_len);
     }
 
     #[test]
@@ -2347,5 +2510,38 @@ mod tests {
         assert!(formatted.contains("wallet=0xeeee000000000000000000000000000000000005,url=https://kms-5.example.com,reachability=reachable"));
         assert!(formatted.contains("wallet=0xffff000000000000000000000000000000000006,url=https://kms-6.example.com,reachability=unreachable"));
         assert!(formatted.contains("wallet=0x1111000000000000000000000000000000000007,url=https://kms-7.example.com,reachability=unknown"));
+    }
+
+    #[tokio::test]
+    async fn node_identity_cache_hit_then_expire() {
+        let config = KmsIntegration {
+            enabled: true,
+            use_app_wallet: false,
+            kms_app_id: Some(49),
+            nova_app_registry: Some("0x0f68e6e699f2e972998a1ecc000c7ce103e64cc8".to_string()),
+        };
+        let proxy = NovaKmsProxy::new(&config, "http://127.0.0.1:18000".to_string())
+            .expect("proxy should build");
+        let base_url = "https://kms-cache.example.com";
+        let identity = KmsNodeIdentity {
+            wallet: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            tee_pubkey: "abcd".to_string(),
+        };
+
+        proxy
+            .cache_node_identity(base_url, identity.clone(), 1_000)
+            .await;
+        let fresh = proxy
+            .cached_node_identity(base_url, 1_000 + DEFAULT_KMS_NODE_IDENTITY_CACHE_TTL_MS - 1)
+            .await;
+        assert!(fresh.is_some());
+        assert_eq!(fresh.unwrap().wallet, identity.wallet);
+
+        let expired = proxy
+            .cached_node_identity(base_url, 1_000 + DEFAULT_KMS_NODE_IDENTITY_CACHE_TTL_MS + 1)
+            .await;
+        assert!(expired.is_none());
+        let guard = proxy.node_identity_cache.read().await;
+        assert!(!guard.contains_key(base_url));
     }
 }
