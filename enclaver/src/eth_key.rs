@@ -3,8 +3,10 @@ use hex;
 use k256::ecdsa::{RecoveryId, Signature, SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
 use sha3::{Digest, Keccak256};
+use zeroize::Zeroizing;
 
 pub struct EthKey {
+    // k256::ecdsa::SigningKey zeroizes on drop via ZeroizeOnDrop.
     signing_key: SigningKey,
     verify_key: VerifyingKey,
 }
@@ -50,9 +52,13 @@ impl EthKey {
         })
     }
 
-    /// private key hex
-    pub fn private_key_hex(&self) -> String {
-        format!("0x{}", hex::encode(self.signing_key.to_bytes()))
+    pub(crate) fn private_key_hex_zeroizing(&self) -> Zeroizing<String> {
+        Zeroizing::new(format!("0x{}", hex::encode(self.signing_key.to_bytes())))
+    }
+
+    #[cfg(test)]
+    fn private_key_hex_for_test(&self) -> String {
+        self.private_key_hex_zeroizing().to_string()
     }
 
     /// uncompressed public key
@@ -66,14 +72,14 @@ impl EthKey {
     /// Ethereum address
     pub fn address(&self) -> String {
         let pub_bytes = self.verify_key.to_encoded_point(false);
-        let hash = Self::keccak256(&pub_bytes.as_bytes()[1..]);
+        let hash = crate::crypto::keccak256(&pub_bytes.as_bytes()[1..]);
         format!("0x{}", hex::encode(&hash[12..]))
     }
 
     /// Ethereum address as raw 20 bytes (for attestation user_data)
     pub fn address_bytes(&self) -> Vec<u8> {
         let pub_bytes = self.verify_key.to_encoded_point(false);
-        let hash = Self::keccak256(&pub_bytes.as_bytes()[1..]);
+        let hash = crate::crypto::keccak256(&pub_bytes.as_bytes()[1..]);
         hash[12..].to_vec()
     }
 
@@ -146,16 +152,6 @@ impl EthKey {
         Ok(spki)
     }
 
-    /// Keccak256 hash
-    fn keccak256(data: &[u8]) -> [u8; 32] {
-        let mut hasher = Keccak256::new();
-        hasher.update(data);
-        let result = hasher.finalize();
-        let mut hash = [0u8; 32];
-        hash.copy_from_slice(&result);
-        hash
-    }
-
     pub fn sign_message(&self, message: &[u8]) -> [u8; 65] {
         let digest = Keccak256::new_with_prefix(message);
         let (sig, recid) = self
@@ -191,7 +187,7 @@ impl EthKey {
             Err(_) => return false,
         };
         let pub_bytes = verifying_key.to_encoded_point(false);
-        let hash = Self::keccak256(&pub_bytes.as_bytes()[1..]);
+        let hash = crate::crypto::keccak256(&pub_bytes.as_bytes()[1..]);
         format!("0x{}", hex::encode(&hash[12..])) == address.to_lowercase()
     }
 }
@@ -203,11 +199,11 @@ mod tests {
     #[test]
     fn test_generate_and_address() {
         let key = EthKey::new();
-        println!("Private Key: {}", key.private_key_hex());
+        println!("Private Key: {}", key.private_key_hex_for_test());
         println!("Public Key: {}", key.public_key_hex());
         println!("Address: {}", key.address());
 
-        assert_eq!(key.private_key_hex().len(), 66);
+        assert_eq!(key.private_key_hex_for_test().len(), 66);
         assert_eq!(key.public_key_hex().len(), 132);
         assert_eq!(key.address().len(), 42);
     }
@@ -215,13 +211,13 @@ mod tests {
     #[test]
     fn test_from_and_address() {
         let pk = "0x2151833c4e545b28d64d87ed80dcc735a14d70f537e8885b227a5dbe7994da26";
-        let key = EthKey::new_from_bytes(&pk).unwrap();
-        println!("Private Key: {}", key.private_key_hex());
+        let key = EthKey::new_from_bytes(pk).unwrap();
+        println!("Private Key: {}", key.private_key_hex_for_test());
         println!("Public Key: {}", key.public_key_hex());
         println!("Address: {}", key.address());
 
         assert_eq!(
-            key.private_key_hex(),
+            key.private_key_hex_for_test(),
             "0x2151833c4e545b28d64d87ed80dcc735a14d70f537e8885b227a5dbe7994da26"
         );
         assert_eq!(
@@ -235,7 +231,7 @@ mod tests {
     fn test_sign_verify() {
         let message = "Hello, Ethereum!";
         let pk = "0x2151833c4e545b28d64d87ed80dcc735a14d70f537e8885b227a5dbe7994da26";
-        let key = EthKey::new_from_bytes(&pk).unwrap();
+        let key = EthKey::new_from_bytes(pk).unwrap();
 
         let sig = key.sign_message(message.as_bytes());
         let sig_hex = format!("0x{}", hex::encode(sig));

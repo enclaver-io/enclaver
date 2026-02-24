@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,7 +45,7 @@ const DEFAULT_KMS_NODE_IDENTITY_CACHE_TTL_MS: u64 = 30_000;
 const DEFAULT_KMS_BACKGROUND_REFRESH_INTERVAL_MS: u64 = 20_000;
 const DEFAULT_KMS_REQUIRE_MUTUAL_SIGNATURE: bool = true;
 const DEFAULT_KMS_RESERVED_DERIVE_PREFIXES: [&str; 1] = ["wallet/eth/app/"];
-const DEFAULT_KMS_AUDIT_LOG_PATH: &str = "/tmp/odyn_kms_audit.log";
+const DEFAULT_KMS_AUDIT_LOG_PATH: &str = "/var/log/odyn/odyn_kms_audit.log";
 const KMS_DEBUG_LOG_MAX_LEN: usize = 1024;
 const GET_INSTANCE_BY_WALLET_TUPLE_MIN_LEN: usize = 10;
 const GET_INSTANCE_BY_WALLET_APP_ID_IDX: usize = 1;
@@ -272,6 +273,43 @@ struct JsonRpcError {
 }
 
 impl NovaKmsProxy {
+    fn initialize_audit_log_path() -> Option<PathBuf> {
+        let path = PathBuf::from(DEFAULT_KMS_AUDIT_LOG_PATH);
+        match Self::ensure_audit_log_permissions(&path) {
+            Ok(()) => Some(path),
+            Err(err) => {
+                warn!(
+                    "Nova KMS audit log disabled: failed to initialize {}: {}",
+                    DEFAULT_KMS_AUDIT_LOG_PATH, err
+                );
+                None
+            }
+        }
+    }
+
+    fn ensure_audit_log_permissions(path: &PathBuf) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+            }
+        }
+
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        }
+
+        Ok(())
+    }
+
     pub fn new(config: &KmsIntegration, odyn_endpoint: String) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_millis(DEFAULT_KMS_REQUEST_TIMEOUT_MS))
@@ -283,7 +321,7 @@ impl NovaKmsProxy {
             .collect::<Vec<_>>();
 
         let registry_discovery = Self::build_registry_discovery(config)?;
-        let audit_log_path = Some(PathBuf::from(DEFAULT_KMS_AUDIT_LOG_PATH));
+        let audit_log_path = Self::initialize_audit_log_path();
         let audit_log_sender = Self::spawn_audit_log_writer(audit_log_path.clone());
 
         Ok(Self {
@@ -355,12 +393,13 @@ impl NovaKmsProxy {
         };
         handle.spawn(async move {
             while let Some(line) = receiver.recv().await {
-                if let Ok(mut file) = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)
-                    .await
+                let mut options = OpenOptions::new();
+                options.create(true).append(true);
+                #[cfg(unix)]
                 {
+                    options.mode(0o600);
+                }
+                if let Ok(mut file) = options.open(&path).await {
                     let _ = file.write_all(line.as_bytes()).await;
                 }
             }

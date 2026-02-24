@@ -28,14 +28,20 @@ impl EncryptionKey {
 
     /// Generate P-384 key pair from entropy (for NSM RNG)
     pub fn from_entropy(entropy: &[u8]) -> Result<Self> {
+        if entropy.len() < 32 {
+            return Err(anyhow!(
+                "Entropy must be at least 32 bytes, got {}",
+                entropy.len()
+            ));
+        }
+
         // Use entropy to seed the RNG for key generation
         use rand::SeedableRng;
         use rand_chacha::ChaCha20Rng;
 
         // Take first 32 bytes as seed
         let mut seed = [0u8; 32];
-        let len = entropy.len().min(32);
-        seed[..len].copy_from_slice(&entropy[..len]);
+        seed.copy_from_slice(&entropy[..32]);
 
         let mut rng = ChaCha20Rng::from_seed(seed);
         let secret_key = SecretKey::random(&mut rng);
@@ -153,10 +159,11 @@ impl EncryptionKey {
     ///
     /// Args:
     ///   peer_public_key_der: Peer's public key in DER (SPKI) format
+    ///   nonce: 12-byte AES-GCM nonce
     ///
     /// Returns:
     ///   32-byte AES key
-    fn derive_shared_key(&self, peer_public_key_der: &[u8]) -> Result<[u8; 32]> {
+    fn derive_shared_key(&self, peer_public_key_der: &[u8], nonce: &[u8]) -> Result<[u8; 32]> {
         // Parse DER-encoded SPKI to get the public key
         let peer_public_key = parse_der_public_key(peer_public_key_der)?;
 
@@ -166,10 +173,26 @@ impl EncryptionKey {
             peer_public_key.as_affine(),
         );
 
-        // Derive AES key using HKDF-SHA256
-        let hkdf = Hkdf::<Sha256>::new(None, shared_secret.raw_secret_bytes());
+        // Bind key derivation to both public keys and nonce.
+        // Sort public keys to keep the context stable on both sides.
+        let self_pub = self.public_key_bytes();
+        let peer_pub = peer_public_key.to_encoded_point(false);
+        let peer_pub_bytes = peer_pub.as_bytes();
+        let (first_pub, second_pub) = if self_pub.as_slice() <= peer_pub_bytes {
+            (self_pub.as_slice(), peer_pub_bytes)
+        } else {
+            (peer_pub_bytes, self_pub.as_slice())
+        };
+
+        let mut salt_material =
+            Vec::with_capacity(first_pub.len() + second_pub.len() + nonce.len());
+        salt_material.extend_from_slice(first_pub);
+        salt_material.extend_from_slice(second_pub);
+        salt_material.extend_from_slice(nonce);
+
+        let hkdf = Hkdf::<Sha256>::new(Some(&salt_material), shared_secret.raw_secret_bytes());
         let mut aes_key = [0u8; 32];
-        hkdf.expand(b"encryption data", &mut aes_key)
+        hkdf.expand(b"enclaver-ecdh-aes256gcm-v1", &mut aes_key)
             .map_err(|_| anyhow!("HKDF expand failed"))?;
 
         Ok(aes_key)
@@ -201,10 +224,10 @@ impl EncryptionKey {
         client_public_key_der: &[u8],
         encrypted_data: &[u8],
     ) -> Result<Vec<u8>> {
-        // Derive shared key
-        let aes_key = self.derive_shared_key(client_public_key_der)?;
-
         Self::validate_nonce(nonce)?;
+
+        // Derive shared key
+        let aes_key = self.derive_shared_key(client_public_key_der, nonce)?;
 
         // Decrypt using AES-256-GCM
         let cipher = Aes256Gcm::new_from_slice(&aes_key)
@@ -233,10 +256,10 @@ impl EncryptionKey {
         client_public_key_der: &[u8],
         nonce: &[u8],
     ) -> Result<Vec<u8>> {
-        // Derive shared key
-        let aes_key = self.derive_shared_key(client_public_key_der)?;
-
         Self::validate_nonce(nonce)?;
+
+        // Derive shared key
+        let aes_key = self.derive_shared_key(client_public_key_der, nonce)?;
 
         // Encrypt using AES-256-GCM
         let cipher = Aes256Gcm::new_from_slice(&aes_key)
@@ -406,11 +429,12 @@ mod tests {
 
     #[test]
     fn test_from_entropy_short_input() {
-        // Should work with less than 32 bytes (zero-padded)
+        // Short entropy must be rejected
         let short_entropy = [0xab, 0xcd, 0xef];
-        let key = EncryptionKey::from_entropy(&short_entropy).unwrap();
-
-        assert_eq!(key.public_key_bytes().len(), 97);
+        let result = EncryptionKey::from_entropy(&short_entropy);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("at least 32 bytes"));
     }
 
     #[test]
@@ -429,11 +453,12 @@ mod tests {
 
     #[test]
     fn test_from_entropy_empty_input() {
-        // Empty entropy should work (all zeros seed)
+        // Empty entropy must be rejected
         let empty_entropy: [u8; 0] = [];
-        let key = EncryptionKey::from_entropy(&empty_entropy).unwrap();
-
-        assert_eq!(key.public_key_bytes().len(), 97);
+        let result = EncryptionKey::from_entropy(&empty_entropy);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("at least 32 bytes"));
     }
 
     // ==================== DER Encoding Tests ====================
@@ -966,6 +991,28 @@ mod tests {
 
             assert_eq!(decrypted, plaintext.as_bytes());
         }
+    }
+
+    #[test]
+    fn test_same_nonce_different_peer_keys_produce_different_ciphertext() {
+        let sender = EncryptionKey::new();
+        let receiver_a = EncryptionKey::new();
+        let receiver_b = EncryptionKey::new();
+
+        let receiver_a_pub_der = receiver_a.public_key_as_der().unwrap();
+        let receiver_b_pub_der = receiver_b.public_key_as_der().unwrap();
+
+        let nonce = [0x42u8; 12];
+        let plaintext = b"same nonce and plaintext";
+
+        let ciphertext_a = sender
+            .encrypt(plaintext, &receiver_a_pub_der, &nonce)
+            .unwrap();
+        let ciphertext_b = sender
+            .encrypt(plaintext, &receiver_b_pub_der, &nonce)
+            .unwrap();
+
+        assert_ne!(ciphertext_a, ciphertext_b);
     }
 
     #[test]

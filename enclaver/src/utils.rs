@@ -13,10 +13,8 @@ const LOG_LINE_MAX_LEN: usize = 4 * 1024;
 #[macro_export]
 macro_rules! spawn {
     ($name:expr, $body:expr) => {{
-        tokio::task::Builder::new()
-            .name($name)
-            .spawn($body)
-            .map_err(anyhow::Error::from)
+        let _ = $name;
+        Result::<_, anyhow::Error>::Ok(tokio::task::spawn($body))
     }};
 }
 

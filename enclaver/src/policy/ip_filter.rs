@@ -49,7 +49,6 @@ impl IpFilter {
 
 #[cfg(test)]
 mod tests {
-    use assert2::assert;
     use std::net::IpAddr;
 
     use super::{IpFilter, Pattern};
