@@ -12,6 +12,7 @@ use ethabi::{Function, Token};
 use form_urlencoded::byte_serialize;
 use http_body_util::Full;
 use hyper::Response;
+use hyper::StatusCode;
 use hyper::body::Bytes;
 use hyper::header::CONTENT_TYPE;
 use log::{info, warn};
@@ -46,6 +47,8 @@ const DEFAULT_KMS_BACKGROUND_REFRESH_INTERVAL_MS: u64 = 20_000;
 const DEFAULT_KMS_REQUIRE_MUTUAL_SIGNATURE: bool = true;
 const DEFAULT_KMS_RESERVED_DERIVE_PREFIXES: [&str; 1] = ["wallet/eth/app/"];
 const DEFAULT_KMS_AUDIT_LOG_PATH: &str = "/var/log/odyn/odyn_kms_audit.log";
+const DEFAULT_REGISTRY_ETH_CALL_MAX_ATTEMPTS: usize = 3;
+const DEFAULT_REGISTRY_ETH_CALL_RETRY_BACKOFF_MS: u64 = 200;
 const KMS_DEBUG_LOG_MAX_LEN: usize = 1024;
 const GET_INSTANCE_BY_WALLET_TUPLE_MIN_LEN: usize = 10;
 const GET_INSTANCE_BY_WALLET_APP_ID_IDX: usize = 1;
@@ -549,8 +552,9 @@ impl NovaKmsProxy {
         };
 
         if let Err(err) = self.ensure_kms_access_authorized().await {
-            warn!("Nova KMS authz failed for /v1/kms/derive: {}", err);
-            return Ok(http_util::bad_request(err.to_string()));
+            let message = err.to_string();
+            warn!("Nova KMS authz failed for /v1/kms/derive: {}", message);
+            return Ok(authz_error_response(message));
         }
         info!("Nova KMS authz passed for /v1/kms/derive");
 
@@ -577,8 +581,9 @@ impl NovaKmsProxy {
         };
 
         if let Err(err) = self.ensure_kms_access_authorized().await {
-            warn!("Nova KMS authz failed for /v1/kms/kv/get: {}", err);
-            return Ok(http_util::bad_request(err.to_string()));
+            let message = err.to_string();
+            warn!("Nova KMS authz failed for /v1/kms/kv/get: {}", message);
+            return Ok(authz_error_response(message));
         }
         info!("Nova KMS authz passed for /v1/kms/kv/get");
 
@@ -598,8 +603,9 @@ impl NovaKmsProxy {
         };
 
         if let Err(err) = self.ensure_kms_access_authorized().await {
-            warn!("Nova KMS authz failed for /v1/kms/kv/put: {}", err);
-            return Ok(http_util::bad_request(err.to_string()));
+            let message = err.to_string();
+            warn!("Nova KMS authz failed for /v1/kms/kv/put: {}", message);
+            return Ok(authz_error_response(message));
         }
         info!("Nova KMS authz passed for /v1/kms/kv/put");
 
@@ -616,8 +622,9 @@ impl NovaKmsProxy {
         };
 
         if let Err(err) = self.ensure_kms_access_authorized().await {
-            warn!("Nova KMS authz failed for /v1/kms/kv/delete: {}", err);
-            return Ok(http_util::bad_request(err.to_string()));
+            let message = err.to_string();
+            warn!("Nova KMS authz failed for /v1/kms/kv/delete: {}", message);
+            return Ok(authz_error_response(message));
         }
         info!("Nova KMS authz passed for /v1/kms/kv/delete");
 
@@ -1713,25 +1720,59 @@ impl NovaKmsProxy {
                 "latest"
             ]),
         };
-        let response: JsonRpcResponse = self
-            .client
-            .post(&discovery.rpc_url)
-            .header(CONTENT_TYPE, "application/json")
-            .json(&payload)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let mut last_error: Option<anyhow::Error> = None;
 
-        if let Some(err) = response.error {
-            bail!("registry eth_call failed: {} ({})", err.message, err.code);
+        for attempt in 0..DEFAULT_REGISTRY_ETH_CALL_MAX_ATTEMPTS {
+            let result = async {
+                let response: JsonRpcResponse = self
+                    .client
+                    .post(&discovery.rpc_url)
+                    .header(CONTENT_TYPE, "application/json")
+                    .json(&payload)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json()
+                    .await?;
+
+                if let Some(err) = response.error {
+                    bail!("registry eth_call failed: {} ({})", err.message, err.code);
+                }
+                let result_hex = response
+                    .result
+                    .ok_or_else(|| anyhow!("registry eth_call missing result"))?;
+                hex::decode(trim_0x(&result_hex))
+                    .map_err(|e| anyhow!("registry eth_call invalid hex result: {}", e))
+            }
+            .await;
+
+            match result {
+                Ok(bytes) => return Ok(bytes),
+                Err(err) => {
+                    let err_text = err.to_string();
+                    last_error = Some(err);
+
+                    let can_retry = attempt + 1 < DEFAULT_REGISTRY_ETH_CALL_MAX_ATTEMPTS
+                        && looks_like_transient_registry_error(&err_text);
+                    if can_retry {
+                        warn!(
+                            "Nova KMS transient registry eth_call failure (attempt {}/{}): {}",
+                            attempt + 1,
+                            DEFAULT_REGISTRY_ETH_CALL_MAX_ATTEMPTS,
+                            err_text
+                        );
+                        tokio::time::sleep(Duration::from_millis(
+                            DEFAULT_REGISTRY_ETH_CALL_RETRY_BACKOFF_MS,
+                        ))
+                        .await;
+                        continue;
+                    }
+                    return Err(anyhow!(err_text));
+                }
+            }
         }
-        let result_hex = response
-            .result
-            .ok_or_else(|| anyhow!("registry eth_call missing result"))?;
-        hex::decode(trim_0x(&result_hex))
-            .map_err(|e| anyhow!("registry eth_call invalid hex result: {}", e))
+
+        Err(last_error.unwrap_or_else(|| anyhow!("registry eth_call failed with unknown error")))
     }
 }
 
@@ -2054,6 +2095,21 @@ fn looks_like_connectivity_error(message: &str) -> bool {
         "network is unreachable",
     ];
     markers.iter().any(|marker| lowered.contains(marker))
+}
+
+fn looks_like_transient_registry_error(message: &str) -> bool {
+    let lowered = message.to_ascii_lowercase();
+    looks_like_connectivity_error(message) || lowered.contains("out of sync")
+}
+
+fn authz_error_response(message: String) -> Response<Full<Bytes>> {
+    if looks_like_transient_registry_error(&message) {
+        return Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .body(Full::new(Bytes::from(message)))
+            .unwrap();
+    }
+    http_util::bad_request(message)
 }
 
 fn canonical_wallet(wallet: &str) -> Result<String> {

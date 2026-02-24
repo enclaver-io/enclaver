@@ -3,6 +3,7 @@ use hex;
 use k256::ecdsa::{RecoveryId, Signature, SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
 use sha3::{Digest, Keccak256};
+#[cfg(any(feature = "odyn", test))]
 use zeroize::Zeroizing;
 
 pub struct EthKey {
@@ -52,6 +53,7 @@ impl EthKey {
         })
     }
 
+    #[cfg(any(feature = "odyn", test))]
     pub(crate) fn private_key_hex_zeroizing(&self) -> Zeroizing<String> {
         Zeroizing::new(format!("0x{}", hex::encode(self.signing_key.to_bytes())))
     }
