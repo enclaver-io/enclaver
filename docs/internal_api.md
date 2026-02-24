@@ -194,7 +194,7 @@ Decrypt data sent from a client using ECDH + AES-256-GCM.
 - **Request Body:**
   ```json
   {
-    "nonce": "0x...",          // Hex-encoded nonce (at least 12 bytes)
+    "nonce": "0x...",          // Hex-encoded nonce (exactly 12 bytes)
     "client_public_key": "0x...", // Hex-encoded DER public key
     "encrypted_data": "0x..."  // Hex-encoded ciphertext with auth tag
   }
@@ -229,17 +229,19 @@ Encrypt data to send to a client using ECDH + AES-256-GCM.
   - **Body:**
     ```json
     {
-      "encrypted_data": "...",     // Hex-encoded ciphertext
-      "enclave_public_key": "...", // Hex-encoded DER public key
-      "nonce": "..."               // Hex-encoded nonce
+      "encrypted_data": "a1b2c3...",     // Hex-encoded ciphertext (no 0x prefix)
+      "enclave_public_key": "3076...", // Hex-encoded DER public key (no 0x prefix)
+      "nonce": "d4e5f6..."               // Hex-encoded nonce (no 0x prefix)
     }
     ```
+
+  > **Note**: Unlike other endpoints that use `0x` prefixes, the encrypt response returns raw hex strings without the `0x` prefix.
 
 ## KMS Integration API Endpoints (Primary API only)
 
 These endpoints are available only when `kms_integration.enabled=true` in `enclaver.yaml`.
-When KMS integration is enabled, the manifest must also enable `helios_rpc` and include
-one chain with `local_rpc_port: 18545` for registry discovery.
+`/v1/kms/*` requires registry mode (`kms_app_id` + `nova_app_registry`), which also requires
+`helios_rpc.enabled=true` and one chain with `local_rpc_port: 18545` for registry discovery.
 If KMS integration is not configured, they return `400 Bad Request` with plain-text body:
 `KMS integration not configured`.
 
@@ -341,6 +343,17 @@ Delete a value from KMS-backed key/value storage.
 ## App Wallet API Endpoints (Primary API only)
 
 These endpoints are also gated by `kms_integration.enabled=true`.
+They are local-use endpoints for enclave apps.
+Instances mapped to the same KMS app namespace share the same app-wallet.
+Typical app-wallet setup for local mode:
+- `kms_integration.enabled=true`
+- `kms_integration.use_app_wallet=true`
+- `kms_app_id`/`nova_app_registry` can be omitted when only app-wallet APIs are used.
+
+Initialization behavior:
+- If Nova KMS is unavailable, app-wallet endpoints return unavailable errors.
+- If both app-wallet KV records exist (private key + address), app-wallet is available.
+- If both records are missing, Enclaver generates local app-wallet material, writes it to KMS, then re-reads and requires it to match before marking app-wallet available.
 
 ### Get App Wallet Address
 
@@ -350,10 +363,11 @@ These endpoints are also gated by `kms_integration.enabled=true`.
   ```json
   {
     "address": "0x...",
-    "app_id": 1001,
+    "app_id": 0,
     "instance_wallet": "0x..."
   }
   ```
+  `app_id` is currently fixed to `0` for enclave-local app-wallet mode.
 
 ### Sign Message with App Wallet
 
@@ -372,7 +386,7 @@ Signs a plain-text message using EIP-191 personal-sign prefix.
   {
     "signature": "0x...",
     "address": "0x...",
-    "app_id": 1001
+    "app_id": 0
   }
   ```
 
@@ -381,6 +395,7 @@ Signs a plain-text message using EIP-191 personal-sign prefix.
 - **URL:** `/v1/app-wallet/sign-tx`
 - **Method:** `POST`
 - **Request Body:** Same schema as `/v1/eth/sign-tx`.
+  > **Note**: The `include_attestation` field is accepted but silently ignored — app wallet sign-tx never produces attestation documents.
 - **Success Response:**
   ```json
   {
@@ -388,7 +403,7 @@ Signs a plain-text message using EIP-191 personal-sign prefix.
     "transaction_hash": "0x...",
     "signature": "0x...",
     "address": "0x...",
-    "app_id": 1001
+    "app_id": 0
   }
   ```
 
@@ -407,14 +422,15 @@ The Auxiliary API exposes a **subset** of the Primary API endpoints with the fol
 - **URL:** `/v1/attestation`
 - **Method:** `POST`
 - **Restrictions:**
-  - The `public_key` and `user_data` fields in the request body are **ignored and removed** before forwarding to the Primary API.
-  - Only the `nonce` field is preserved.
-  - This ensures that the attestation always uses the enclave's default public key and user data (which typically includes the enclave's Ethereum address).
+  - The `public_key` field in the request body is **removed** before forwarding to the Primary API, ensuring the attestation always uses the enclave's default P-384 encryption public key.
+  - The `user_data` field is **preserved and forwarded** to the Primary API, where `eth_addr` (and optionally `app_wallet`) are automatically injected into it.
+  - The `nonce` field is preserved.
 
 - **Request Body:**
   ```json
   {
-    "nonce": "base64_encoded_nonce" // Optional
+    "nonce": "base64_encoded_nonce", // Optional
+    "user_data": { "custom": "data" } // Optional, forwarded to Primary API
   }
   ```
 
@@ -470,7 +486,8 @@ Retrieve a base64-encoded object from S3.
   - **Body:**
     ```json
     {
-      "value": "base64_encoded_data"
+      "value": "base64_encoded_data",
+      "content_type": "text/plain"  // Optional, present if set during upload
     }
     ```
 - **Example:**

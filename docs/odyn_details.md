@@ -34,6 +34,7 @@ egress:
 
 kms_integration:
   enabled: true
+  use_app_wallet: true
   kms_app_id: 1001
   nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64cc8"
 
@@ -50,7 +51,6 @@ sources:
 
 Notes:
 - If you enable `kms_integration` and/or S3, ensure the egress allow list includes IMDS (`169.254.169.254`) and required upstream endpoints.
-- TLS ingress entries are supported; PEM files are read from `config_dir/tls/server/<port>/{cert.pem,key.pem}`.
 
 ---
 
@@ -121,7 +121,7 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
   - Start services in order: Egress (if enabled) → API (includes optional Nova KMS integration and S3 setup) → Console/AppLog/Status → Ingress → Launch the entrypoint. Monitor the sentinel and on exit stop services in reverse order.
 
 - Common errors
-  - Failures in manifest loading, missing TLS files, or inability to reach NSM are treated as fatal startup errors.
+  - Failures in manifest loading or inability to reach NSM are treated as fatal startup errors.
 
 - Extensions
   - Add health endpoints, metrics initialization (Prometheus), or pluggable lifecycle hooks.
@@ -132,20 +132,19 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
 
 - Responsibilities
   - Read the manifest from `--config-dir`, validate semantics, and build a `Configuration` object for runtime use.
-  - Construct `ListenerConfig`s for ingress entries and load server TLS certs when requested.
+  - Collect ingress listener ports from manifest entries.
 
 - Key data structures
-  - `Configuration { config_dir: PathBuf, manifest: Manifest, listener_configs: HashMap<u16, ListenerConfig> }`.
-  - `ListenerConfig` — variants for TCP and TLS (e.g., `Tcp(SocketAddr)` or `Tls(Arc<rustls::ServerConfig>)`).
+  - `Configuration { config_dir: PathBuf, manifest: Manifest, listener_ports: Vec<u16> }`.
 
 - External deps
-  - rustls, http types, std::fs for reading PEMs, and the project's manifest parsing code.
+  - http types and the project's manifest parsing code.
 
 - Lifecycle
-  - `Configuration::load()` validates each manifest section, loads TLS material from `config_dir/tls/server/<port>`, and exposes helper getters (`api_port()`, `egress_proxy_uri()`, etc.).
+  - `Configuration::load()` validates each manifest section and exposes helper getters (`api_port()`, `egress_proxy_uri()`, `aux_api_port()`, etc.).
 
 - Common errors
-  - Missing PEM files, malformed URIs in egress endpoints, or an empty `egress.allow` when integrations need outbound access.
+  - Malformed URIs in egress endpoints, or an empty `egress.allow` when integrations need outbound access.
 
 - Extensions
   - Support alternate config sources (environment variables, remote config service) or richer validation rules.
@@ -173,8 +172,10 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
 - Lifecycle
   - `start()` binds the API listen port and spawns the server task.
   - If `kms_integration` is configured, `start()` constructs `NovaKmsProxy`.
-  - Manifest validation enforces: when `kms_integration.enabled=true`, `helios_rpc.enabled=true`
-    and `helios_rpc.chains` must include `local_rpc_port=18545` for registry discovery.
+  - Manifest validation enforces: if registry mode is configured (`kms_app_id` + `nova_app_registry`),
+    then `helios_rpc.enabled=true` and `helios_rpc.chains` must include
+    `local_rpc_port=18545` for registry discovery.
+  - `/v1/kms/*` keeps registry-backed authz; app-wallet routes run in enclave-local mode and are initialized from Nova KMS KV state.
   - If `storage.s3` is configured, `start()` constructs `S3Proxy` and loads AWS config through IMDS via egress proxy.
   - If `storage.s3.encryption.mode=kms`, `start()` requires `kms_integration.enabled=true`; otherwise startup fails.
   - If KMS integration + S3 KMS encryption are both enabled, `start()` spawns a background archive loop that rotates internal KMS audit `*.jsonl` files into S3 (`kms-audit/...`).
@@ -186,7 +187,7 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
   - `storage.s3.encryption.mode=kms` without KMS integration enabled.
 
 - Extensions
-  - Add auth middleware (mTLS, JWT), role-based access, or metrics.
+  - Add auth middleware (JWT), role-based access, or metrics.
 
 ---
 
@@ -255,22 +256,22 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
 ### 4.6 `ingress.rs`
 
 - Responsibilities
-  - Bind TCP or TLS listeners configured in the manifest and spawn `EnclaveProxy` workers to accept and proxy inbound connections.
+  - Bind TCP listeners configured in the manifest and spawn `EnclaveProxy` workers to accept and proxy inbound connections.
 
 - Key data structures
   - `IngressService { proxies: Vec<JoinHandle<()>>, shutdown: watch::Sender<()> }` that manages per-listener serve tasks.
 
 - External deps
-  - The `enclaver::proxy::ingress::EnclaveProxy` implementation, tokio networking, rustls for TLS.
+  - The `enclaver::proxy::ingress::EnclaveProxy` implementation and tokio networking.
 
 - Lifecycle
-  - On `start()`, iterate listener configs, bind sockets (or TLS binds) and spawn accept/serve loops that hand accepted sockets to `EnclaveProxy` workers. `stop()` signals shutdown and awaits worker completion.
+  - On `start()`, iterate listener ports, bind TCP sockets and spawn accept/serve loops that hand accepted sockets to `EnclaveProxy` workers. `stop()` signals shutdown and awaits worker completion.
 
 - Common errors
-  - Port bind failures (in use or permission), TLS misconfigs (bad PEMs).
+  - Port bind failures (in use or permission).
 
 - Extensions
-  - HTTP-aware reverse-proxying, mTLS authentication, rate limits, or protocol routing.
+  - HTTP-aware reverse-proxying, rate limits, or protocol routing.
 
 ---
 
@@ -361,7 +362,6 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
 
 - Global env vars (`http_proxy`, `https_proxy`, `no_proxy`) are process-global and can race if changed at runtime. Start egress early and set them once.
 - The `ByteLog` ring buffer is a fixed size; heavy logging drops old content.
-- TLS files must be present in the expected config dir location or TLS listeners will fail to bind.
 - Nova KMS and S3 integrations require correct outbound egress policy; include IMDS and required upstream domains/IPs.
 - Running dup2 for stdout/stderr is process-global; do this deterministically at startup.
 
@@ -371,7 +371,7 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
 
 - No logs on host: confirm `APP_LOG_PORT` bound and that dup2/stdout redirection occurred.
 - KMS errors: verify `kms_integration` fields, Helios registry chain config, and egress allow rules.
-- TLS/Ingress failures: validate PEM files and file permissions.
+- Ingress failures: verify port availability and permissions.
 - Cross-compilation/build issues: use the repository scripts and `cross` as required by the build scripts.
 
 ---

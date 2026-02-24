@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose};
-use zeroize::Zeroize;
+use log::warn;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::eth_key::EthKey;
 
@@ -16,9 +17,25 @@ impl NovaKmsProxy {
             bail!("app wallet integration is disabled");
         }
 
-        let authz = self.resolve_authz_context().await?;
-        self.resolve_app_wallet_material().await?;
-        Ok(authz)
+        let material = self.resolve_app_wallet_material().await?;
+        let instance_wallet = match self.local_eth_address().await {
+            Ok(wallet) => wallet,
+            Err(local_err) => {
+                warn!(
+                    "Failed to resolve local instance wallet for app wallet context; using app wallet address: {}",
+                    local_err
+                );
+                material.address.clone()
+            }
+        };
+
+        Ok(AppAuthzContext {
+            // App-wallet APIs currently run in enclave-local mode and do not depend on
+            // registry-based app/instance authorization.
+            app_id: 0,
+            app_wallet: material.address.clone(),
+            instance_wallet,
+        })
     }
 
     pub async fn app_wallet_key(&self) -> Result<EthKey> {
@@ -44,43 +61,59 @@ impl NovaKmsProxy {
             return Ok(cached);
         }
 
-        // App-wallet material is only available after KMS auth succeeds.
-        self.ensure_kms_access_authorized().await?;
-
         let mut private_key_b64 = self.kv_get(APP_WALLET_KV_PRIVATE_KEY).await?;
         let mut address_b64 = self.kv_get(APP_WALLET_KV_ADDRESS).await?;
 
         if private_key_b64.is_none() && address_b64.is_none() {
             let generated = EthKey::new();
-            let mut generated_private_key_hex = generated.private_key_hex();
+            let generated_private_key_hex = Zeroizing::new(generated.private_key_hex());
             let generated_address = canonical_wallet(&generated.address())?;
-            self.write_app_wallet_record(&generated_private_key_hex, &generated_address)
+            self.write_app_wallet_record(generated_private_key_hex.as_str(), &generated_address)
                 .await?;
-            generated_private_key_hex.zeroize();
 
-            // Re-read to tolerate concurrent writers and guarantee we return
-            // exactly what KMS persisted.
+            // Re-read and require the persisted value to match the locally initialized
+            // wallet material before exposing app-wallet APIs.
             private_key_b64 = self.kv_get(APP_WALLET_KV_PRIVATE_KEY).await?;
             address_b64 = self.kv_get(APP_WALLET_KV_ADDRESS).await?;
+
+            let private_key_b64 = private_key_b64.as_deref().ok_or_else(|| {
+                anyhow!("KMS app wallet is incomplete: missing private key record")
+            })?;
+            let address_b64 = address_b64
+                .as_deref()
+                .ok_or_else(|| anyhow!("KMS app wallet is incomplete: missing address record"))?;
+            let material = Self::decode_app_wallet_material(private_key_b64, address_b64)?;
+            if material.private_key_hex != generated_private_key_hex.as_str()
+                || material.address != generated_address
+            {
+                bail!(
+                    "app wallet unavailable: KMS app wallet material does not match local initialization"
+                );
+            }
+            self.cache_app_wallet_material(material.clone()).await;
+            return Ok(material);
         }
 
         let private_key_b64 = private_key_b64
+            .as_deref()
             .ok_or_else(|| anyhow!("KMS app wallet is incomplete: missing private key record"))?;
-        let private_key_hex = decode_kms_private_key_hex(&private_key_b64)?;
+        let address_b64 = address_b64
+            .as_deref()
+            .ok_or_else(|| anyhow!("KMS app wallet is incomplete: missing address record"))?;
+        let material = Self::decode_app_wallet_material(private_key_b64, address_b64)?;
+        self.cache_app_wallet_material(material.clone()).await;
+        Ok(material)
+    }
 
+    fn decode_app_wallet_material(
+        private_key_b64: &str,
+        address_b64: &str,
+    ) -> Result<AppWalletMaterial> {
+        let private_key_hex = decode_kms_private_key_hex(private_key_b64)?;
         let local_key = EthKey::new_from_bytes(&private_key_hex)
             .map_err(|err| anyhow!("invalid app wallet private key material in KMS: {}", err))?;
         let local_address = canonical_wallet(&local_key.address())?;
-
-        if address_b64.is_none() {
-            self.write_app_wallet_address(&local_address).await?;
-            address_b64 = self.kv_get(APP_WALLET_KV_ADDRESS).await?;
-        }
-
-        let address_b64 = address_b64
-            .ok_or_else(|| anyhow!("KMS app wallet is incomplete: missing address record"))?;
-        let kms_address = decode_kms_wallet_address(&address_b64)?;
-
+        let kms_address = decode_kms_wallet_address(address_b64)?;
         if kms_address != local_address {
             bail!(
                 "app wallet unavailable: KMS address {} does not match local address {}",
@@ -88,13 +121,10 @@ impl NovaKmsProxy {
                 local_address
             );
         }
-
-        let material = AppWalletMaterial {
+        Ok(AppWalletMaterial {
             private_key_hex,
             address: local_address,
-        };
-        self.cache_app_wallet_material(material.clone()).await;
-        Ok(material)
+        })
     }
 
     async fn write_app_wallet_record(&self, private_key_hex: &str, address: &str) -> Result<()> {

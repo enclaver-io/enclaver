@@ -101,16 +101,14 @@ Odyn consists of several configurable modules, each providing specific functiona
 **How it works**:
 - Listens on configured TCP ports inside the enclave
 - Receives connections forwarded from the host via VSOCK
-- Optionally terminates TLS
 - Forwards traffic to your application's localhost port
+
+> **Recommendation**: Use the built-in E2E encryption endpoints (`/v1/encryption/encrypt`, `/v1/encryption/decrypt`) for tee-pubkey-based client-to-enclave encrypted transport.
 
 **Configuration**:
 ```yaml
 ingress:
   - listen_port: 8080        # Your app listens on 127.0.0.1:8080
-    tls:                     # Optional TLS termination
-      cert_file: cert.pem
-      key_file: key.pem
 ```
 
 **For your app**: Simply bind to `127.0.0.1:<listen_port>` — Odyn handles the rest.
@@ -179,9 +177,10 @@ api:
 | `/v1/kms/kv/get` | POST | Read KMS-backed KV value (`kms_integration`) |
 | `/v1/kms/kv/put` | POST | Write KMS-backed KV value (`kms_integration`) |
 | `/v1/kms/kv/delete` | POST | Delete KMS-backed KV value (`kms_integration`) |
-| `/v1/app-wallet/address` | GET | Get anchored app wallet metadata (`kms_integration`) |
+| `/v1/app-wallet/address` | GET | Get app-local wallet metadata (`kms_integration`) |
 | `/v1/app-wallet/sign` | POST | Sign EIP-191 message with app wallet (`kms_integration`) |
 | `/v1/app-wallet/sign-tx` | POST | Sign Ethereum tx with app wallet (`kms_integration`) |
+Instances that map to the same KMS app namespace share one app-wallet.
 
 **For your app**: Make HTTP requests to `http://127.0.0.1:<api_port>/v1/...`
 
@@ -197,7 +196,7 @@ api:
 
 **How it works**:
 - Proxies requests to the Internal API
-- Sanitizes attestation requests (removes `public_key` and `user_data` to prevent spoofing)
+- Sanitizes attestation requests (removes `public_key` to prevent key spoofing; `user_data` is forwarded)
 - Only exposes safe, read-only endpoints
 
 **Configuration**:
@@ -211,7 +210,7 @@ aux_api:
 | Endpoint | Method | Restrictions |
 |----------|--------|--------------|
 | `/v1/eth/address` | GET | Same as Internal API |
-| `/v1/attestation` | POST | `public_key` and `user_data` are removed |
+| `/v1/attestation` | POST | `public_key` is removed; `user_data` is forwarded |
 | `/v1/encryption/public_key` | GET | Same as Internal API |
 
 ---
@@ -248,9 +247,9 @@ storage:
 - Egress must allow `169.254.169.254` (IMDS)
 - Egress must allow your S3 endpoint (e.g., `s3.us-east-1.amazonaws.com` or `s3.amazonaws.com`)
 - If `storage.s3.encryption.mode=kms`, `kms_integration.enabled=true` is required.
-- If `kms_integration.enabled=true`, `helios_rpc.enabled=true` is required and
-  `helios_rpc.chains[]` must include a chain on `local_rpc_port: 18545`
-  (used for registry discovery).
+- If `/v1/kms/*` registry mode is used (`kms_app_id` + `nova_app_registry`),
+  `helios_rpc.enabled=true` is required and `helios_rpc.chains[]` must include
+  `local_rpc_port: 18545` (used for registry discovery).
 
 ---
 
@@ -308,10 +307,11 @@ aux_api:
 # Nova KMS integration (optional)
 kms_integration:
   enabled: true
-  kms_app_id: 49
-  nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64cc8"
+  use_app_wallet: true        # app-wallet local mode can use only these two fields
+  kms_app_id: 49              # optional; required only for registry-backed /v1/kms/*
+  nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64cc8" # optional; required only for /v1/kms/*
 
-# Helios light-client RPC (required when kms_integration.enabled=true)
+# Helios light-client RPC (required only when registry-backed /v1/kms/* is enabled)
 helios_rpc:
   enabled: true
   chains:

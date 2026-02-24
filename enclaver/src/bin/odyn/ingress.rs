@@ -4,7 +4,7 @@ use log::info;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use crate::config::{Configuration, ListenerConfig};
+use crate::config::Configuration;
 use enclaver::proxy::ingress::EnclaveProxy;
 
 pub struct IngressService {
@@ -17,19 +17,10 @@ impl IngressService {
         let mut tasks = Vec::new();
 
         let (tx, rx) = tokio::sync::watch::channel(());
-        for (port, cfg) in &config.listener_configs {
-            match cfg {
-                ListenerConfig::TCP => {
-                    info!("Starting TCP ingress on port {}", *port);
-                    let proxy = EnclaveProxy::bind(*port)?;
-                    tasks.push(tokio::spawn(proxy.serve(rx.clone())));
-                }
-                ListenerConfig::TLS(tls_cfg) => {
-                    info!("Starting TLS ingress on port {}", *port);
-                    let proxy = EnclaveProxy::bind_tls(*port, tls_cfg.clone())?;
-                    tasks.push(tokio::spawn(proxy.serve(rx.clone())));
-                }
-            }
+        for port in &config.listener_ports {
+            info!("Starting TCP ingress on port {}", *port);
+            let proxy = EnclaveProxy::bind(*port)?;
+            tasks.push(tokio::spawn(proxy.serve(rx.clone())));
         }
 
         Ok(Self {

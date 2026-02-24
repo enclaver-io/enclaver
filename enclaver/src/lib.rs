@@ -39,9 +39,6 @@ pub mod integrations;
 #[cfg(feature = "vsock")]
 pub mod vsock;
 
-#[cfg(feature = "proxy")]
-pub mod tls;
-
 pub mod utils;
 
 pub mod http_util;

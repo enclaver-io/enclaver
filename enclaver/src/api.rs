@@ -576,7 +576,7 @@ impl ApiHandler {
     ///
     /// Request body JSON:
     /// {
-    ///   "nonce": "hex-encoded nonce (12 bytes, or 32-byte legacy nonce)",
+    ///   "nonce": "hex-encoded nonce (12 bytes)",
     ///   "client_public_key": "hex-encoded DER public key",
     ///   "encrypted_data": "hex-encoded ciphertext"
     /// }
@@ -689,10 +689,10 @@ impl ApiHandler {
 
         // Generate nonce
         let nonce = if let Some(nsm) = &self.nsm {
-            Self::collect_random_bytes(nsm, 32)?
+            Self::collect_random_bytes(nsm, 12)?
         } else {
             let mut rng = rand::rngs::OsRng;
-            let mut bytes = [0u8; 32];
+            let mut bytes = [0u8; 12];
             rng.fill_bytes(&mut bytes);
             bytes.to_vec()
         };
@@ -1690,22 +1690,4 @@ async fn test_app_wallet_address_without_kms_integration() {
     let (head, body) = req.into_parts();
     let resp = handler.handle_request(&head, body).await.unwrap();
     assert!(resp.status() == StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn test_app_wallet_proof_endpoint_removed() {
-    use crate::nsm::StaticAttestationProvider;
-    use assert2::assert;
-
-    let handler =
-        ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();
-
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/app-wallet/proof")
-        .body(Bytes::from("{}"))
-        .unwrap();
-    let (head, body) = req.into_parts();
-    let resp = handler.handle_request(&head, body).await.unwrap();
-    assert!(resp.status() == StatusCode::NOT_FOUND);
 }
