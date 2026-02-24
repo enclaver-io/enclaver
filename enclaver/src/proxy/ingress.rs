@@ -325,17 +325,17 @@ mod tests {
             Err(err) => panic!("sink task join failed: {err}"),
         };
         if expected != actual {
-            if let Err(err) = probe_vsock_connectivity(PORT).await {
-                if is_vsock_anyhow_unavailable(&err) {
-                    eprintln!(
-                        "Skipping test_enclave_proxy: checksum mismatch with unstable vsock ({err})"
-                    );
-                    echo_task.abort();
-                    _ = echo_task.await;
-                    _ = proxy_stop.send(());
-                    _ = proxy_task.await;
-                    return;
-                }
+            if let Err(err) = probe_vsock_connectivity(PORT).await
+                && is_vsock_anyhow_unavailable(&err)
+            {
+                eprintln!(
+                    "Skipping test_enclave_proxy: checksum mismatch with unstable vsock ({err})"
+                );
+                echo_task.abort();
+                _ = echo_task.await;
+                _ = proxy_stop.send(());
+                _ = proxy_task.await;
+                return;
             }
             panic!("checksum mismatch in test_enclave_proxy: expected={expected} actual={actual}");
         }
@@ -420,19 +420,19 @@ mod tests {
             Err(err) => panic!("sink task join failed: {err}"),
         };
         if expected != actual {
-            if let Err(err) = probe_vsock_connectivity(PORT + 1).await {
-                if is_vsock_anyhow_unavailable(&err) {
-                    eprintln!(
-                        "Skipping test_full_proxy: checksum mismatch with unstable vsock ({err})"
-                    );
-                    echo_task.abort();
-                    _ = echo_task.await;
-                    _ = enclave_proxy_stop.send(());
-                    _ = enclave_proxy_task.await;
-                    host_proxy_task.abort();
-                    _ = host_proxy_task.await;
-                    return;
-                }
+            if let Err(err) = probe_vsock_connectivity(PORT + 1).await
+                && is_vsock_anyhow_unavailable(&err)
+            {
+                eprintln!(
+                    "Skipping test_full_proxy: checksum mismatch with unstable vsock ({err})"
+                );
+                echo_task.abort();
+                _ = echo_task.await;
+                _ = enclave_proxy_stop.send(());
+                _ = enclave_proxy_task.await;
+                host_proxy_task.abort();
+                _ = host_proxy_task.await;
+                return;
             }
             panic!("checksum mismatch in test_full_proxy: expected={expected} actual={actual}");
         }

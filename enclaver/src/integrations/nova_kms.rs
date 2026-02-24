@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,6 +12,7 @@ use ethabi::{Function, Token};
 use form_urlencoded::byte_serialize;
 use http_body_util::Full;
 use hyper::Response;
+use hyper::StatusCode;
 use hyper::body::Bytes;
 use hyper::header::CONTENT_TYPE;
 use log::{info, warn};
@@ -36,6 +38,7 @@ const AUTHZ_CACHE_TTL_MS: u64 = 10_000;
 const APP_WALLET_CACHE_TTL_MS: u64 = 10_000;
 const DEFAULT_REGISTRY_CHAIN_RPC: &str = "http://127.0.0.1:18545";
 const DEFAULT_KMS_REQUEST_TIMEOUT_MS: u64 = 3000;
+const DEFAULT_LOCAL_REQUEST_TIMEOUT_MS: u64 = 10_000;
 const DEFAULT_KMS_MAX_ATTEMPTS: usize = 3;
 const DEFAULT_KMS_DISCOVERY_TTL_MS: u64 = 60_000;
 const DEFAULT_KMS_NODE_REACHABLE_CACHE_TTL_MS: u64 = 30_000;
@@ -44,7 +47,9 @@ const DEFAULT_KMS_NODE_IDENTITY_CACHE_TTL_MS: u64 = 30_000;
 const DEFAULT_KMS_BACKGROUND_REFRESH_INTERVAL_MS: u64 = 20_000;
 const DEFAULT_KMS_REQUIRE_MUTUAL_SIGNATURE: bool = true;
 const DEFAULT_KMS_RESERVED_DERIVE_PREFIXES: [&str; 1] = ["wallet/eth/app/"];
-const DEFAULT_KMS_AUDIT_LOG_PATH: &str = "/tmp/odyn_kms_audit.log";
+const DEFAULT_KMS_AUDIT_LOG_PATH: &str = "/var/log/odyn/odyn_kms_audit.log";
+const DEFAULT_REGISTRY_ETH_CALL_MAX_ATTEMPTS: usize = 5;
+const DEFAULT_REGISTRY_ETH_CALL_RETRY_BACKOFF_BASE_MS: u64 = 400;
 const KMS_DEBUG_LOG_MAX_LEN: usize = 1024;
 const GET_INSTANCE_BY_WALLET_TUPLE_MIN_LEN: usize = 10;
 const GET_INSTANCE_BY_WALLET_APP_ID_IDX: usize = 1;
@@ -58,6 +63,7 @@ const GET_APP_APP_WALLET_IDX: usize = 8;
 #[derive(Clone)]
 pub struct NovaKmsProxy {
     client: reqwest::Client,
+    local_client: reqwest::Client,
     odyn_endpoint: String,
     use_app_wallet: bool,
     max_retries: usize,
@@ -272,9 +278,50 @@ struct JsonRpcError {
 }
 
 impl NovaKmsProxy {
+    fn initialize_audit_log_path() -> Option<PathBuf> {
+        let path = PathBuf::from(DEFAULT_KMS_AUDIT_LOG_PATH);
+        match Self::ensure_audit_log_permissions(&path) {
+            Ok(()) => Some(path),
+            Err(err) => {
+                warn!(
+                    "Nova KMS audit log disabled: failed to initialize {}: {}",
+                    DEFAULT_KMS_AUDIT_LOG_PATH, err
+                );
+                None
+            }
+        }
+    }
+
+    fn ensure_audit_log_permissions(path: &PathBuf) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+            }
+        }
+
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        }
+
+        Ok(())
+    }
+
     pub fn new(config: &KmsIntegration, odyn_endpoint: String) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_millis(DEFAULT_KMS_REQUEST_TIMEOUT_MS))
+            .build()?;
+        let local_client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_millis(DEFAULT_LOCAL_REQUEST_TIMEOUT_MS))
             .build()?;
 
         let reserved_derive_prefixes = DEFAULT_KMS_RESERVED_DERIVE_PREFIXES
@@ -283,11 +330,35 @@ impl NovaKmsProxy {
             .collect::<Vec<_>>();
 
         let registry_discovery = Self::build_registry_discovery(config)?;
-        let audit_log_path = Some(PathBuf::from(DEFAULT_KMS_AUDIT_LOG_PATH));
+        let audit_log_path = Self::initialize_audit_log_path();
         let audit_log_sender = Self::spawn_audit_log_writer(audit_log_path.clone());
+
+        let http_proxy_present =
+            std::env::var_os("HTTP_PROXY").is_some() || std::env::var_os("http_proxy").is_some();
+        let https_proxy_present =
+            std::env::var_os("HTTPS_PROXY").is_some() || std::env::var_os("https_proxy").is_some();
+        let no_proxy_raw = std::env::var("NO_PROXY")
+            .ok()
+            .or_else(|| std::env::var("no_proxy").ok());
+        let no_proxy_present = no_proxy_raw.is_some();
+        let no_proxy_bypasses_localhost = no_proxy_raw
+            .as_deref()
+            .map(no_proxy_bypasses_localhost)
+            .unwrap_or(false);
+
+        info!(
+            "Nova KMS HTTP clients initialized: kms_timeout={}ms local_timeout={}ms proxy_env={{http_proxy_present={},https_proxy_present={},no_proxy_present={},no_proxy_bypasses_localhost={}}}",
+            DEFAULT_KMS_REQUEST_TIMEOUT_MS,
+            DEFAULT_LOCAL_REQUEST_TIMEOUT_MS,
+            http_proxy_present,
+            https_proxy_present,
+            no_proxy_present,
+            no_proxy_bypasses_localhost
+        );
 
         Ok(Self {
             client,
+            local_client,
             odyn_endpoint,
             use_app_wallet: config.use_app_wallet,
             max_retries: DEFAULT_KMS_MAX_ATTEMPTS,
@@ -340,6 +411,14 @@ impl NovaKmsProxy {
         });
     }
 
+    fn http_client_for_url(&self, url: &str) -> (&reqwest::Client, &'static str) {
+        if is_loopback_url(url) {
+            (&self.local_client, "local-no-proxy")
+        } else {
+            (&self.client, "default")
+        }
+    }
+
     fn spawn_audit_log_writer(path: Option<PathBuf>) -> Option<mpsc::UnboundedSender<String>> {
         let path = path?;
         let (sender, mut receiver) = mpsc::unbounded_channel::<String>();
@@ -355,12 +434,13 @@ impl NovaKmsProxy {
         };
         handle.spawn(async move {
             while let Some(line) = receiver.recv().await {
-                if let Ok(mut file) = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)
-                    .await
+                let mut options = OpenOptions::new();
+                options.create(true).append(true);
+                #[cfg(unix)]
                 {
+                    options.mode(0o600);
+                }
+                if let Ok(mut file) = options.open(&path).await {
                     let _ = file.write_all(line.as_bytes()).await;
                 }
             }
@@ -510,8 +590,9 @@ impl NovaKmsProxy {
         };
 
         if let Err(err) = self.ensure_kms_access_authorized().await {
-            warn!("Nova KMS authz failed for /v1/kms/derive: {}", err);
-            return Ok(http_util::bad_request(err.to_string()));
+            let message = err.to_string();
+            warn!("Nova KMS authz failed for /v1/kms/derive: {}", message);
+            return Ok(authz_error_response(message));
         }
         info!("Nova KMS authz passed for /v1/kms/derive");
 
@@ -538,8 +619,9 @@ impl NovaKmsProxy {
         };
 
         if let Err(err) = self.ensure_kms_access_authorized().await {
-            warn!("Nova KMS authz failed for /v1/kms/kv/get: {}", err);
-            return Ok(http_util::bad_request(err.to_string()));
+            let message = err.to_string();
+            warn!("Nova KMS authz failed for /v1/kms/kv/get: {}", message);
+            return Ok(authz_error_response(message));
         }
         info!("Nova KMS authz passed for /v1/kms/kv/get");
 
@@ -559,8 +641,9 @@ impl NovaKmsProxy {
         };
 
         if let Err(err) = self.ensure_kms_access_authorized().await {
-            warn!("Nova KMS authz failed for /v1/kms/kv/put: {}", err);
-            return Ok(http_util::bad_request(err.to_string()));
+            let message = err.to_string();
+            warn!("Nova KMS authz failed for /v1/kms/kv/put: {}", message);
+            return Ok(authz_error_response(message));
         }
         info!("Nova KMS authz passed for /v1/kms/kv/put");
 
@@ -577,8 +660,9 @@ impl NovaKmsProxy {
         };
 
         if let Err(err) = self.ensure_kms_access_authorized().await {
-            warn!("Nova KMS authz failed for /v1/kms/kv/delete: {}", err);
-            return Ok(http_util::bad_request(err.to_string()));
+            let message = err.to_string();
+            warn!("Nova KMS authz failed for /v1/kms/kv/delete: {}", message);
+            return Ok(authz_error_response(message));
         }
         info!("Nova KMS authz passed for /v1/kms/kv/delete");
 
@@ -1063,28 +1147,91 @@ impl NovaKmsProxy {
 
     async fn odyn_get(&self, path: &str) -> Result<Value> {
         let url = format!("{}{}", self.odyn_endpoint, path);
-        Ok(self
-            .client
-            .get(url)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?)
+        let (client, client_route) = self.http_client_for_url(&url);
+        info!(
+            "Nova KMS ODYN GET path={} url={} client_route={}",
+            path, url, client_route
+        );
+
+        let response = client.get(&url).send().await.map_err(|err| {
+            anyhow!(
+                "odyn GET transport failed path={} url={}: {}",
+                path,
+                url,
+                err
+            )
+        })?;
+        let status = response.status();
+        let response_body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let body_preview = preview_text_for_log(&response_body);
+            warn!(
+                "Nova KMS ODYN GET failed path={} url={} client_route={} http={} body={}",
+                path,
+                url,
+                client_route,
+                status.as_u16(),
+                body_preview
+            );
+            bail!(
+                "odyn GET failed path={} url={} http={} body={}",
+                path,
+                url,
+                status.as_u16(),
+                body_preview
+            );
+        }
+        serde_json::from_str::<Value>(&response_body)
+            .map_err(|err| anyhow!("odyn GET invalid JSON path={} url={}: {}", path, url, err))
     }
 
     async fn odyn_post(&self, path: &str, payload: &Value) -> Result<Value> {
         let url = format!("{}{}", self.odyn_endpoint, path);
-        Ok(self
-            .client
-            .post(url)
+        let (client, client_route) = self.http_client_for_url(&url);
+        info!(
+            "Nova KMS ODYN POST path={} url={} client_route={} payload={}",
+            path,
+            url,
+            client_route,
+            preview_json_for_log(payload)
+        );
+
+        let response = client
+            .post(&url)
             .header(CONTENT_TYPE, "application/json")
             .json(payload)
             .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?)
+            .await
+            .map_err(|err| {
+                anyhow!(
+                    "odyn POST transport failed path={} url={}: {}",
+                    path,
+                    url,
+                    err
+                )
+            })?;
+        let status = response.status();
+        let response_body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let body_preview = preview_text_for_log(&response_body);
+            warn!(
+                "Nova KMS ODYN POST failed path={} url={} client_route={} http={} body={}",
+                path,
+                url,
+                client_route,
+                status.as_u16(),
+                body_preview
+            );
+            bail!(
+                "odyn POST failed path={} url={} http={} body={}",
+                path,
+                url,
+                status.as_u16(),
+                body_preview
+            );
+        }
+        serde_json::from_str::<Value>(&response_body)
+            .map_err(|err| anyhow!("odyn POST invalid JSON path={} url={}: {}", path, url, err))
     }
 
     fn hash_payload(&self, payload: Option<&Value>) -> String {
@@ -1424,13 +1571,15 @@ impl NovaKmsProxy {
 
     async fn probe_node_status_once(&self, base_url: &str) -> Result<u16> {
         let status_url = format!("{base_url}/status");
-        let response = self.client.get(&status_url).send().await?;
+        let (client, client_route) = self.http_client_for_url(&status_url);
+        let response = client.get(&status_url).send().await?;
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             bail!(
-                "status probe failed node={} http={} body={}",
+                "status probe failed node={} route={} http={} body={}",
                 base_url,
+                client_route,
                 status.as_u16(),
                 truncate_for_log(&body, KMS_DEBUG_LOG_MAX_LEN)
             );
@@ -1674,25 +1823,91 @@ impl NovaKmsProxy {
                 "latest"
             ]),
         };
-        let response: JsonRpcResponse = self
-            .client
-            .post(&discovery.rpc_url)
-            .header(CONTENT_TYPE, "application/json")
-            .json(&payload)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let mut last_error: Option<anyhow::Error> = None;
+        let (client, client_route) = self.http_client_for_url(&discovery.rpc_url);
+        let rpc_url_is_loopback = is_loopback_url(&discovery.rpc_url);
+        info!(
+            "Nova KMS registry eth_call start rpc_url={} route={} loopback={} max_attempts={} calldata_bytes={}",
+            discovery.rpc_url,
+            client_route,
+            rpc_url_is_loopback,
+            DEFAULT_REGISTRY_ETH_CALL_MAX_ATTEMPTS,
+            calldata.len()
+        );
 
-        if let Some(err) = response.error {
-            bail!("registry eth_call failed: {} ({})", err.message, err.code);
+        for attempt in 0..DEFAULT_REGISTRY_ETH_CALL_MAX_ATTEMPTS {
+            let attempt_idx = attempt + 1;
+            info!(
+                "Nova KMS registry eth_call attempt {}/{} rpc_url={} route={}",
+                attempt_idx,
+                DEFAULT_REGISTRY_ETH_CALL_MAX_ATTEMPTS,
+                discovery.rpc_url,
+                client_route
+            );
+            let result = async {
+                let response = client
+                    .post(&discovery.rpc_url)
+                    .header(CONTENT_TYPE, "application/json")
+                    .json(&payload)
+                    .send()
+                    .await?;
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                if !status.is_success() {
+                    bail!(
+                        "registry eth_call HTTP {} body={}",
+                        status.as_u16(),
+                        preview_text_for_log(&body)
+                    );
+                }
+                let response: JsonRpcResponse = serde_json::from_str(&body).map_err(|err| {
+                    anyhow!(
+                        "registry eth_call invalid JSON response: {} body={}",
+                        err,
+                        preview_text_for_log(&body)
+                    )
+                })?;
+
+                if let Some(err) = response.error {
+                    bail!("registry eth_call failed: {} ({})", err.message, err.code);
+                }
+                let result_hex = response
+                    .result
+                    .ok_or_else(|| anyhow!("registry eth_call missing result"))?;
+                hex::decode(trim_0x(&result_hex))
+                    .map_err(|e| anyhow!("registry eth_call invalid hex result: {}", e))
+            }
+            .await;
+
+            match result {
+                Ok(bytes) => return Ok(bytes),
+                Err(err) => {
+                    let err_text = err.to_string();
+                    last_error = Some(err);
+
+                    let can_retry = attempt + 1 < DEFAULT_REGISTRY_ETH_CALL_MAX_ATTEMPTS
+                        && looks_like_transient_registry_error(&err_text);
+                    if can_retry {
+                        let backoff_ms = registry_eth_call_retry_backoff_ms(attempt);
+                        warn!(
+                            "Nova KMS transient registry eth_call failure (attempt {}/{} rpc_url={} route={} loopback={} backoff_ms={}): {}",
+                            attempt_idx,
+                            DEFAULT_REGISTRY_ETH_CALL_MAX_ATTEMPTS,
+                            discovery.rpc_url,
+                            client_route,
+                            rpc_url_is_loopback,
+                            backoff_ms,
+                            err_text
+                        );
+                        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                        continue;
+                    }
+                    return Err(anyhow!(err_text));
+                }
+            }
         }
-        let result_hex = response
-            .result
-            .ok_or_else(|| anyhow!("registry eth_call missing result"))?;
-        hex::decode(trim_0x(&result_hex))
-            .map_err(|e| anyhow!("registry eth_call invalid hex result: {}", e))
+
+        Err(last_error.unwrap_or_else(|| anyhow!("registry eth_call failed with unknown error")))
     }
 }
 
@@ -1839,6 +2054,50 @@ fn normalize_base_url(value: &str) -> Option<String> {
     let parsed = reqwest::Url::parse(&normalized).ok()?;
     parsed.host_str()?;
     Some(normalized)
+}
+
+fn is_loopback_url(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    let Some(raw_host) = parsed.host_str() else {
+        return false;
+    };
+    let host = raw_host.trim_start_matches('[').trim_end_matches(']');
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    if host == "::1" {
+        return true;
+    }
+    if let Ok(ipv4) = host.parse::<std::net::Ipv4Addr>() {
+        return ipv4.is_loopback();
+    }
+    if let Ok(ipv6) = host.parse::<std::net::Ipv6Addr>() {
+        return ipv6.is_loopback();
+    }
+    false
+}
+
+fn no_proxy_bypasses_localhost(no_proxy_value: &str) -> bool {
+    no_proxy_value
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .any(|entry| {
+            let lowered = entry.to_ascii_lowercase();
+            lowered == "*"
+                || lowered == "localhost"
+                || lowered == "127.0.0.1"
+                || lowered == "::1"
+                || lowered == "127.0.0.0/8"
+                || lowered.ends_with(".localhost")
+        })
+}
+
+fn registry_eth_call_retry_backoff_ms(attempt: usize) -> u64 {
+    let factor = attempt.saturating_add(1) as u64;
+    DEFAULT_REGISTRY_ETH_CALL_RETRY_BACKOFF_BASE_MS.saturating_mul(factor)
 }
 
 fn merge_discovered_nodes_with_previous(
@@ -2017,6 +2276,21 @@ fn looks_like_connectivity_error(message: &str) -> bool {
     markers.iter().any(|marker| lowered.contains(marker))
 }
 
+fn looks_like_transient_registry_error(message: &str) -> bool {
+    let lowered = message.to_ascii_lowercase();
+    looks_like_connectivity_error(message) || lowered.contains("out of sync")
+}
+
+fn authz_error_response(message: String) -> Response<Full<Bytes>> {
+    if looks_like_transient_registry_error(&message) {
+        return Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .body(Full::new(Bytes::from(message)))
+            .unwrap();
+    }
+    http_util::bad_request(message)
+}
+
 fn canonical_wallet(wallet: &str) -> Result<String> {
     let value = wallet.trim().to_lowercase();
     let body = if let Some(stripped) = value.strip_prefix("0x") {
@@ -2081,6 +2355,7 @@ mod tests {
     fn reserved_path_detection_matches_prefix() {
         let proxy = NovaKmsProxy {
             client: reqwest::Client::new(),
+            local_client: reqwest::Client::new(),
             odyn_endpoint: "http://127.0.0.1:18000".to_string(),
             use_app_wallet: false,
             max_retries: 1,
@@ -2124,6 +2399,22 @@ mod tests {
             Some("https://kms.example.com".to_string())
         );
         assert_eq!(normalize_base_url("https://"), None);
+    }
+
+    #[test]
+    fn loopback_url_detector_handles_local_hosts() {
+        assert!(is_loopback_url("http://127.0.0.1:18545"));
+        assert!(is_loopback_url("http://localhost:18545"));
+        assert!(is_loopback_url("http://[::1]:18545"));
+        assert!(!is_loopback_url("https://kms.example.com"));
+    }
+
+    #[test]
+    fn no_proxy_detector_marks_localhost_entries() {
+        assert!(no_proxy_bypasses_localhost("localhost,example.com"));
+        assert!(no_proxy_bypasses_localhost("127.0.0.1"));
+        assert!(no_proxy_bypasses_localhost("*"));
+        assert!(!no_proxy_bypasses_localhost("example.com,10.0.0.0/8"));
     }
 
     #[test]

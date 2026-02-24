@@ -388,7 +388,6 @@ impl WatchSet {
 #[cfg(test)]
 mod tests {
     use anyhow::{Result, anyhow};
-    use assert2::assert;
     use json::{JsonValue, object};
     use nix::sys::signal::Signal;
     use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader, DuplexStream, Lines};
@@ -498,7 +497,7 @@ mod tests {
                 break;
             }
 
-            actual.extend_from_slice(&mut buf[..nread]);
+            actual.extend_from_slice(&buf[..nread]);
         }
 
         assert!(actual.len() == r.len());

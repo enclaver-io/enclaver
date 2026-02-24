@@ -10,7 +10,7 @@ pub mod helios_rpc;
 pub mod ingress;
 pub mod launcher;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use clap::Parser;
 use log::{error, info};
 use std::ffi::OsString;
@@ -62,7 +62,19 @@ async fn launch(args: &CliArgs) -> Result<launcher::ExitStatus> {
     let egress = EgressService::start(&config).await?;
 
     // Start Helios in background (non-blocking, app starts immediately)
-    let helios_rpc = HeliosRpcService::start(&config).await?;
+    let mut helios_rpc = HeliosRpcService::start(&config).await?;
+    if config
+        .kms_integration_config()
+        .map(|kms| kms.registry_discovery_configured())
+        .unwrap_or(false)
+    {
+        info!("Waiting for Helios auth-chain RPC readiness required by Nova KMS");
+        if !helios_rpc.wait_ready().await {
+            return Err(anyhow!(
+                "Helios auth-chain RPC failed to become ready on local port 18545"
+            ));
+        }
+    }
 
     let (api, aux_api) = tokio::try_join!(
         ApiService::start(&config, nsm.clone()),

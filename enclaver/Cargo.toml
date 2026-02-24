@@ -85,10 +85,9 @@ ethabi = "18.0.0"
 zeroize = "1.8"
 
 # Helios light client for trustless Ethereum RPC (optional, only for odyn)
-helios = { git = "https://github.com/sparsity-xyz/helios", branch = "master", optional = true }
+helios = { git = "https://github.com/sparsity-xyz/helios", rev = "6c306c9b049773d6317521157dbb540895f32e7f", optional = true }
 
 [dev-dependencies]
-assert2 = "0.3"
 aws-credential-types = { version = "1.2.6", features = ["hardcoded-credentials"] }
 
 [features]

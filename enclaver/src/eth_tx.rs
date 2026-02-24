@@ -1,6 +1,5 @@
 use anyhow::{Result, anyhow};
 use rlp::{Rlp, RlpStream};
-use sha3::{Digest, Keccak256};
 
 pub const EIP1559_TX_TYPE: u8 = 0x02;
 
@@ -154,12 +153,7 @@ pub fn parse_storage_key_hex(input: &str) -> Result<[u8; 32]> {
 }
 
 pub fn keccak256(data: &[u8]) -> [u8; 32] {
-    let mut hasher = Keccak256::new();
-    hasher.update(data);
-    let result = hasher.finalize();
-    let mut hash = [0u8; 32];
-    hash.copy_from_slice(&result);
-    hash
+    crate::crypto::keccak256(data)
 }
 
 fn parse_hex_bytes(input: &str) -> Result<Vec<u8>> {

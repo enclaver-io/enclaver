@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose};
 use http_body_util::{BodyExt, Full};
@@ -9,7 +9,9 @@ use pkcs8::{DecodePublicKey, SubjectPublicKeyInfo};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::Arc;
+use sha2::{Digest, Sha256};
+use std::collections::{HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::encryption_key::EncryptionKey;
@@ -23,6 +25,43 @@ use crate::nsm::{AttestationParams, AttestationProvider, Nsm};
 const MIME_APPLICATION_CBOR: &str = "application/cbor";
 const MAX_EMPTY_RANDOM_CHUNKS: usize = 128;
 const APP_WALLET_ATTESTATION_TIMEOUT_MS: u64 = 1500;
+const MAX_API_REQUEST_BODY_BYTES: usize = 10 * 1024 * 1024;
+const ALLOW_WEAK_RNG_FALLBACK_ENV: &str = "ODYN_ALLOW_WEAK_RNG_FALLBACK";
+const NONCE_REPLAY_CACHE_CAPACITY: usize = 4096;
+const AES_GCM_NONCE_LEN: usize = 12;
+const LEGACY_AES_GCM_NONCE_LEN: usize = 32;
+
+struct NonceReplayCache {
+    capacity: usize,
+    order: VecDeque<[u8; 32]>,
+    seen: HashSet<[u8; 32]>,
+}
+
+impl NonceReplayCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            order: VecDeque::with_capacity(capacity),
+            seen: HashSet::with_capacity(capacity),
+        }
+    }
+
+    fn insert_if_new(&mut self, fingerprint: [u8; 32]) -> bool {
+        if self.seen.contains(&fingerprint) {
+            return false;
+        }
+        self.seen.insert(fingerprint);
+        self.order.push_back(fingerprint);
+
+        while self.order.len() > self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                self.seen.remove(&oldest);
+            }
+        }
+
+        true
+    }
+}
 
 pub struct ApiHandler {
     attester: Box<dyn AttestationProvider + Send + Sync>,
@@ -31,9 +70,20 @@ pub struct ApiHandler {
     nsm: Option<Arc<Nsm>>,
     s3_proxy: Option<Arc<S3Proxy>>,
     nova_kms: Option<Arc<NovaKmsProxy>>,
+    decrypt_nonce_cache: Mutex<NonceReplayCache>,
 }
 
 impl ApiHandler {
+    fn weak_rng_fallback_enabled() -> bool {
+        match std::env::var(ALLOW_WEAK_RNG_FALLBACK_ENV) {
+            Ok(value) => matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            ),
+            Err(_) => false,
+        }
+    }
+
     pub fn new(
         attester: Box<dyn AttestationProvider + Send + Sync>,
         nsm: Option<Arc<Nsm>>,
@@ -66,11 +116,19 @@ impl ApiHandler {
                     Arc::new(key)
                 }
                 Err(err) => {
-                    log::warn!(
-                        "Failed to derive Ethereum key from NSM RNG, falling back to OsRng: {}",
-                        err
-                    );
-                    Arc::new(EthKey::new())
+                    if Self::weak_rng_fallback_enabled() {
+                        log::warn!(
+                            "Failed to derive Ethereum key from NSM RNG; ODYN_ALLOW_WEAK_RNG_FALLBACK is enabled, falling back to OsRng: {}",
+                            err
+                        );
+                        Arc::new(EthKey::new())
+                    } else {
+                        return Err(anyhow!(
+                            "CRITICAL: Failed to derive Ethereum key from NSM RNG: {}. Refusing to start with weak entropy. Set {}=1 only for non-production fallback.",
+                            err,
+                            ALLOW_WEAK_RNG_FALLBACK_ENV
+                        ));
+                    }
                 }
             },
             None => {
@@ -90,11 +148,19 @@ impl ApiHandler {
                     Arc::new(key)
                 }
                 Err(err) => {
-                    log::warn!(
-                        "Failed to derive P-384 key from NSM RNG, falling back to OsRng: {}",
-                        err
-                    );
-                    Arc::new(EncryptionKey::new())
+                    if Self::weak_rng_fallback_enabled() {
+                        log::warn!(
+                            "Failed to derive P-384 key from NSM RNG; ODYN_ALLOW_WEAK_RNG_FALLBACK is enabled, falling back to OsRng: {}",
+                            err
+                        );
+                        Arc::new(EncryptionKey::new())
+                    } else {
+                        return Err(anyhow!(
+                            "CRITICAL: Failed to derive P-384 key from NSM RNG: {}. Refusing to start with weak entropy. Set {}=1 only for non-production fallback.",
+                            err,
+                            ALLOW_WEAK_RNG_FALLBACK_ENV
+                        ));
+                    }
                 }
             },
             None => {
@@ -114,7 +180,36 @@ impl ApiHandler {
             nsm,
             s3_proxy,
             nova_kms,
+            decrypt_nonce_cache: Mutex::new(NonceReplayCache::new(NONCE_REPLAY_CACHE_CAPACITY)),
         })
+    }
+
+    fn nonce_fingerprint(client_public_key_der: &[u8], nonce: &[u8]) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(client_public_key_der);
+        hasher.update(nonce);
+        hasher.finalize().into()
+    }
+
+    fn register_client_nonce(&self, client_public_key_der: &[u8], nonce: &[u8]) -> bool {
+        let fingerprint = Self::nonce_fingerprint(client_public_key_der, nonce);
+        match self.decrypt_nonce_cache.lock() {
+            Ok(mut cache) => cache.insert_if_new(fingerprint),
+            Err(_) => false,
+        }
+    }
+
+    fn normalize_decrypt_nonce(raw_nonce: Vec<u8>) -> Result<(Vec<u8>, bool)> {
+        match raw_nonce.len() {
+            AES_GCM_NONCE_LEN => Ok((raw_nonce, false)),
+            LEGACY_AES_GCM_NONCE_LEN => Ok((raw_nonce[..AES_GCM_NONCE_LEN].to_vec(), true)),
+            len => bail!(
+                "Invalid nonce length: expected {} bytes (or {}-byte legacy nonce), got {}",
+                AES_GCM_NONCE_LEN,
+                LEGACY_AES_GCM_NONCE_LEN,
+                len
+            ),
+        }
     }
 
     fn collect_random_bytes(nsm: &Arc<Nsm>, len: usize) -> Result<Vec<u8>> {
@@ -576,7 +671,7 @@ impl ApiHandler {
     ///
     /// Request body JSON:
     /// {
-    ///   "nonce": "hex-encoded nonce (12 bytes)",
+    ///   "nonce": "hex-encoded nonce (12 bytes; 32-byte legacy nonce accepted)",
     ///   "client_public_key": "hex-encoded DER public key",
     ///   "encrypted_data": "hex-encoded ciphertext"
     /// }
@@ -592,10 +687,21 @@ impl ApiHandler {
         };
 
         // Decode hex inputs
-        let nonce = match hex::decode(req.nonce.strip_prefix("0x").unwrap_or(&req.nonce)) {
+        let raw_nonce = match hex::decode(req.nonce.strip_prefix("0x").unwrap_or(&req.nonce)) {
             Ok(n) => n,
             Err(e) => return Ok(http_util::bad_request(format!("Invalid nonce hex: {}", e))),
         };
+        let (nonce, used_legacy_nonce) = match Self::normalize_decrypt_nonce(raw_nonce) {
+            Ok(value) => value,
+            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+        };
+        if used_legacy_nonce {
+            log::warn!(
+                "Received legacy {}-byte nonce on /v1/encryption/decrypt; using first {} bytes for compatibility",
+                LEGACY_AES_GCM_NONCE_LEN,
+                AES_GCM_NONCE_LEN
+            );
+        }
         let client_pub_key_der = match hex::decode(
             req.client_public_key
                 .strip_prefix("0x")
@@ -622,6 +728,12 @@ impl ApiHandler {
                 )));
             }
         };
+
+        if !self.register_client_nonce(&client_pub_key_der, &nonce) {
+            return Ok(http_util::bad_request(
+                "Nonce reuse detected for client_public_key".to_string(),
+            ));
+        }
 
         // Decrypt
         let plaintext_bytes =
@@ -786,6 +898,15 @@ impl HttpHandler for ApiHandler {
     async fn handle(&self, req: Request<Full<Bytes>>) -> Result<Response<Full<Bytes>>> {
         let (head, body) = req.into_parts();
         let body = body.collect().await?.to_bytes();
+        if body.len() > MAX_API_REQUEST_BODY_BYTES {
+            return Ok(Response::builder()
+                .status(StatusCode::PAYLOAD_TOO_LARGE)
+                .body(Full::new(Bytes::from(format!(
+                    "Request body too large: {} bytes (max {})",
+                    body.len(),
+                    MAX_API_REQUEST_BODY_BYTES
+                ))))?);
+        }
 
         self.handle_request(&head, body).await
     }
@@ -1036,7 +1157,6 @@ fn pem_decode(pem: &str) -> Result<Vec<u8>> {
 
 #[test]
 fn test_attestation_build_user_data_injects_eth_and_app_wallet() {
-    use assert2::assert;
     use serde_json::json;
 
     let bytes = AttestationRequest::build_user_data(
@@ -1058,7 +1178,6 @@ fn test_attestation_build_user_data_injects_eth_and_app_wallet() {
 
 #[test]
 fn test_attestation_build_user_data_overwrites_reserved_fields() {
-    use assert2::assert;
     use serde_json::json;
 
     let bytes = AttestationRequest::build_user_data(
@@ -1078,7 +1197,6 @@ fn test_attestation_build_user_data_overwrites_reserved_fields() {
 
 #[test]
 fn test_attestation_build_user_data_rejects_non_object() {
-    use assert2::assert;
     use serde_json::json;
 
     let result = AttestationRequest::build_user_data(
@@ -1091,7 +1209,6 @@ fn test_attestation_build_user_data_rejects_non_object() {
 
 #[test]
 fn test_attestation_build_user_data_without_app_wallet() {
-    use assert2::assert;
     use serde_json::json;
 
     let bytes = AttestationRequest::build_user_data(
@@ -1111,8 +1228,6 @@ fn test_attestation_build_user_data_without_app_wallet() {
 
 #[test]
 fn test_collect_random_bytes_from_source_collects_partial_chunks() {
-    use assert2::assert;
-
     let mut chunks = vec![Ok(vec![1u8, 2]), Ok(vec![]), Ok(vec![3, 4, 5])].into_iter();
     let bytes = ApiHandler::collect_random_bytes_from_source(4, || chunks.next().unwrap()).unwrap();
     assert!(bytes == vec![1u8, 2, 3, 4]);
@@ -1120,8 +1235,6 @@ fn test_collect_random_bytes_from_source_collects_partial_chunks() {
 
 #[test]
 fn test_collect_random_bytes_from_source_rejects_repeated_empty_chunks() {
-    use assert2::assert;
-
     let result = ApiHandler::collect_random_bytes_from_source(1, || Ok(Vec::new()));
     assert!(result.is_err());
     assert!(
@@ -1135,7 +1248,6 @@ fn test_collect_random_bytes_from_source_rejects_repeated_empty_chunks() {
 #[tokio::test]
 async fn test_attestation_handler() {
     use crate::nsm::StaticAttestationProvider;
-    use assert2::assert;
     use base64::Engine as _;
 
     let handler =
@@ -1179,7 +1291,6 @@ async fn test_attestation_handler() {
 #[tokio::test]
 async fn test_eth_address_handler() {
     use crate::nsm::StaticAttestationProvider;
-    use assert2::assert;
 
     let handler =
         ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();
@@ -1208,7 +1319,6 @@ async fn test_eth_address_handler() {
 #[tokio::test]
 async fn test_eth_sign_handler() {
     use crate::nsm::StaticAttestationProvider;
-    use assert2::assert;
 
     let handler =
         ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();
@@ -1243,7 +1353,6 @@ async fn test_eth_sign_handler() {
 #[tokio::test]
 async fn test_eth_sign_with_attestation() {
     use crate::nsm::StaticAttestationProvider;
-    use assert2::assert;
 
     let handler =
         ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();
@@ -1276,7 +1385,6 @@ async fn test_eth_sign_with_attestation() {
 async fn test_eth_sign_signature_recovery() {
     use crate::eth_key::EthKey;
     use crate::nsm::StaticAttestationProvider;
-    use assert2::assert;
 
     let handler =
         ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();
@@ -1321,7 +1429,6 @@ async fn test_eth_sign_signature_recovery() {
 #[tokio::test]
 async fn test_eth_sign_empty_message() {
     use crate::nsm::StaticAttestationProvider;
-    use assert2::assert;
 
     let handler =
         ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();
@@ -1340,6 +1447,159 @@ async fn test_eth_sign_empty_message() {
     let resp = handler.handle_request(&head, body).await.unwrap();
 
     assert!(resp.status() == StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_api_rejects_oversized_body() {
+    use crate::http_util::HttpHandler;
+    use crate::nsm::StaticAttestationProvider;
+
+    let handler =
+        ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();
+
+    let oversized_body = vec![b'a'; MAX_API_REQUEST_BODY_BYTES + 1];
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/eth/sign")
+        .body(Full::new(Bytes::from(oversized_body)))
+        .unwrap();
+
+    let resp = handler.handle(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn test_encryption_decrypt_rejects_nonce_reuse_for_same_client_key() {
+    use crate::encryption_key::EncryptionKey;
+    use crate::nsm::StaticAttestationProvider;
+
+    let handler =
+        ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();
+
+    let public_key_req = Request::builder()
+        .method("GET")
+        .uri("/v1/encryption/public_key")
+        .body(Bytes::new())
+        .unwrap();
+    let (head, body) = public_key_req.into_parts();
+    let public_key_resp = handler.handle_request(&head, body).await.unwrap();
+    assert_eq!(public_key_resp.status(), StatusCode::OK);
+    let body_bytes = public_key_resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let response_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    let enclave_pub_der_hex = response_json["public_key_der"].as_str().unwrap();
+    let enclave_pub_der = hex::decode(enclave_pub_der_hex.trim_start_matches("0x")).unwrap();
+
+    let client_key = EncryptionKey::new();
+    let client_pub_der = client_key.public_key_as_der().unwrap();
+    let nonce = [0x42u8; 12];
+    let ciphertext = client_key
+        .encrypt(b"nonce-reuse-check", &enclave_pub_der, &nonce)
+        .unwrap();
+
+    let request_json = serde_json::json!({
+        "nonce": format!("0x{}", hex::encode(nonce)),
+        "client_public_key": format!("0x{}", hex::encode(&client_pub_der)),
+        "encrypted_data": format!("0x{}", hex::encode(&ciphertext)),
+    });
+    let request_body = Bytes::from(serde_json::to_vec(&request_json).unwrap());
+
+    let req_first = Request::builder()
+        .method("POST")
+        .uri("/v1/encryption/decrypt")
+        .body(request_body.clone())
+        .unwrap();
+    let (head, body) = req_first.into_parts();
+    let first_resp = handler.handle_request(&head, body).await.unwrap();
+    assert_eq!(first_resp.status(), StatusCode::OK);
+
+    let req_second = Request::builder()
+        .method("POST")
+        .uri("/v1/encryption/decrypt")
+        .body(request_body)
+        .unwrap();
+    let (head, body) = req_second.into_parts();
+    let second_resp = handler.handle_request(&head, body).await.unwrap();
+    assert_eq!(second_resp.status(), StatusCode::BAD_REQUEST);
+
+    let second_body = second_resp.into_body().collect().await.unwrap().to_bytes();
+    let second_body_text = String::from_utf8_lossy(&second_body);
+    assert!(second_body_text.contains("Nonce reuse detected"));
+}
+
+#[tokio::test]
+async fn test_encryption_decrypt_accepts_legacy_nonce_and_blocks_tail_replay_bypass() {
+    use crate::encryption_key::EncryptionKey;
+    use crate::nsm::StaticAttestationProvider;
+
+    let handler =
+        ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();
+
+    let public_key_req = Request::builder()
+        .method("GET")
+        .uri("/v1/encryption/public_key")
+        .body(Bytes::new())
+        .unwrap();
+    let (head, body) = public_key_req.into_parts();
+    let public_key_resp = handler.handle_request(&head, body).await.unwrap();
+    assert_eq!(public_key_resp.status(), StatusCode::OK);
+    let body_bytes = public_key_resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let response_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    let enclave_pub_der_hex = response_json["public_key_der"].as_str().unwrap();
+    let enclave_pub_der = hex::decode(enclave_pub_der_hex.trim_start_matches("0x")).unwrap();
+
+    let client_key = EncryptionKey::new();
+    let client_pub_der = client_key.public_key_as_der().unwrap();
+    let nonce_12 = [0x24u8; AES_GCM_NONCE_LEN];
+    let ciphertext = client_key
+        .encrypt(b"legacy-nonce-compatible", &enclave_pub_der, &nonce_12)
+        .unwrap();
+
+    let mut legacy_nonce_a = vec![0x11u8; LEGACY_AES_GCM_NONCE_LEN];
+    legacy_nonce_a[..AES_GCM_NONCE_LEN].copy_from_slice(&nonce_12);
+    let mut legacy_nonce_b = vec![0x22u8; LEGACY_AES_GCM_NONCE_LEN];
+    legacy_nonce_b[..AES_GCM_NONCE_LEN].copy_from_slice(&nonce_12);
+
+    let request_json_a = serde_json::json!({
+        "nonce": format!("0x{}", hex::encode(&legacy_nonce_a)),
+        "client_public_key": format!("0x{}", hex::encode(&client_pub_der)),
+        "encrypted_data": format!("0x{}", hex::encode(&ciphertext)),
+    });
+    let req_a = Request::builder()
+        .method("POST")
+        .uri("/v1/encryption/decrypt")
+        .body(Bytes::from(serde_json::to_vec(&request_json_a).unwrap()))
+        .unwrap();
+    let (head, body) = req_a.into_parts();
+    let resp_a = handler.handle_request(&head, body).await.unwrap();
+    assert_eq!(resp_a.status(), StatusCode::OK);
+
+    let request_json_b = serde_json::json!({
+        "nonce": format!("0x{}", hex::encode(&legacy_nonce_b)),
+        "client_public_key": format!("0x{}", hex::encode(&client_pub_der)),
+        "encrypted_data": format!("0x{}", hex::encode(&ciphertext)),
+    });
+    let req_b = Request::builder()
+        .method("POST")
+        .uri("/v1/encryption/decrypt")
+        .body(Bytes::from(serde_json::to_vec(&request_json_b).unwrap()))
+        .unwrap();
+    let (head, body) = req_b.into_parts();
+    let resp_b = handler.handle_request(&head, body).await.unwrap();
+    assert_eq!(resp_b.status(), StatusCode::BAD_REQUEST);
+
+    let resp_b_body = resp_b.into_body().collect().await.unwrap().to_bytes();
+    let resp_b_text = String::from_utf8_lossy(&resp_b_body);
+    assert!(resp_b_text.contains("Nonce reuse detected"));
 }
 
 #[cfg(test)]
@@ -1369,7 +1629,6 @@ fn sample_unsigned_tx_for_tests() -> UnsignedEip1559Tx {
 #[tokio::test]
 async fn test_eth_sign_tx_structured() {
     use crate::nsm::StaticAttestationProvider;
-    use assert2::assert;
 
     let handler =
         ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();
@@ -1421,7 +1680,6 @@ async fn test_eth_sign_tx_structured() {
 #[tokio::test]
 async fn test_eth_sign_tx_raw_payload() {
     use crate::nsm::StaticAttestationProvider;
-    use assert2::assert;
 
     let handler =
         ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();
@@ -1461,7 +1719,6 @@ async fn test_eth_sign_tx_raw_payload() {
 #[tokio::test]
 async fn test_eth_sign_tx_signature_verification() {
     use crate::nsm::StaticAttestationProvider;
-    use assert2::assert;
 
     let handler =
         ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();
@@ -1596,7 +1853,6 @@ async fn test_eth_sign_tx_signature_verification() {
 #[tokio::test]
 async fn test_random_handler() {
     use crate::nsm::StaticAttestationProvider;
-    use assert2::assert;
 
     let handler =
         ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();
@@ -1633,7 +1889,6 @@ async fn test_random_handler() {
 #[tokio::test]
 async fn test_s3_get_without_s3_integration() {
     use crate::nsm::StaticAttestationProvider;
-    use assert2::assert;
 
     let handler =
         ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();
@@ -1654,7 +1909,6 @@ async fn test_s3_get_without_s3_integration() {
 #[tokio::test]
 async fn test_kms_derive_without_kms_integration() {
     use crate::nsm::StaticAttestationProvider;
-    use assert2::assert;
 
     let handler =
         ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();
@@ -1677,7 +1931,6 @@ async fn test_kms_derive_without_kms_integration() {
 #[tokio::test]
 async fn test_app_wallet_address_without_kms_integration() {
     use crate::nsm::StaticAttestationProvider;
-    use assert2::assert;
 
     let handler =
         ApiHandler::new(Box::new(StaticAttestationProvider::new(Vec::new())), None).unwrap();

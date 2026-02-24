@@ -97,7 +97,6 @@ impl DomainFilter {
 
 #[cfg(test)]
 mod tests {
-    use assert2::assert;
 
     use super::{Domain, DomainFilter, Pattern};
 

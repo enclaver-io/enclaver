@@ -1194,29 +1194,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "155a5a185e42c6b77ac7b88a15143d930a9e9727a5b7b77eed417404ab15c247"
 
 [[package]]
-name = "assert2"
-version = "0.3.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d6c710e60d14b07d8f42d0e702b16120865eea39edb751e75cd6bf401d18f14"
-dependencies = [
- "assert2-macros",
- "diff",
- "yansi",
-]
-
-[[package]]
-name = "assert2-macros"
-version = "0.3.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9008cbbba9e1d655538870b91fd93814bd82e6968f27788fc734375120ac6f57"
-dependencies = [
- "proc-macro2",
- "quote",
- "rustc_version 0.4.1",
- "syn 2.0.106",
-]
-
-[[package]]
 name = "async-compression"
 version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3002,12 +2979,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "diff"
-version = "0.1.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56254986775e3233ffa9c4d7d3faaf6d36a2c09d30b20687e9f88bc8bafc16c8"
-
-[[package]]
 name = "digest"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3226,14 +3197,13 @@ dependencies = [
 
 [[package]]
 name = "enclaver"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "aes",
  "aes-gcm",
  "alloy-primitives",
  "anyhow",
  "asn1-rs 0.7.1",
- "assert2",
  "async-trait",
  "aws-config",
  "aws-credential-types",
@@ -4112,7 +4082,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 [[package]]
 name = "helios"
 version = "0.11.0"
-source = "git+https://github.com/sparsity-xyz/helios?branch=master#6c306c9b049773d6317521157dbb540895f32e7f"
+source = "git+https://github.com/sparsity-xyz/helios?rev=6c306c9b049773d6317521157dbb540895f32e7f#6c306c9b049773d6317521157dbb540895f32e7f"
 dependencies = [
  "helios-common",
  "helios-core",
@@ -4123,7 +4093,7 @@ dependencies = [
 [[package]]
 name = "helios-common"
 version = "0.11.0"
-source = "git+https://github.com/sparsity-xyz/helios?branch=master#6c306c9b049773d6317521157dbb540895f32e7f"
+source = "git+https://github.com/sparsity-xyz/helios?rev=6c306c9b049773d6317521157dbb540895f32e7f#6c306c9b049773d6317521157dbb540895f32e7f"
 dependencies = [
  "alloy",
  "async-trait",
@@ -4139,7 +4109,7 @@ dependencies = [
 [[package]]
 name = "helios-consensus-core"
 version = "0.11.0"
-source = "git+https://github.com/sparsity-xyz/helios?branch=master#6c306c9b049773d6317521157dbb540895f32e7f"
+source = "git+https://github.com/sparsity-xyz/helios?rev=6c306c9b049773d6317521157dbb540895f32e7f#6c306c9b049773d6317521157dbb540895f32e7f"
 dependencies = [
  "alloy",
  "alloy-rlp",
@@ -4164,7 +4134,7 @@ dependencies = [
 [[package]]
 name = "helios-core"
 version = "0.11.0"
-source = "git+https://github.com/sparsity-xyz/helios?branch=master#6c306c9b049773d6317521157dbb540895f32e7f"
+source = "git+https://github.com/sparsity-xyz/helios?rev=6c306c9b049773d6317521157dbb540895f32e7f#6c306c9b049773d6317521157dbb540895f32e7f"
 dependencies = [
  "alloy",
  "alloy-trie",
@@ -4194,7 +4164,7 @@ dependencies = [
 [[package]]
 name = "helios-ethereum"
 version = "0.11.0"
-source = "git+https://github.com/sparsity-xyz/helios?branch=master#6c306c9b049773d6317521157dbb540895f32e7f"
+source = "git+https://github.com/sparsity-xyz/helios?rev=6c306c9b049773d6317521157dbb540895f32e7f#6c306c9b049773d6317521157dbb540895f32e7f"
 dependencies = [
  "alloy",
  "alloy-trie",
@@ -4232,7 +4202,7 @@ dependencies = [
 [[package]]
 name = "helios-opstack"
 version = "0.11.0"
-source = "git+https://github.com/sparsity-xyz/helios?branch=master#6c306c9b049773d6317521157dbb540895f32e7f"
+source = "git+https://github.com/sparsity-xyz/helios?rev=6c306c9b049773d6317521157dbb540895f32e7f#6c306c9b049773d6317521157dbb540895f32e7f"
 dependencies = [
  "alloy",
  "alloy-rlp",
@@ -4278,7 +4248,7 @@ dependencies = [
 [[package]]
 name = "helios-revm-utils"
 version = "0.11.0"
-source = "git+https://github.com/sparsity-xyz/helios?branch=master#6c306c9b049773d6317521157dbb540895f32e7f"
+source = "git+https://github.com/sparsity-xyz/helios?rev=6c306c9b049773d6317521157dbb540895f32e7f#6c306c9b049773d6317521157dbb540895f32e7f"
 dependencies = [
  "alloy",
  "eyre",
@@ -4293,7 +4263,7 @@ dependencies = [
 [[package]]
 name = "helios-verifiable-api-client"
 version = "0.11.0"
-source = "git+https://github.com/sparsity-xyz/helios?branch=master#6c306c9b049773d6317521157dbb540895f32e7f"
+source = "git+https://github.com/sparsity-xyz/helios?rev=6c306c9b049773d6317521157dbb540895f32e7f#6c306c9b049773d6317521157dbb540895f32e7f"
 dependencies = [
  "alloy",
  "async-trait",
@@ -4312,7 +4282,7 @@ dependencies = [
 [[package]]
 name = "helios-verifiable-api-types"
 version = "0.11.0"
-source = "git+https://github.com/sparsity-xyz/helios?branch=master#6c306c9b049773d6317521157dbb540895f32e7f"
+source = "git+https://github.com/sparsity-xyz/helios?rev=6c306c9b049773d6317521157dbb540895f32e7f#6c306c9b049773d6317521157dbb540895f32e7f"
 dependencies = [
  "alloy",
  "helios-common",

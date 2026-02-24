@@ -23,6 +23,8 @@ use tokio_vsock::VsockStream;
 
 use crate::policy::EgressPolicy;
 
+const JSON_TRANSPORT_MAX_MSG_LEN: usize = 1024 * 1024;
+
 #[async_trait]
 trait JsonTransport: Sized + Sync {
     async fn send<W: AsyncWrite + Unpin + Send>(&self, w: &mut W) -> anyhow::Result<()>;
@@ -35,9 +37,24 @@ impl<M: Serialize + DeserializeOwned + Sync> JsonTransport for M {
         // Frame and serialize
         // use JSON serialization to avoid pulling in another dependency
         let msg = serde_json::to_vec(self)?;
-        // frame it by a 2 byte length
-        let len = msg.len() as u16;
-        let mut pkt = Vec::with_capacity(2 + msg.len());
+
+        if msg.len() > JSON_TRANSPORT_MAX_MSG_LEN {
+            return Err(anyhow!(
+                "json transport message too large: {} bytes (max {})",
+                msg.len(),
+                JSON_TRANSPORT_MAX_MSG_LEN
+            ));
+        }
+
+        let len = u32::try_from(msg.len()).map_err(|_| {
+            anyhow!(
+                "json transport message too large: {} bytes cannot fit in u32",
+                msg.len()
+            )
+        })?;
+
+        // Frame with 4-byte little-endian length.
+        let mut pkt = Vec::with_capacity(4 + msg.len());
         pkt.extend_from_slice(&len.to_le_bytes());
         pkt.extend_from_slice(&msg);
         w.write_all(&pkt).await?;
@@ -45,11 +62,19 @@ impl<M: Serialize + DeserializeOwned + Sync> JsonTransport for M {
     }
 
     async fn recv<R: AsyncRead + Unpin + Send>(r: &mut R) -> anyhow::Result<Self> {
-        let mut len_buf = [0u8; 2];
+        let mut len_buf = [0u8; 4];
         r.read_exact(&mut len_buf).await?;
-        let len = u16::from_le_bytes(len_buf);
+        let len = u32::from_le_bytes(len_buf) as usize;
 
-        let mut msg = vec![0u8; len as usize];
+        if len > JSON_TRANSPORT_MAX_MSG_LEN {
+            return Err(anyhow!(
+                "json transport message too large: {} bytes (max {})",
+                len,
+                JSON_TRANSPORT_MAX_MSG_LEN
+            ));
+        }
+
+        let mut msg = vec![0u8; len];
         r.read_exact(&mut msg).await?;
 
         let req: Self = serde_json::from_slice(&msg)?;
@@ -401,7 +426,6 @@ async fn remote_connect(egress_port: u32, host: &str, port: u16) -> anyhow::Resu
 
 #[cfg(test)]
 mod tests {
-    use assert2::assert;
     use http::{Method, Version, uri::PathAndQuery};
     use http_body_util::{BodyExt, Full};
     use hyper::body::{Bytes, Incoming};
@@ -414,6 +438,7 @@ mod tests {
     use std::io;
     use std::net::{Ipv4Addr, SocketAddr};
     use std::sync::Arc;
+    use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
     use tokio::time::{Duration, timeout};
@@ -423,7 +448,7 @@ mod tests {
     async fn echo(req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
         assert!(req.method() == Method::POST);
         assert!(req.version() == Version::HTTP_11);
-        assert!(req.uri().authority() == None);
+        assert!(req.uri().authority().is_none());
         assert!(req.uri().path_and_query() == Some(&PathAndQuery::from_static("/echo")));
 
         let body = req.into_body().collect().await.unwrap();
@@ -566,6 +591,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_json_transport_roundtrip() {
+        let (mut writer, mut reader) = tokio::io::duplex(4096);
+        let request = super::ConnectRequest::new("example.com".to_string(), 443);
+
+        let send_task = tokio::spawn(async move { request.send(&mut writer).await });
+        let decoded: super::ConnectRequest =
+            super::ConnectRequest::recv(&mut reader).await.unwrap();
+        send_task.await.unwrap().unwrap();
+
+        assert!(decoded.host == "example.com");
+        assert!(decoded.port == 443);
+    }
+
+    #[tokio::test]
+    async fn test_json_transport_send_rejects_oversized_message() {
+        let (mut writer, _reader) = tokio::io::duplex(64);
+        let request =
+            super::ConnectRequest::new("a".repeat(super::JSON_TRANSPORT_MAX_MSG_LEN), 443);
+
+        let err = request.send(&mut writer).await.unwrap_err();
+        assert!(err.to_string().contains("too large"));
+    }
+
+    #[tokio::test]
+    async fn test_json_transport_recv_rejects_oversized_message() {
+        let (mut writer, mut reader) = tokio::io::duplex(64);
+        let oversized_len = (super::JSON_TRANSPORT_MAX_MSG_LEN as u32 + 1).to_le_bytes();
+        writer.write_all(&oversized_len).await.unwrap();
+        drop(writer);
+
+        match super::ConnectRequest::recv(&mut reader).await {
+            Ok(_) => panic!("expected oversized json transport frame to fail"),
+            Err(err) => assert!(err.to_string().contains("too large")),
+        }
+    }
+
+    #[tokio::test]
     async fn test_http_proxy() {
         let fixture = match HttpProxyFixture::start(13000).await {
             Ok(v) => v,
@@ -621,17 +683,17 @@ mod tests {
         let actual = resp1.bytes().await.unwrap();
 
         if expected != actual {
-            if let Err(err) = probe_host_vsock_listener(fixture.base_port as u32).await {
-                if is_vsock_anyhow_unavailable(&err) {
-                    eprintln!(
-                        "Skipping test_http_proxy: body mismatch with unstable vsock (expected_len={} actual_len={} err={})",
-                        expected.len(),
-                        actual.len(),
-                        err
-                    );
-                    fixture.stop().await;
-                    return;
-                }
+            if let Err(err) = probe_host_vsock_listener(fixture.base_port as u32).await
+                && is_vsock_anyhow_unavailable(&err)
+            {
+                eprintln!(
+                    "Skipping test_http_proxy: body mismatch with unstable vsock (expected_len={} actual_len={} err={})",
+                    expected.len(),
+                    actual.len(),
+                    err
+                );
+                fixture.stop().await;
+                return;
             }
             panic!(
                 "unexpected proxy body mismatch: expected_len={} actual_len={}",

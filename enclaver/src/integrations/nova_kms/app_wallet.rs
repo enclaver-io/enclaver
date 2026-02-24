@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose};
 use log::warn;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
 
 use crate::eth_key::EthKey;
 
@@ -66,7 +66,7 @@ impl NovaKmsProxy {
 
         if private_key_b64.is_none() && address_b64.is_none() {
             let generated = EthKey::new();
-            let generated_private_key_hex = Zeroizing::new(generated.private_key_hex());
+            let generated_private_key_hex = generated.private_key_hex_zeroizing();
             let generated_address = canonical_wallet(&generated.address())?;
             self.write_app_wallet_record(generated_private_key_hex.as_str(), &generated_address)
                 .await?;
