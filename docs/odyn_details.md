@@ -34,6 +34,7 @@ egress:
 
 kms_integration:
   enabled: true
+  use_app_wallet: true
   kms_app_id: 1001
   nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64cc8"
 
@@ -171,8 +172,10 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
 - Lifecycle
   - `start()` binds the API listen port and spawns the server task.
   - If `kms_integration` is configured, `start()` constructs `NovaKmsProxy`.
-  - Manifest validation enforces: when `kms_integration.enabled=true`, `helios_rpc.enabled=true`
-    and `helios_rpc.chains` must include `local_rpc_port=18545` for registry discovery.
+  - Manifest validation enforces: if registry mode is configured (`kms_app_id` + `nova_app_registry`),
+    then `helios_rpc.enabled=true` and `helios_rpc.chains` must include
+    `local_rpc_port=18545` for registry discovery.
+  - `/v1/kms/*` keeps registry-backed authz; app-wallet routes run in enclave-local mode and are initialized from Nova KMS KV state.
   - If `storage.s3` is configured, `start()` constructs `S3Proxy` and loads AWS config through IMDS via egress proxy.
   - If `storage.s3.encryption.mode=kms`, `start()` requires `kms_integration.enabled=true`; otherwise startup fails.
   - If KMS integration + S3 KMS encryption are both enabled, `start()` spawns a background archive loop that rotates internal KMS audit `*.jsonl` files into S3 (`kms-audit/...`).
@@ -184,7 +187,7 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
   - `storage.s3.encryption.mode=kms` without KMS integration enabled.
 
 - Extensions
-  - Add auth middleware (mTLS, JWT), role-based access, or metrics.
+  - Add auth middleware (JWT), role-based access, or metrics.
 
 ---
 

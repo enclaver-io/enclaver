@@ -411,6 +411,7 @@ mod tests {
     use hyper_util::rt::TokioIo;
     use rand::RngCore;
     use std::convert::Infallible;
+    use std::io;
     use std::net::{Ipv4Addr, SocketAddr};
     use std::sync::Arc;
     use tokio::net::TcpListener;
@@ -453,11 +454,28 @@ mod tests {
         })
     }
 
-    fn start_host_proxy(egress_port: u32) -> JoinHandle<()> {
-        let proxy = super::HostHttpProxy::bind(egress_port).unwrap();
-        tokio::task::spawn(async move {
-            proxy.serve().await;
+    fn is_vsock_io_unavailable(err: &io::Error) -> bool {
+        matches!(err.raw_os_error(), Some(1) | Some(38) | Some(95) | Some(97))
+            || matches!(
+                err.kind(),
+                io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported
+            )
+    }
+
+    fn is_vsock_anyhow_unavailable(err: &anyhow::Error) -> bool {
+        err.chain().any(|cause| {
+            cause
+                .downcast_ref::<io::Error>()
+                .is_some_and(is_vsock_io_unavailable)
         })
+    }
+
+    fn start_host_proxy(egress_port: u32) -> anyhow::Result<JoinHandle<()>> {
+        let proxy = super::HostHttpProxy::bind(egress_port)?;
+        let handle = tokio::task::spawn(async move {
+            proxy.serve().await;
+        });
+        Ok(handle)
     }
 
     struct HttpProxyFixture {
@@ -468,20 +486,20 @@ mod tests {
     }
 
     impl HttpProxyFixture {
-        async fn start(base_port: u16) -> Self {
+        async fn start(base_port: u16) -> anyhow::Result<Self> {
             _ = pretty_env_logger::try_init();
 
             let fixture = Self {
                 base_port,
                 enclave_proxy_task: start_enclave_proxy(base_port, base_port as u32).await,
-                host_proxy_task: start_host_proxy(base_port as u32),
+                host_proxy_task: start_host_proxy(base_port as u32)?,
                 echo_task: start_echo_server(base_port + 1),
             };
 
             // Give background listeners a brief window to start before issuing requests.
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-            fixture
+            Ok(fixture)
         }
 
         fn proxy_uri(&self) -> http::Uri {
@@ -514,7 +532,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_http_proxy() {
-        let fixture = HttpProxyFixture::start(13000).await;
+        let fixture = match HttpProxyFixture::start(13000).await {
+            Ok(v) => v,
+            Err(err) if is_vsock_anyhow_unavailable(&err) => {
+                eprintln!("Skipping test_http_proxy: vsock unavailable ({err})");
+                return;
+            }
+            Err(err) => panic!("failed to start proxy fixture: {err}"),
+        };
 
         let client = reqwest::Client::builder()
             .proxy(reqwest::Proxy::http(fixture.proxy_uri().to_string()).unwrap())

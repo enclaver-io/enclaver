@@ -106,15 +106,7 @@ jobs:
       - name: Run tests (${{ matrix.feature_set }})
         run: |
           if [[ "${{ matrix.feature_set }}" == "default" ]]; then
-            cargo test --quiet --manifest-path enclaver/Cargo.toml -- \
-              --skip proxy::egress_http::tests::test_http_proxy \
-              --skip proxy::egress_http::tests::test_https_proxy \
-              --skip proxy::ingress::tests::test_enclave_proxy \
-              --skip proxy::ingress::tests::test_full_proxy
+            cargo test --quiet --manifest-path enclaver/Cargo.toml
           else
-            cargo test --quiet --manifest-path enclaver/Cargo.toml --features="${{ matrix.feature_set }}" -- \
-              --skip proxy::egress_http::tests::test_http_proxy \
-              --skip proxy::egress_http::tests::test_https_proxy \
-              --skip proxy::ingress::tests::test_enclave_proxy \
-              --skip proxy::ingress::tests::test_full_proxy
+            cargo test --quiet --manifest-path enclaver/Cargo.toml --features="${{ matrix.feature_set }}"
           fi

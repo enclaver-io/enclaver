@@ -78,7 +78,13 @@ impl ApiService {
 
             // Create Nova KMS proxy if configured.
             let nova_kms = if let Some(kms_config) = config.kms_integration_config() {
-                info!("Nova KMS integration enabled (registry discovery mode)");
+                if kms_config.registry_discovery_configured() {
+                    info!("Nova KMS integration enabled (registry discovery mode)");
+                } else if kms_config.use_app_wallet {
+                    info!("Nova KMS integration enabled (app-wallet local mode)");
+                } else {
+                    info!("Nova KMS integration enabled");
+                }
                 let proxy = Arc::new(NovaKmsProxy::new(kms_config, odyn_endpoint)?);
                 proxy.start_background_refresh();
                 Some(proxy)

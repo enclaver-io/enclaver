@@ -4,7 +4,7 @@
 # Copy, trim, and edit for your own service. Lines starting with `#` are comments.
 #
 # Contract
-# - Inputs: Docker images, optional signing keys, optional TLS material inside the image.
+# - Inputs: Docker images, optional signing keys.
 # - Outputs: A release image that contains an EIF and the manifest; at runtime `odyn` reads this.
 # - Errors: Unknown fields are rejected; missing required fields or malformed values fail at build/run.
 #
@@ -53,8 +53,7 @@ defaults:
 # At run time, the host-side runner publishes the same port to the host network as needed.
 #
 # Recommendation: Use the built-in E2E encryption endpoints (/v1/encryption/encrypt,
-# /v1/encryption/decrypt) for secure client-to-enclave communication instead of
-# TLS termination at the ingress layer.
+# /v1/encryption/decrypt) for tee-pubkey-based client-to-enclave encrypted transport.
 ingress:
   - listen_port: 18001       # aux API (for attestation)
   - listen_port: 8080        # [ODYN + SLEEVE] Required. TCP port (u16) inside the enclave.
@@ -95,19 +94,24 @@ egress:
     #- "10.0.0.0/8"
 
 # Optional: Nova KMS integration used by Internal API `/v1/kms/*` and `/v1/app-wallet/*`
-# - Enables registry-backed app/instance authorization for Nova KMS operations.
-# - If enabled=true, `kms_app_id` and `nova_app_registry` are required.
-# - Registry RPC uses built-in Helios endpoint (`http://127.0.0.1:18545`).
-# - If enabled=true, `helios_rpc.enabled=true` and `helios_rpc.chains` must
+# - Enables `/v1/kms/*` and `/v1/app-wallet/*` routes on the Internal API.
+# - `/v1/kms/*` calls use registry-backed authz and discovery.
+# - Registry mode is enabled only when both `kms_app_id` and `nova_app_registry` are set.
+# - If registry mode is enabled, `helios_rpc.enabled=true` and `helios_rpc.chains` must
 #   include an entry with `local_rpc_port: 18545`.
+# - Registry RPC uses built-in Helios endpoint (`http://127.0.0.1:18545`).
+# - `use_app_wallet=true` enables app-wallet material stored in KMS KV.
+# - App-wallet local mode (`enabled=true`, `use_app_wallet=true`) can run without registry fields.
+# - Instances that resolve to the same KMS app namespace will share the same app-wallet material.
+# - App-wallet routes are local-use only.
 # - Timeout/retry/discovery/audit settings are ODYN internal defaults (not YAML-configurable).
 # - Any extra fields under `kms_integration` are rejected.
 # - If `storage.s3.encryption.mode=kms`, this integration must also be enabled.
 kms_integration:
   enabled: true              # [ODYN] Enable Nova KMS integration for Internal API KMS/app-wallet routes.
-  use_app_wallet: true       # [ODYN] Optional. Enable anchored app-wallet derived from KMS (default: false).
-  kms_app_id: 1001           # [ODYN] Required when enabled. App ID on NovaAppRegistry.
-  nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64cc8" # [ODYN] Required when enabled.
+  use_app_wallet: true       # [ODYN] Optional. Enable app-wallet APIs backed by KMS KV (default: false).
+  kms_app_id: 1001           # [ODYN] Optional. Required for registry-backed `/v1/kms/*` authz/discovery.
+  nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64cc8" # [ODYN] Optional. Required for registry-backed `/v1/kms/*`.
 
 # Optional: internal API exposed inside the enclave for attestation/encryption/signing
 api:
@@ -177,9 +181,9 @@ storage:
 # | egress.allow           | ODYN        | Egress allow list (domain/IP patterns)         |
 # | egress.deny            | ODYN        | Egress deny list (domain/IP patterns)          |
 # | kms_integration.enabled | ODYN       | Enable Nova KMS integration                    |
-# | kms_integration.use_app_wallet | ODYN | Enable anchored app-wallet from KMS (default: false) |
-# | kms_integration.kms_app_id | ODYN    | Nova app ID used for authz/discovery           |
-# | kms_integration.nova_app_registry | ODYN | NovaAppRegistry contract address           |
+# | kms_integration.use_app_wallet | ODYN | Enable app-wallet APIs backed by KMS KV (default: false) |
+# | kms_integration.kms_app_id | ODYN    | Optional. Nova app ID for registry-backed `/v1/kms/*` |
+# | kms_integration.nova_app_registry | ODYN | Optional. Registry contract for `/v1/kms/*` |
 # | api.listen_port        | ODYN        | Internal API port (attestation, signing, etc.) |
 # | aux_api.listen_port    | ODYN        | Auxiliary API port (restricted access)         |
 # | helios_rpc.enabled     | ODYN        | Enable/disable Helios RPC service              |

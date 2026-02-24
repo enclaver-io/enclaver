@@ -9,7 +9,7 @@ This document describes the communication architecture between users and Enclave
 ```
 User (Browser/Client)
         │
-        │ HTTPS (TLS 1.3)
+        │ HTTPS
         ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    EC2 Instance (Host)                       │
@@ -55,7 +55,7 @@ In the Nova Platform's app-node, each deployed application automatically gets a 
 ```
 
 **Caddy's Responsibilities:**
-- **TLS Termination**: Automatically obtains and renews Let's Encrypt certificates
+- **HTTPS Certificate Management**: Automatically obtains and renews Let's Encrypt certificates
 - **Request Routing**: Distributes attestation and application requests to correct ports
 - **Reverse Proxy**: Converts external HTTPS requests to internal HTTP requests
 
@@ -81,22 +81,22 @@ However, if an attacker controls the Host, they can:
 User ──────HTTPS────── Caddy ──────Plaintext────── Enclave
       ↑                      ↑
       │                      │
-   TLS Protected          NOT Protected!
+   HTTPS Edge Protected   NOT Protected!
    (to Host only)       (Host ↔ Enclave)
 ```
 
-**Critical Issue: Caddy TLS only protects traffic to the Host, not to the Enclave!**
+**Critical Issue: Host-edge HTTPS only protects traffic to the Host, not to the Enclave!**
 
-- Caddy runs on the Host, TLS terminates at Caddy
+- Caddy runs on the Host, HTTPS terminates at Caddy
 - The VSOCK channel between Host and Enclave is plaintext
 - If the Host is compromised, attackers can fully eavesdrop and tamper with communication
 
 ### 2.3 Why End-to-End Encryption is Needed
 
-Standard HTTPS/TLS cannot solve these problems:
+Standard edge HTTPS cannot solve these problems:
 
 1. **Cannot verify Enclave identity**: Users cannot confirm their requests are processed by a trusted Enclave
-2. **Host can eavesdrop**: TLS terminates at Host, plaintext is exposed in Host memory
+2. **Host can eavesdrop**: HTTPS terminates at Host, plaintext is exposed in Host memory
 3. **Cannot prevent Host tampering**: A malicious Host can modify requests or responses
 
 ## 3. Recommended End-to-End Encryption Approach
@@ -138,7 +138,7 @@ sequenceDiagram
 | **Key Agreement** | P-384 ECDH (secp384r1) |
 | **Key Derivation** | HKDF-SHA256, info="encryption data" |
 | **Symmetric Encryption** | AES-256-GCM |
-| **Nonce** | 32 random bytes (first 12 bytes used as IV) |
+| **Nonce** | 12 random bytes |
 | **Response Signature** | EIP-191 signature (Enclave ETH key) |
 
 ### 3.3 Detailed Encryption Flow
@@ -205,11 +205,11 @@ const aesKey = await crypto.subtle.deriveKey(
 #### Step 4: Encrypt Request
 
 ```typescript
-const nonce = crypto.getRandomValues(new Uint8Array(32));
+const nonce = crypto.getRandomValues(new Uint8Array(12));
 const plaintext = JSON.stringify({ message: 'Hello, Enclave!' });
 
 const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv: nonce.slice(0, 12) },
+    { name: 'AES-GCM', iv: nonce },
     aesKey,
     new TextEncoder().encode(plaintext)
 );
@@ -260,8 +260,7 @@ signature = odyn.sign_message(response_data)
 
 | Approach | Security Level | Browser Support | Implementation Complexity | Use Case |
 |----------|---------------|-----------------|--------------------------|----------|
-| **Caddy TLS only** | Low | Native | Low | Scenarios where Host is trusted |
-| **VSOCK TLS** | Medium | Native | Medium | Protect internal channel |
+| **Host-edge HTTPS termination** | Low | Native | Low | Transitional setups only |
 | **E2E Encryption (Recommended)** | High | Requires JS | High | Untrusted Host |
 | **KMS + Attestation** | High | Native | Very High | Enterprise production |
 
@@ -269,7 +268,7 @@ signature = odyn.sign_message(response_data)
 
 | Threat Assumption | Recommended Approach |
 |-------------------|---------------------|
-| Trust Host, only defend against external attacks | Caddy TLS is sufficient |
+| Need enclave-level confidentiality/integrity | **E2E Encryption (recommended in this doc)** |
 | Don't trust Host, need data confidentiality | **E2E Encryption (recommended in this doc)** |
 | Need fixed domain + enterprise security | KMS + Attestation |
 
@@ -381,7 +380,7 @@ Decrypt data sent from a client using ECDH + AES-256-GCM.
 - **Request Body:**
   ```json
   {
-    "nonce": "0x...",              // Hex-encoded nonce (at least 12 bytes)
+    "nonce": "0x...",              // Hex-encoded nonce (exactly 12 bytes)
     "client_public_key": "0x...",  // Hex-encoded client DER public key
     "encrypted_data": "0x..."      // Hex-encoded ciphertext (with auth tag)
   }
@@ -574,7 +573,7 @@ def secure_endpoint():
 
 ### 6.1 Key Points
 
-1. **Caddy TLS is not end-to-end encryption** - TLS terminates at Host, VSOCK channel is plaintext
+1. **Host-edge HTTPS termination is not end-to-end encryption** - traffic is exposed before reaching enclave crypto boundaries
 2. **Use Attestation to verify Enclave identity** - Ensures communication is with a trusted Enclave
 3. **Use ECDH + AES-GCM to encrypt data** - Even if Host is compromised, data remains confidential
 4. **Verify response signatures** - Ensures responses come from the same Enclave

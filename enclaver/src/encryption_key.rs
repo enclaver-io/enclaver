@@ -175,23 +175,21 @@ impl EncryptionKey {
         Ok(aes_key)
     }
 
-    /// Normalize nonce for AES-GCM.
-    /// Accepts 12-byte nonces, plus 32-byte legacy nonces where the first 12 bytes are used.
-    fn normalize_nonce(nonce: &[u8]) -> Result<&[u8]> {
-        match nonce.len() {
-            12 => Ok(nonce),
-            32 => Ok(&nonce[..12]),
-            len => Err(anyhow!(
-                "Nonce must be exactly 12 bytes (or 32-byte legacy nonce), got {}",
-                len
-            )),
+    /// Validate nonce size for AES-GCM.
+    fn validate_nonce(nonce: &[u8]) -> Result<()> {
+        if nonce.len() != 12 {
+            return Err(anyhow!(
+                "Nonce must be exactly 12 bytes, got {}",
+                nonce.len()
+            ));
         }
+        Ok(())
     }
 
     /// Decrypt data encrypted by a client using ECDH + AES-GCM
     ///
     /// Args:
-    ///   nonce: 12-byte nonce (or 32-byte legacy nonce; first 12 bytes are used)
+    ///   nonce: 12-byte nonce
     ///   client_public_key_der: Client's ephemeral public key (DER/SPKI format)
     ///   encrypted_data: AES-GCM encrypted ciphertext with tag
     ///
@@ -206,12 +204,12 @@ impl EncryptionKey {
         // Derive shared key
         let aes_key = self.derive_shared_key(client_public_key_der)?;
 
-        let nonce_bytes = Self::normalize_nonce(nonce)?;
+        Self::validate_nonce(nonce)?;
 
         // Decrypt using AES-256-GCM
         let cipher = Aes256Gcm::new_from_slice(&aes_key)
             .map_err(|e| anyhow!("Failed to create cipher: {}", e))?;
-        let nonce = Nonce::from_slice(nonce_bytes);
+        let nonce = Nonce::from_slice(nonce);
 
         let plaintext = cipher
             .decrypt(nonce, encrypted_data)
@@ -225,7 +223,7 @@ impl EncryptionKey {
     /// Args:
     ///   plaintext: Data to encrypt
     ///   client_public_key_der: Client's public key (DER/SPKI format)
-    ///   nonce: 12-byte nonce (or 32-byte legacy nonce; first 12 bytes are used)
+    ///   nonce: 12-byte nonce
     ///
     /// Returns:
     ///   Encrypted ciphertext with authentication tag
@@ -238,12 +236,12 @@ impl EncryptionKey {
         // Derive shared key
         let aes_key = self.derive_shared_key(client_public_key_der)?;
 
-        let nonce_bytes = Self::normalize_nonce(nonce)?;
+        Self::validate_nonce(nonce)?;
 
         // Encrypt using AES-256-GCM
         let cipher = Aes256Gcm::new_from_slice(&aes_key)
             .map_err(|e| anyhow!("Failed to create cipher: {}", e))?;
-        let nonce = Nonce::from_slice(nonce_bytes);
+        let nonce = Nonce::from_slice(nonce);
 
         let ciphertext = cipher
             .encrypt(nonce, plaintext)
@@ -714,43 +712,28 @@ mod tests {
     }
 
     #[test]
-    fn test_encrypt_decrypt_with_32_byte_nonce() {
-        // API accepts 32-byte nonce, uses first 12 bytes
+    fn test_encrypt_rejects_32_byte_nonce() {
         let key1 = EncryptionKey::new();
         let key2 = EncryptionKey::new();
 
-        let pub1_der = key1.public_key_as_der().unwrap();
         let pub2_der = key2.public_key_as_der().unwrap();
-
         let plaintext = b"Testing 32-byte nonce";
         let nonce_32 = [0xffu8; 32];
 
-        let ciphertext = key1.encrypt(plaintext, &pub2_der, &nonce_32).unwrap();
-        let decrypted = key2.decrypt(&nonce_32, &pub1_der, &ciphertext).unwrap();
-
-        assert_eq!(decrypted, plaintext);
+        let result = key1.encrypt(plaintext, &pub2_der, &nonce_32);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_encrypt_decrypt_nonce_prefix_matters() {
+    fn test_decrypt_rejects_32_byte_nonce() {
         let key1 = EncryptionKey::new();
         let key2 = EncryptionKey::new();
-
-        let _pub1_der = key1.public_key_as_der().unwrap();
         let pub2_der = key2.public_key_as_der().unwrap();
+        let fake_ciphertext = [0x00u8; 32];
+        let nonce_32 = [0xffu8; 32];
 
-        let plaintext = b"Test nonce prefix";
-
-        // Two nonces that differ only in bytes 12+ should produce same result
-        let nonce_a = [0x42u8; 32];
-        let mut nonce_b = [0x42u8; 32];
-        nonce_b[12..].fill(0xff); // Change only bytes after first 12
-
-        let ciphertext_a = key1.encrypt(plaintext, &pub2_der, &nonce_a).unwrap();
-        let ciphertext_b = key1.encrypt(plaintext, &pub2_der, &nonce_b).unwrap();
-
-        // Should produce same ciphertext since first 12 bytes are identical
-        assert_eq!(ciphertext_a, ciphertext_b);
+        let result = key1.decrypt(&nonce_32, &pub2_der, &fake_ciphertext);
+        assert!(result.is_err());
     }
 
     #[test]

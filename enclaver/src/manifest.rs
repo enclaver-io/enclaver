@@ -180,6 +180,51 @@ pub struct KmsIntegration {
 }
 
 impl KmsIntegration {
+    fn has_any_registry_field(&self) -> bool {
+        self.kms_app_id.is_some()
+            || self
+                .nova_app_registry
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|v| !v.is_empty())
+    }
+
+    pub fn registry_discovery_configured(&self) -> bool {
+        self.kms_app_id.is_some()
+            && self
+                .nova_app_registry
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|v| !v.is_empty())
+    }
+
+    fn validate_registry_fields(&self) -> Result<()> {
+        let kms_app_id = self.kms_app_id.ok_or_else(|| {
+            anyhow!("kms_integration.kms_app_id is required for registry discovery")
+        })?;
+        if kms_app_id == 0 {
+            bail!("kms_integration.kms_app_id must be non-zero for registry discovery");
+        }
+
+        let registry = self
+            .nova_app_registry
+            .as_ref()
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| {
+                anyhow!("kms_integration.nova_app_registry is required for registry discovery")
+            })?;
+        if !(registry.starts_with("0x") || registry.starts_with("0X")) || registry.len() != 42 {
+            bail!("kms_integration.nova_app_registry must be a 20-byte hex address");
+        }
+        let registry_hex = registry.trim_start_matches("0x").trim_start_matches("0X");
+        if hex::decode(registry_hex).is_err() {
+            bail!("kms_integration.nova_app_registry must be a 20-byte hex address");
+        }
+
+        Ok(())
+    }
+
     fn validate(&self) -> Result<()> {
         if self.use_app_wallet && !self.enabled {
             bail!("kms_integration.use_app_wallet requires kms_integration.enabled=true");
@@ -189,22 +234,21 @@ impl KmsIntegration {
             return Ok(());
         }
 
-        if self.kms_app_id.unwrap_or(0) == 0 {
-            bail!("kms_integration.kms_app_id is required when enabled");
+        let has_any_registry_field = self.has_any_registry_field();
+        if !self.use_app_wallet && !has_any_registry_field {
+            bail!(
+                "kms_integration.kms_app_id and kms_integration.nova_app_registry are required when kms_integration.enabled=true and kms_integration.use_app_wallet=false"
+            );
         }
-        let registry = self
-            .nova_app_registry
-            .as_ref()
-            .map(|v| v.trim())
-            .filter(|v| !v.is_empty())
-            .ok_or_else(|| anyhow!("kms_integration.nova_app_registry is required when enabled"))?;
-        if !(registry.starts_with("0x") || registry.starts_with("0X")) || registry.len() != 42 {
-            bail!("kms_integration.nova_app_registry must be a 20-byte hex address");
+        if has_any_registry_field && !self.registry_discovery_configured() {
+            bail!(
+                "kms_integration.kms_app_id and kms_integration.nova_app_registry must be set together"
+            );
         }
-        let registry_hex = registry.trim_start_matches("0x").trim_start_matches("0X");
-        if hex::decode(registry_hex).is_err() {
-            bail!("kms_integration.nova_app_registry must be a 20-byte hex address");
+        if self.registry_discovery_configured() {
+            self.validate_registry_fields()?;
         }
+
         Ok(())
     }
 }
@@ -349,26 +393,30 @@ fn parse_manifest(buf: &[u8]) -> Result<Manifest> {
 }
 
 fn validate_manifest_cross_constraints(manifest: &Manifest) -> Result<()> {
-    let kms_enabled = manifest
-        .kms_integration
-        .as_ref()
-        .map(|kms| kms.enabled)
-        .unwrap_or(false);
-    if !kms_enabled {
+    let kms_cfg = manifest.kms_integration.as_ref().filter(|kms| kms.enabled);
+    let Some(kms_cfg) = kms_cfg else {
+        return Ok(());
+    };
+    if !kms_cfg.registry_discovery_configured() {
         return Ok(());
     }
 
-    let helios = manifest
-        .helios_rpc
-        .as_ref()
-        .ok_or_else(|| anyhow!("kms_integration.enabled=true requires helios_rpc.enabled=true"))?;
+    let helios = manifest.helios_rpc.as_ref().ok_or_else(|| {
+        anyhow!(
+            "kms_integration registry mode requires helios_rpc.enabled=true and local_rpc_port={}",
+            KMS_REGISTRY_HELIOS_PORT
+        )
+    })?;
     if !helios.enabled {
-        bail!("kms_integration.enabled=true requires helios_rpc.enabled=true");
+        bail!(
+            "kms_integration registry mode requires helios_rpc.enabled=true and local_rpc_port={}",
+            KMS_REGISTRY_HELIOS_PORT
+        );
     }
 
     let chains = helios.chains.as_ref().ok_or_else(|| {
         anyhow!(
-            "kms_integration.enabled=true requires helios_rpc.chains to include local_rpc_port={}",
+            "kms_integration registry mode requires helios_rpc.chains to include local_rpc_port={}",
             KMS_REGISTRY_HELIOS_PORT
         )
     })?;
@@ -377,7 +425,7 @@ fn validate_manifest_cross_constraints(manifest: &Manifest) -> Result<()> {
         .any(|chain| chain.local_rpc_port == KMS_REGISTRY_HELIOS_PORT)
     {
         bail!(
-            "kms_integration.enabled=true requires helios_rpc.chains to include local_rpc_port={} for registry discovery",
+            "kms_integration registry mode requires helios_rpc.chains to include local_rpc_port={} for registry discovery",
             KMS_REGISTRY_HELIOS_PORT
         );
     }
@@ -438,10 +486,10 @@ sources:
     }
 
     #[test]
-    fn test_parse_manifest_rejects_legacy_chain_access_block() {
+    fn test_parse_manifest_rejects_deprecated_chain_access_block() {
         let raw_manifest = br#"
 version: v1
-name: "test-legacy-chain-access"
+name: "test-deprecated-chain-access"
 target: "target-image:latest"
 sources:
   app: "app-image:latest"
@@ -457,10 +505,10 @@ chain_access:
     }
 
     #[test]
-    fn test_parse_manifest_rejects_legacy_helios_single_chain_shape() {
+    fn test_parse_manifest_rejects_deprecated_helios_single_chain_shape() {
         let raw_manifest = br#"
 version: v1
-name: "test-legacy-helios"
+name: "test-deprecated-helios"
 target: "target-image:latest"
 sources:
   app: "app-image:latest"
@@ -833,6 +881,61 @@ helios_rpc:
     }
 
     #[test]
+    fn test_parse_kms_integration_use_app_wallet_local_mode_without_registry() {
+        let raw_manifest = br#"
+version: v1
+name: "test-kms-app-wallet-local-only"
+target: "target-image:latest"
+sources:
+  app: "app-image:latest"
+kms_integration:
+  enabled: true
+  use_app_wallet: true
+"#;
+
+        let manifest = parse_manifest(raw_manifest).unwrap();
+        let kms = manifest
+            .kms_integration
+            .expect("kms_integration should be present");
+        assert!(kms.enabled);
+        assert!(kms.use_app_wallet);
+        assert!(kms.kms_app_id.is_none());
+        assert!(kms.nova_app_registry.is_none());
+    }
+
+    #[test]
+    fn test_parse_kms_integration_enabled_requires_registry_when_use_app_wallet_false() {
+        let raw_manifest = br#"
+version: v1
+name: "test-kms-needs-registry"
+target: "target-image:latest"
+sources:
+  app: "app-image:latest"
+kms_integration:
+  enabled: true
+"#;
+
+        assert!(parse_manifest(raw_manifest).is_err());
+    }
+
+    #[test]
+    fn test_parse_kms_integration_rejects_partial_registry_fields() {
+        let raw_manifest = br#"
+version: v1
+name: "test-kms-partial-registry"
+target: "target-image:latest"
+sources:
+  app: "app-image:latest"
+kms_integration:
+  enabled: true
+  use_app_wallet: true
+  kms_app_id: 49
+"#;
+
+        assert!(parse_manifest(raw_manifest).is_err());
+    }
+
+    #[test]
     fn test_parse_kms_integration_rejects_use_app_wallet_when_disabled() {
         let raw_manifest = br#"
 version: v1
@@ -849,7 +952,7 @@ kms_integration:
     }
 
     #[test]
-    fn test_parse_kms_integration_enabled_requires_helios_rpc() {
+    fn test_parse_kms_integration_registry_mode_requires_helios_rpc() {
         let raw_manifest = br#"
 version: v1
 name: "test-kms-needs-helios"
@@ -866,7 +969,7 @@ kms_integration:
     }
 
     #[test]
-    fn test_parse_kms_integration_enabled_requires_registry_helios_port() {
+    fn test_parse_kms_integration_registry_mode_requires_registry_helios_port() {
         let raw_manifest = br#"
 version: v1
 name: "test-kms-missing-registry-helios-port"

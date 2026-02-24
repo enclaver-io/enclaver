@@ -194,7 +194,7 @@ Decrypt data sent from a client using ECDH + AES-256-GCM.
 - **Request Body:**
   ```json
   {
-    "nonce": "0x...",          // Hex-encoded nonce (at least 12 bytes)
+    "nonce": "0x...",          // Hex-encoded nonce (exactly 12 bytes)
     "client_public_key": "0x...", // Hex-encoded DER public key
     "encrypted_data": "0x..."  // Hex-encoded ciphertext with auth tag
   }
@@ -240,8 +240,8 @@ Encrypt data to send to a client using ECDH + AES-256-GCM.
 ## KMS Integration API Endpoints (Primary API only)
 
 These endpoints are available only when `kms_integration.enabled=true` in `enclaver.yaml`.
-When KMS integration is enabled, the manifest must also enable `helios_rpc` and include
-one chain with `local_rpc_port: 18545` for registry discovery.
+`/v1/kms/*` requires registry mode (`kms_app_id` + `nova_app_registry`), which also requires
+`helios_rpc.enabled=true` and one chain with `local_rpc_port: 18545` for registry discovery.
 If KMS integration is not configured, they return `400 Bad Request` with plain-text body:
 `KMS integration not configured`.
 
@@ -343,6 +343,17 @@ Delete a value from KMS-backed key/value storage.
 ## App Wallet API Endpoints (Primary API only)
 
 These endpoints are also gated by `kms_integration.enabled=true`.
+They are local-use endpoints for enclave apps.
+Instances mapped to the same KMS app namespace share the same app-wallet.
+Typical app-wallet setup for local mode:
+- `kms_integration.enabled=true`
+- `kms_integration.use_app_wallet=true`
+- `kms_app_id`/`nova_app_registry` can be omitted when only app-wallet APIs are used.
+
+Initialization behavior:
+- If Nova KMS is unavailable, app-wallet endpoints return unavailable errors.
+- If both app-wallet KV records exist (private key + address), app-wallet is available.
+- If both records are missing, Enclaver generates local app-wallet material, writes it to KMS, then re-reads and requires it to match before marking app-wallet available.
 
 ### Get App Wallet Address
 
@@ -352,10 +363,11 @@ These endpoints are also gated by `kms_integration.enabled=true`.
   ```json
   {
     "address": "0x...",
-    "app_id": 1001,
+    "app_id": 0,
     "instance_wallet": "0x..."
   }
   ```
+  `app_id` is currently fixed to `0` for enclave-local app-wallet mode.
 
 ### Sign Message with App Wallet
 
@@ -374,7 +386,7 @@ Signs a plain-text message using EIP-191 personal-sign prefix.
   {
     "signature": "0x...",
     "address": "0x...",
-    "app_id": 1001
+    "app_id": 0
   }
   ```
 
@@ -391,7 +403,7 @@ Signs a plain-text message using EIP-191 personal-sign prefix.
     "transaction_hash": "0x...",
     "signature": "0x...",
     "address": "0x...",
-    "app_id": 1001
+    "app_id": 0
   }
   ```
 

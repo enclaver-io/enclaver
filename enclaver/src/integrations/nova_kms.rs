@@ -1959,13 +1959,7 @@ fn truncate_for_log(value: &str, max_len: usize) -> String {
 fn is_sensitive_log_field(field: &str) -> bool {
     matches!(
         field.to_ascii_lowercase().as_str(),
-        "key"
-            | "value"
-            | "private_key"
-            | "signature"
-            | "encrypted_data"
-            | "onchain_proof"
-            | "proof"
+        "key" | "value" | "private_key" | "signature" | "encrypted_data"
     )
 }
 
@@ -2015,7 +2009,6 @@ fn looks_like_connectivity_error(message: &str) -> bool {
         "timed out",
         "timeout",
         "dns error",
-        "tls",
         "tcp connect",
         "channel closed",
         "broken pipe",
