@@ -608,7 +608,7 @@ impl NovaKmsProxy {
 
         let key = match self.derive_key(&req.path, &req.context, req.length).await {
             Ok(v) => v,
-            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+            Err(err) => return Ok(kms_operation_error_response(err.to_string())),
         };
 
         http_util::ok_json(&DeriveApiResponse {
@@ -634,7 +634,7 @@ impl NovaKmsProxy {
                 found: value.is_some(),
                 value,
             })?),
-            Err(err) => Ok(http_util::bad_request(err.to_string())),
+            Err(err) => Ok(kms_operation_error_response(err.to_string())),
         }
     }
 
@@ -653,7 +653,7 @@ impl NovaKmsProxy {
 
         match self.kv_put(&req.key, &req.value, req.ttl_ms).await {
             Ok(()) => Ok(http_util::ok_json(&KvPutApiResponse { success: true })?),
-            Err(err) => Ok(http_util::bad_request(err.to_string())),
+            Err(err) => Ok(kms_operation_error_response(err.to_string())),
         }
     }
 
@@ -672,7 +672,7 @@ impl NovaKmsProxy {
 
         match self.kv_delete(&req.key).await {
             Ok(()) => Ok(http_util::ok_json(&KvDeleteApiResponse { success: true })?),
-            Err(err) => Ok(http_util::bad_request(err.to_string())),
+            Err(err) => Ok(kms_operation_error_response(err.to_string())),
         }
     }
 
@@ -2222,8 +2222,8 @@ fn format_node_refresh_list(nodes: &[KmsNodeCacheEntry], now_ms: u64) -> String 
                 _ => "unknown",
             };
             format!(
-                "{{wallet={},url={},reachability={}}}",
-                node.wallet, node.base_url, reachability
+                "{{wallet={},url={},tee_pubkey={},reachability={}}}",
+                node.wallet, node.base_url, node.tee_pubkey, reachability
             )
         })
         .collect::<Vec<_>>()
@@ -2377,10 +2377,42 @@ fn looks_like_transient_registry_error(message: &str) -> bool {
     looks_like_connectivity_error(message) || lowered.contains("out of sync")
 }
 
+fn looks_like_registry_not_ready_error(message: &str) -> bool {
+    let lowered = message.to_ascii_lowercase();
+    lowered.contains("is not zk-verified on registry")
+        || lowered.contains("is not active on registry")
+        || lowered.contains("registry discovery returned no active kms nodes")
+}
+
+fn looks_like_registry_rpc_unavailable_error(message: &str) -> bool {
+    let lowered = message.to_ascii_lowercase();
+    lowered.contains("registry discovery failed")
+        || lowered.contains("registry eth_call http 5")
+        || lowered.contains("registry eth_call failed: upstream temporarily unavailable")
+}
+
 fn authz_error_response(message: String) -> Response<Full<Bytes>> {
-    if looks_like_transient_registry_error(&message) {
+    if looks_like_transient_registry_error(&message)
+        || looks_like_registry_not_ready_error(&message)
+        || looks_like_registry_rpc_unavailable_error(&message)
+    {
         return Response::builder()
             .status(StatusCode::SERVICE_UNAVAILABLE)
+            .header("Retry-After", "10")
+            .body(Full::new(Bytes::from(message)))
+            .unwrap();
+    }
+    http_util::bad_request(message)
+}
+
+fn kms_operation_error_response(message: String) -> Response<Full<Bytes>> {
+    if looks_like_transient_registry_error(&message)
+        || looks_like_registry_not_ready_error(&message)
+        || looks_like_registry_rpc_unavailable_error(&message)
+    {
+        return Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .header("Retry-After", "10")
             .body(Full::new(Bytes::from(message)))
             .unwrap();
     }
@@ -2891,11 +2923,15 @@ mod tests {
                 None,
             ),
         ];
+        let mut nodes = nodes;
+        nodes[0].tee_pubkey = "aaaabbbb".to_string();
+        nodes[1].tee_pubkey = "ccccdddd".to_string();
+        nodes[2].tee_pubkey = "eeeeffff".to_string();
 
         let formatted = format_node_refresh_list(&nodes, now_ms);
-        assert!(formatted.contains("wallet=0xeeee000000000000000000000000000000000005,url=https://kms-5.example.com,reachability=reachable"));
-        assert!(formatted.contains("wallet=0xffff000000000000000000000000000000000006,url=https://kms-6.example.com,reachability=unreachable"));
-        assert!(formatted.contains("wallet=0x1111000000000000000000000000000000000007,url=https://kms-7.example.com,reachability=unknown"));
+        assert!(formatted.contains("wallet=0xeeee000000000000000000000000000000000005,url=https://kms-5.example.com,tee_pubkey=aaaabbbb,reachability=reachable"));
+        assert!(formatted.contains("wallet=0xffff000000000000000000000000000000000006,url=https://kms-6.example.com,tee_pubkey=ccccdddd,reachability=unreachable"));
+        assert!(formatted.contains("wallet=0x1111000000000000000000000000000000000007,url=https://kms-7.example.com,tee_pubkey=eeeeffff,reachability=unknown"));
     }
 
     #[tokio::test]
@@ -2987,5 +3023,43 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("sender_tee_pubkey mismatch"));
+    }
+
+    #[test]
+    fn authz_error_response_returns_503_for_registry_not_ready() {
+        let response =
+            authz_error_response("instance 0xabc is not zk-verified on registry".to_string());
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok()),
+            Some("10")
+        );
+    }
+
+    #[test]
+    fn kms_operation_error_response_returns_503_for_registry_discovery_failure() {
+        let response = kms_operation_error_response(
+            "registry discovery failed: registry eth_call HTTP 503 body=upstream unavailable"
+                .to_string(),
+        );
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok()),
+            Some("10")
+        );
+    }
+
+    #[test]
+    fn kms_operation_error_response_returns_400_for_non_transient_error() {
+        let response = kms_operation_error_response(
+            "Failed to decrypt request: envelope decryption failed".to_string(),
+        );
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }
