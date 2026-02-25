@@ -1699,8 +1699,7 @@ impl NovaKmsProxy {
                 if tee_pubkey.is_empty() {
                     warn!(
                         "Nova KMS discovery skipping node={} wallet={} because registry tee_pubkey is empty",
-                        base_url,
-                        canonical
+                        base_url, canonical
                     );
                     continue;
                 }
