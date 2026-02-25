@@ -103,32 +103,54 @@ Standard edge HTTPS cannot solve these problems:
 
 ### 3.1 Approach Overview
 
-Use **Attestation + P-384 ECDH + AES-256-GCM** to achieve true end-to-end encryption:
+Use **P-384 ECDH + HKDF-SHA256 + AES-256-GCM** to achieve true end-to-end encryption. The Enclave's P-384 public key (`teePubkey`) can be obtained through two methods:
+
+| Method | Source | Trust Basis | Recommended For |
+|--------|--------|-------------|-----------------|
+| **On-chain registry (Recommended)** | `NovaAppRegistry.getInstanceByWallet()` | On-chain attestation verification + ZK proof | Enclave-to-enclave, backend clients |
+| **Direct attestation** | `/.well-known/attestation` endpoint | Client-side AWS signature verification | Browser clients, audit tools |
+
+> **Recommended**: Query the `NovaAppRegistry` smart contract to retrieve the instance's `teePubkey` and `tee_wallet_address`. This is the preferred approach because the registry only stores keys from instances that have passed on-chain attestation verification (and optionally ZK verification). This eliminates the need for the client to implement complex attestation parsing.
 
 ```mermaid
 sequenceDiagram
     participant C as Client
+    participant R as NovaAppRegistry (On-chain)
     participant H as Host (Caddy)
     participant E as Enclave (Odyn)
     
-    C->>H: POST /.well-known/attestation
-    H->>E: Forward to /v1/attestation
-    E-->>H: attestation_doc + public_key
-    H-->>C: attestation_doc + public_key
-    
-    Note over C: 1. Verify attestation (AWS signature chain)
-    Note over C: 2. Verify PCR values (code integrity)
-    Note over C: 3. Extract Enclave public key
-    Note over C: 4. Generate client ephemeral keypair
-    Note over C: 5. ECDH to compute shared secret
-    
-    C->>H: POST /api (encrypted request)
+    rect rgb(230, 245, 255)
+        Note over C,R: Option A: On-chain registry (Recommended)
+        C->>R: getInstanceByWallet(wallet) or getActiveInstances(appId)
+        R-->>C: instance {tee_wallet_address, teePubkey, status, ...}
+        Note over C: Verify instance.status == ACTIVE
+        Note over C: Use instance.teePubkey as Enclave P-384 public key
+    end
+
+    rect rgb(255, 245, 230)
+        Note over C,E: Option B: Direct attestation
+        C->>H: POST /.well-known/attestation
+        H->>E: Forward to /v1/attestation
+        E-->>H: attestation_doc (CBOR)
+        H-->>C: attestation_doc
+        Note over C: Verify AWS signature chain + PCR values
+        Note over C: Extract P-384 public key from attestation
+    end
+
+    C->>C: Generate client ephemeral P-384 keypair
+    C->>C: ECDH → shared_secret
+    C->>C: Generate 12-byte random nonce
+    C->>C: HKDF(salt=sort(pub_C,pub_E)+nonce, info="enclaver-ecdh-aes256gcm-v1")
+    C->>C: AES-GCM Encrypt(key, nonce, plaintext)
+
+    C->>H: POST /api (nonce + client_pub_key + ciphertext)
     H->>E: Forward encrypted data
-    E-->>H: Encrypted response + signature
-    H-->>C: Encrypted response + signature
+    Note over E: Derive same AES key via ECDH+HKDF
+    Note over E: Decrypt, process, encrypt response
+    E-->>H: nonce + enclave_pub_key + ciphertext
+    H-->>C: Encrypted response
     
-    Note over C: Decrypt response with shared key
-    Note over C: Verify Enclave signature
+    Note over C: Derive AES key for response, decrypt
 ```
 
 ### 3.2 Encryption Specifications
@@ -136,92 +158,145 @@ sequenceDiagram
 | Component | Specification |
 |-----------|---------------|
 | **Key Agreement** | P-384 ECDH (secp384r1) |
-| **Key Derivation** | HKDF-SHA256, info="encryption data" |
+| **Key Derivation** | HKDF-SHA256 |
+| **HKDF Salt** | `sorted(pubkey_A_sec1, pubkey_B_sec1) ‖ nonce` |
+| **HKDF Info** | `"enclaver-ecdh-aes256gcm-v1"` |
 | **Symmetric Encryption** | AES-256-GCM |
-| **Nonce** | 12 random bytes |
+| **Nonce** | Exactly 12 random bytes (no legacy 32-byte) |
+| **Nonce Replay Protection** | Server-side LRU cache rejects duplicate (pubkey, nonce) pairs |
 | **Response Signature** | EIP-191 signature (Enclave ETH key) |
 
-### 3.3 Detailed Encryption Flow
+> **IMPORTANT**: The HKDF salt includes both public keys (sorted lexicographically as uncompressed SEC1 bytes) and the nonce. This ensures each message derives a unique AES key, even between the same key pair. Clients MUST implement this exact key derivation to interoperate with the Enclave.
 
-#### Step 1: Obtain Attestation and Public Key
+### 3.3 Key Derivation Protocol
+
+The following diagram shows the exact key derivation steps that **both** the client and enclave must follow to produce the same AES-256 key:
+
+```mermaid
+flowchart TD
+    A["Client Private Key + Enclave Public Key"] --> B["ECDH (P-384)"]
+    B --> C["shared_secret (48 bytes)"]
+    
+    D["Client Public Key (SEC1 uncompressed, 97B)"] --> E["Sort lexicographically"]
+    F["Enclave Public Key (SEC1 uncompressed, 97B)"] --> E
+    E --> G["sorted_pubkeys = first ‖ second (194B)"]
+    
+    H["nonce (12 bytes)"] --> I["salt = sorted_pubkeys ‖ nonce (206B)"]
+    G --> I
+    
+    C --> J["HKDF-SHA256"]
+    I --> J
+    K["info = 'enclaver-ecdh-aes256gcm-v1'"] --> J
+    J --> L["AES-256 Key (32 bytes)"]
+    
+    L --> M["AES-GCM Encrypt/Decrypt with nonce"]
+    H --> M
+```
+
+**Critical details:**
+- Public keys MUST be in **uncompressed SEC1** format (97 bytes: `0x04` prefix + 96 bytes), NOT DER/SPKI
+- Public keys are sorted as raw byte arrays using **lexicographic comparison**
+- The nonce MUST be exactly 12 bytes — 32-byte legacy nonces are no longer accepted
+- The HKDF info string is `b"enclaver-ecdh-aes256gcm-v1"` (ASCII bytes, no null terminator)
+
+### 3.4 Detailed Encryption Flow
+
+#### Step 1: Obtain Enclave's P-384 Public Key (teePubkey)
+
+**Option A (Recommended): Query NovaAppRegistry on-chain**
 
 ```typescript
-// Client requests attestation
+// Query on-chain registry for the target instance
+const instance = await novaAppRegistry.getInstanceByWallet(instanceWallet);
+
+// Verify instance is active
+assert(instance.status === InstanceStatus.ACTIVE);
+
+// teePubkey is the Enclave's P-384 public key (DER-encoded, hex)
+const enclavePublicKeyDer = hexToBytes(instance.teePubkey);
+
+// The registry guarantees this key was included in a verified attestation
+// during registerInstance(), so no additional attestation verification needed.
+```
+
+**Option B: Direct attestation verification**
+
+```typescript
+// Request attestation document directly from the Enclave
 const response = await fetch(`${enclaveUrl}/.well-known/attestation`, {
     method: 'POST',
     body: JSON.stringify({ nonce: '', public_key: '' })
 });
+const attestationDoc = await response.arrayBuffer();
 
-const { attestation_doc, public_key } = await response.json();
-
-// attestation_doc: Base64-encoded CBOR document with AWS signature
-// public_key: Enclave's P-384 public key (DER format, hex-encoded)
-```
-
-#### Step 2: Verify Attestation
-
-```typescript
 // 1. Parse CBOR attestation document
-// 2. Verify AWS signature chain (root → intermediate → attestation)
+// 2. Verify AWS Nitro signature chain (root → intermediate → attestation)
 // 3. Verify PCR values match expected (code integrity)
-// 4. Confirm public_key is included in attestation
+// 4. Extract P-384 public key from the verified attestation
+const enclavePublicKeyDer = extractPublicKeyFromAttestation(attestationDoc);
 ```
 
-#### Step 3: Generate Client Keypair and Derive Shared Secret
+#### Step 3: Encrypt a Request (Per-Message Key Derivation)
+
+Each message requires a fresh nonce and a fresh AES key derivation:
 
 ```typescript
+import { p384 } from '@noble/curves/p384';
+import { hkdf } from '@noble/hashes/hkdf';
+import { sha256 } from '@noble/hashes/sha256';
+
+// --- One-time setup ---
+
 // Generate client ephemeral keypair
-const keyPair = await crypto.subtle.generateKey(
-    { name: 'ECDH', namedCurve: 'P-384' },
-    true,
-    ['deriveBits']
-);
+const clientPrivateKey = p384.utils.randomPrivateKey();
+const clientPublicKeyUncompressed = p384.getPublicKey(clientPrivateKey, false); // 97 bytes
 
-// Import server public key
-const serverPubKey = await crypto.subtle.importKey(
-    'raw', serverPubKeyBytes,
-    { name: 'ECDH', namedCurve: 'P-384' },
-    true, []
-);
+// Parse enclave public key from DER to uncompressed SEC1
+const enclavePublicKeyUncompressed = parseDerToSec1Uncompressed(enclavePublicKeyDer);
 
-// ECDH to compute shared secret
-const sharedBits = await crypto.subtle.deriveBits(
-    { name: 'ECDH', public: serverPubKey },
-    keyPair.privateKey,
-    384
-);
+// Compute ECDH shared secret (one-time per keypair)
+const sharedSecret = p384.getSharedSecret(clientPrivateKey, enclavePublicKeyUncompressed);
 
-// HKDF to derive AES key
-const hkdfKey = await crypto.subtle.importKey('raw', sharedBits, 'HKDF', false, ['deriveKey']);
-const aesKey = await crypto.subtle.deriveKey(
-    { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info: new TextEncoder().encode('encryption data') },
-    hkdfKey,
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt', 'decrypt']
-);
+// --- Per-message encryption ---
+
+function encryptMessage(plaintext: string): { nonce: string; client_public_key: string; encrypted_data: string } {
+    // 1. Generate fresh 12-byte nonce
+    const nonce = crypto.getRandomValues(new Uint8Array(12));
+
+    // 2. Sort public keys lexicographically
+    const [first, second] = compareBytes(clientPublicKeyUncompressed, enclavePublicKeyUncompressed) <= 0
+        ? [clientPublicKeyUncompressed, enclavePublicKeyUncompressed]
+        : [enclavePublicKeyUncompressed, clientPublicKeyUncompressed];
+
+    // 3. Build HKDF salt: sorted_pubkeys + nonce
+    const salt = new Uint8Array([...first, ...second, ...nonce]);
+
+    // 4. Derive AES-256 key via HKDF-SHA256
+    const aesKey = hkdf(sha256, sharedSecret, salt, 'enclaver-ecdh-aes256gcm-v1', 32);
+
+    // 5. AES-GCM encrypt
+    const ciphertext = aesGcmEncrypt(aesKey, nonce, new TextEncoder().encode(plaintext));
+
+    return {
+        nonce: bufferToHex(nonce),
+        client_public_key: bufferToHex(clientPublicKeyDer),  // Send DER format
+        encrypted_data: bufferToHex(ciphertext),
+    };
+}
 ```
 
-#### Step 4: Encrypt Request
+#### Step 4: Send Encrypted Request
 
 ```typescript
-const nonce = crypto.getRandomValues(new Uint8Array(12));
-const plaintext = JSON.stringify({ message: 'Hello, Enclave!' });
+const encrypted = encryptMessage(JSON.stringify({ message: 'Hello, Enclave!' }));
 
-const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv: nonce },
-    aesKey,
-    new TextEncoder().encode(plaintext)
-);
-
-// Send encrypted request
 await fetch(`${enclaveUrl}/api`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-        nonce: bufferToHex(nonce),
-        public_key: bufferToHex(clientPubKeyDer),
-        data: bufferToHex(ciphertext)
+        nonce: encrypted.nonce,
+        public_key: encrypted.client_public_key,
+        data: encrypted.encrypted_data,
     })
 });
 ```
@@ -229,12 +304,12 @@ await fetch(`${enclaveUrl}/api`, {
 #### Step 5: Enclave Decrypts and Responds
 
 ```python
-# Enclave uses Odyn API to decrypt
+# Enclave uses Odyn API to decrypt — HKDF is handled internally by Odyn
 from odyn import Odyn
 
 odyn = Odyn()
 
-# Decrypt client request
+# Decrypt client request (Odyn handles ECDH + HKDF + AES-GCM internally)
 plaintext = odyn.decrypt_data(
     nonce_hex=request.nonce,
     client_public_key_hex=request.public_key,
@@ -244,7 +319,7 @@ plaintext = odyn.decrypt_data(
 # Process request...
 response_data = process_request(plaintext)
 
-# Encrypt response
+# Encrypt response (Odyn generates nonce and derives key internally)
 encrypted_response, enclave_pub_key, response_nonce = odyn.encrypt_data(
     data=json.dumps(response_data),
     client_public_key_der=bytes.fromhex(request.public_key)
@@ -254,27 +329,30 @@ encrypted_response, enclave_pub_key, response_nonce = odyn.encrypt_data(
 signature = odyn.sign_message(response_data)
 ```
 
-## 4. Alternative Encryption Approaches
+#### Step 6: Client Decrypts Response
 
-### 4.1 Approach Comparison
+```typescript
+function decryptResponse(
+    responseNonce: string,
+    enclavePubKeyDer: string,
+    encryptedData: string
+): string {
+    const nonce = hexToBytes(responseNonce);
+    // Derive AES key using the SAME protocol (sorted pubkeys + nonce)
+    const [first, second] = compareBytes(clientPublicKeyUncompressed, enclavePublicKeyUncompressed) <= 0
+        ? [clientPublicKeyUncompressed, enclavePublicKeyUncompressed]
+        : [enclavePublicKeyUncompressed, clientPublicKeyUncompressed];
+    const salt = new Uint8Array([...first, ...second, ...nonce]);
+    const aesKey = hkdf(sha256, sharedSecret, salt, 'enclaver-ecdh-aes256gcm-v1', 32);
+    
+    const plaintext = aesGcmDecrypt(aesKey, nonce, hexToBytes(encryptedData));
+    return new TextDecoder().decode(plaintext);
+}
+```
 
-| Approach | Security Level | Browser Support | Implementation Complexity | Use Case |
-|----------|---------------|-----------------|--------------------------|----------|
-| **Host-edge HTTPS termination** | Low | Native | Low | Transitional setups only |
-| **E2E Encryption (Recommended)** | High | Requires JS | High | Untrusted Host |
-| **KMS + Attestation** | High | Native | Very High | Enterprise production |
+## 4. Reference Implementation
 
-### 4.2 Choosing Based on Threat Model
-
-| Threat Assumption | Recommended Approach |
-|-------------------|---------------------|
-| Need enclave-level confidentiality/integrity | **E2E Encryption (recommended in this doc)** |
-| Don't trust Host, need data confidentiality | **E2E Encryption (recommended in this doc)** |
-| Need fixed domain + enterprise security | KMS + Attestation |
-
-## 5. Reference Implementation
-
-### 5.1 Complete Example Project
+### 4.1 Complete Example Project
 
 **secured-chat-bot**: An end-to-end encrypted AI chat application
 
@@ -292,7 +370,7 @@ secured-chat-bot/
         └── attestation.ts # Attestation verification
 ```
 
-### 5.2 Odyn Python Wrapper (Backend)
+### 4.2 Odyn Python Wrapper (Backend)
 
 `odyn.py` provides a simple encryption API:
 
@@ -305,14 +383,14 @@ odyn = Odyn()
 pub_data = odyn.get_encryption_public_key_data()
 # Returns: {'public_key_der': '0x...', 'public_key_pem': '-----BEGIN PUBLIC KEY-----...'}
 
-# Decrypt client data
+# Decrypt client data (HKDF key derivation handled internally by Odyn)
 plaintext = odyn.decrypt_data(
     nonce_hex="...",
     client_public_key_hex="0x...",
     encrypted_data_hex="0x..."
 )
 
-# Encrypt response data
+# Encrypt response data (Odyn generates nonce and derives key internally)
 encrypted_data, enclave_pub_key, nonce = odyn.encrypt_data(
     data="response string",
     client_public_key_der=client_pub_key_bytes
@@ -322,7 +400,7 @@ encrypted_data, enclave_pub_key, nonce = odyn.encrypt_data(
 signature = odyn.sign_message({"key": "value"})
 ```
 
-### 5.3 Frontend Encryption Client (TypeScript)
+### 4.3 Frontend Encryption Client (TypeScript)
 
 The `EnclaveClient` class in `crypto.ts` wraps the complete flow:
 
@@ -334,7 +412,7 @@ const client = new EnclaveClient();
 // Connect to Enclave (get attestation + establish keys)
 const attestation = await client.connect('https://your-app.example.com');
 
-// Encrypt request
+// Encrypt request (derives fresh AES key per message via HKDF)
 const encrypted = await client.encrypt(JSON.stringify({ message: 'Hello' }));
 
 // Send encrypted request
@@ -343,11 +421,11 @@ const response = await fetch('/api', {
     body: JSON.stringify(encrypted)
 });
 
-// Decrypt response
+// Decrypt response (derives matching AES key via HKDF)
 const decrypted = await client.decrypt(await response.json());
 ```
 
-### 5.4 Odyn Internal API Reference
+### 4.4 Odyn Internal API Reference
 
 The Odyn Supervisor runs at `localhost:18000` inside the Enclave and provides the following encryption-related APIs. Your application can call these APIs via HTTP to implement end-to-end encryption.
 
@@ -394,8 +472,10 @@ Decrypt data sent from a client using ECDH + AES-256-GCM.
 
 **How it works:**
 1. Odyn uses the Enclave private key and client public key to perform ECDH and compute shared secret
-2. Uses HKDF-SHA256 to derive AES-256 key
-3. Uses AES-GCM to decrypt data
+2. Both public keys are converted to uncompressed SEC1 format and sorted lexicographically
+3. HKDF-SHA256 derives the AES-256 key using `salt = sorted_pubkeys ‖ nonce` and `info = "enclaver-ecdh-aes256gcm-v1"`
+4. AES-256-GCM decrypts the data using the derived key and the nonce
+5. Duplicate (client_public_key, nonce) pairs are rejected to prevent replay attacks
 
 #### 5.4.3 Encrypt Response Data
 
@@ -416,7 +496,7 @@ Encrypt data to send to a client.
   {
     "encrypted_data": "...",       // Hex-encoded ciphertext
     "enclave_public_key": "...",   // Hex-encoded Enclave public key
-    "nonce": "..."                 // Hex-encoded nonce
+    "nonce": "..."                 // Hex-encoded nonce (12 bytes)
   }
   ```
 
@@ -508,7 +588,13 @@ ODYN_API = "http://localhost:18000"
 
 class EnclaveEncryption:
     def decrypt_request(self, encrypted_payload):
-        """Decrypt a request from the client"""
+        """Decrypt a request from the client.
+        
+        Odyn internally performs:
+        1. ECDH with client public key
+        2. HKDF-SHA256 with salt=sort(pubkeys)+nonce, info="enclaver-ecdh-aes256gcm-v1"
+        3. AES-256-GCM decrypt
+        """
         response = requests.post(
             f"{ODYN_API}/v1/encryption/decrypt",
             json={
@@ -521,7 +607,11 @@ class EnclaveEncryption:
         return response.json()["plaintext"]
     
     def encrypt_response(self, plaintext, client_public_key):
-        """Encrypt a response to send to the client"""
+        """Encrypt a response to send to the client.
+        
+        Odyn internally generates a fresh nonce and derives the AES key
+        using the same HKDF protocol.
+        """
         response = requests.post(
             f"{ODYN_API}/v1/encryption/encrypt",
             json={
@@ -569,24 +659,27 @@ def secure_endpoint():
     return jsonify(encrypted_response)
 ```
 
-## 6. Summary and Best Practices
+## 5. Summary and Best Practices
 
-### 6.1 Key Points
+### 5.1 Key Points
 
 1. **Host-edge HTTPS termination is not end-to-end encryption** - traffic is exposed before reaching enclave crypto boundaries
 2. **Use Attestation to verify Enclave identity** - Ensures communication is with a trusted Enclave
-3. **Use ECDH + AES-GCM to encrypt data** - Even if Host is compromised, data remains confidential
-4. **Verify response signatures** - Ensures responses come from the same Enclave
+3. **Use ECDH + HKDF + AES-GCM to encrypt data** - Even if Host is compromised, data remains confidential
+4. **Each message derives a unique AES key** - The nonce is bound into HKDF salt, providing per-message key isolation
+5. **Verify response signatures** - Ensures responses come from the same Enclave
 
-### 6.2 Best Practices Checklist
+### 5.2 Best Practices Checklist
 
 - [ ] Implement attestation verification logic in the client
-- [ ] Use P-384 or secp256k1 for ECDH key agreement
-- [ ] Generate a new nonce for each request
+- [ ] Use P-384 (secp384r1) for ECDH key agreement
+- [ ] Generate exactly 12 random bytes for each nonce — do NOT use 32-byte nonces
+- [ ] Implement the correct HKDF key derivation: `salt = sorted(pubkey_A_sec1, pubkey_B_sec1) ‖ nonce`, `info = "enclaver-ecdh-aes256gcm-v1"`
+- [ ] Derive a fresh AES key per message (do not cache the AES key across messages)
 - [ ] Verify Enclave response signatures
 - [ ] Verify PCR values in production environments
 
-### 6.3 Related Documentation
+### 5.3 Related Documentation
 
 - [Odyn Internal API](https://github.com/sparsity-xyz/enclaver/blob/sparsity/docs/internal_api.md) - Full Odyn API reference
 - [Enclaver Architecture](https://github.com/sparsity-xyz/enclaver/blob/sparsity/docs/architecture.md) - Architecture overview

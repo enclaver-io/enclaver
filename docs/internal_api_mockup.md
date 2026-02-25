@@ -207,18 +207,19 @@ class Odyn:
         """
         Decrypt data encrypted by a client using Odyn API.
 
+        Odyn internally performs:
+        1. ECDH with client public key to compute shared secret
+        2. HKDF-SHA256 with salt=sort(pubkeys)+nonce, info="enclaver-ecdh-aes256gcm-v1"
+        3. AES-256-GCM decryption
+
         Args:
-            nonce_hex: Nonce in hex
+            nonce_hex: Nonce in hex (exactly 12 bytes)
             client_public_key_hex: Client's ephemeral public key (DER format, hex)
             encrypted_data_hex: AES-GCM encrypted data (hex)
 
         Returns:
             Decrypted plaintext string
         """
-        nonce_bytes = bytes.fromhex(nonce_hex)
-        if len(nonce_bytes) > 12:
-            nonce_hex = nonce_bytes[:12].hex()
-
         payload = {
             "nonce": nonce_hex if nonce_hex.startswith("0x") else f"0x{nonce_hex}",
             "client_public_key": client_public_key_hex if client_public_key_hex.startswith("0x") else f"0x{client_public_key_hex}",
@@ -400,6 +401,7 @@ print(f"Blob: {blob}")
 ### Encryption/Decryption Example
 
 ```python
+import os
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
@@ -419,29 +421,51 @@ client_public_key_der = client_private_key.public_key().public_bytes(
     format=serialization.PublicFormat.SubjectPublicKeyInfo
 )
 
-# 3. Derive shared secret and AES key
+# 3. ECDH shared secret (computed once per keypair)
 shared_secret = client_private_key.exchange(ec.ECDH(), enclave_pub_key)
-aes_key = HKDF(
-    algorithm=hashes.SHA256(), length=32, salt=None, info=b"encryption data"
-).derive(shared_secret)
 
-# 4. Client encrypts message for enclave
+# 4. Get uncompressed SEC1 public keys for HKDF salt
+client_pub_sec1 = client_private_key.public_key().public_bytes(
+    encoding=serialization.Encoding.X962,
+    format=serialization.PublicFormat.UncompressedPoint
+)  # 97 bytes: 0x04 + 96
+enclave_pub_sec1 = enclave_pub_key.public_bytes(
+    encoding=serialization.Encoding.X962,
+    format=serialization.PublicFormat.UncompressedPoint
+)  # 97 bytes: 0x04 + 96
+
+def derive_aes_key(shared_secret: bytes, pub_a: bytes, pub_b: bytes, nonce: bytes) -> bytes:
+    """Derive AES-256 key using HKDF with sorted public keys + nonce as salt."""
+    # Sort public keys lexicographically
+    first, second = (pub_a, pub_b) if pub_a <= pub_b else (pub_b, pub_a)
+    salt = first + second + nonce
+    return HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        info=b"enclaver-ecdh-aes256gcm-v1",
+    ).derive(shared_secret)
+
+# 5. Client encrypts message for enclave (per-message key derivation)
 plaintext = "Secret message from client"
-nonce = odyn.get_random_bytes(12)
+nonce = os.urandom(12)  # Exactly 12 bytes
+aes_key = derive_aes_key(shared_secret, client_pub_sec1, enclave_pub_sec1, nonce)
 ciphertext = AESGCM(aes_key).encrypt(nonce, plaintext.encode(), None)
 
-# 5. Enclave decrypts
+# 6. Enclave decrypts (Odyn handles HKDF internally)
 decrypted = odyn.decrypt_data(nonce.hex(), client_public_key_der.hex(), ciphertext.hex())
 print(f"Decrypted: {decrypted}")
 
-# 6. Enclave encrypts response for client
+# 7. Enclave encrypts response for client
 response = "Hello from enclave!"
 enc_data, enc_pub_key, enc_nonce = odyn.encrypt_data(response, client_public_key_der)
 
-# 7. Client decrypts response
-client_decrypted = AESGCM(aes_key).decrypt(
-    bytes.fromhex(enc_nonce)[:12], 
-    bytes.fromhex(enc_data), 
+# 8. Client decrypts response (derive fresh key with response nonce)
+resp_nonce = bytes.fromhex(enc_nonce)
+resp_aes_key = derive_aes_key(shared_secret, client_pub_sec1, enclave_pub_sec1, resp_nonce)
+client_decrypted = AESGCM(resp_aes_key).decrypt(
+    resp_nonce,
+    bytes.fromhex(enc_data),
     None
 )
 print(f"Response: {client_decrypted.decode()}")
