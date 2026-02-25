@@ -54,6 +54,7 @@ const KMS_DEBUG_LOG_MAX_LEN: usize = 1024;
 const GET_INSTANCE_BY_WALLET_TUPLE_MIN_LEN: usize = 10;
 const GET_INSTANCE_BY_WALLET_APP_ID_IDX: usize = 1;
 const GET_INSTANCE_BY_WALLET_INSTANCE_URL_IDX: usize = 4;
+const GET_INSTANCE_BY_WALLET_TEE_PUBKEY_IDX: usize = 5;
 const GET_INSTANCE_BY_WALLET_ZK_VERIFIED_IDX: usize = 7;
 const GET_INSTANCE_BY_WALLET_STATUS_IDX: usize = 8;
 const GET_APP_TUPLE_MIN_LEN: usize = 9;
@@ -129,6 +130,7 @@ struct DiscoveryCacheEntry {
 struct KmsNodeCacheEntry {
     wallet: String,
     base_url: String,
+    tee_pubkey: String,
     reachable: Option<bool>,
     expires_at_ms: u64,
     last_checked_ms: u64,
@@ -143,10 +145,11 @@ struct CachedNodeIdentity {
 }
 
 impl KmsNodeCacheEntry {
-    fn new(wallet: String, base_url: String) -> Self {
+    fn new(wallet: String, base_url: String, tee_pubkey: String) -> Self {
         Self {
             wallet,
             base_url,
+            tee_pubkey: trim_0x(&tee_pubkey),
             reachable: None,
             expires_at_ms: 0,
             last_checked_ms: 0,
@@ -185,6 +188,7 @@ struct AuditLogEntry<'a> {
 struct RegistryInstance {
     app_id: u64,
     instance_url: String,
+    tee_pubkey: String,
     zk_verified: bool,
     status: u64,
 }
@@ -819,6 +823,7 @@ impl NovaKmsProxy {
             status_identity.wallet,
             status_identity.tee_pubkey.len()
         );
+        let node_tee_pubkey = verify_node_identity_binding(request_id, node, &status_identity)?;
         let nonce_b64 = self.fetch_nonce(base_url).await?;
         info!(
             "Nova KMS [{}] fetched nonce for node={} nonce_b64_len={}",
@@ -857,7 +862,7 @@ impl NovaKmsProxy {
                 request_id, base_url, payload_preview
             );
             let envelope = self
-                .encrypt_payload_for_node(&payload_json, &status_identity.tee_pubkey)
+                .encrypt_payload_for_node(&payload_json, &node_tee_pubkey)
                 .await?;
             upstream_request_preview = preview_json_for_log(&envelope);
             info!(
@@ -914,7 +919,7 @@ impl NovaKmsProxy {
             base_url,
             preview_json_for_log(&envelope)
         );
-        let plaintext = self.decrypt_envelope(&envelope).await?;
+        let plaintext = self.decrypt_envelope(&envelope, &node_tee_pubkey).await?;
         info!(
             "Nova KMS [{}] E2E decrypt succeeded node={} plaintext={}",
             request_id,
@@ -1114,11 +1119,30 @@ impl NovaKmsProxy {
         }))
     }
 
-    async fn decrypt_envelope(&self, envelope: &Value) -> Result<Value> {
+    async fn decrypt_envelope(
+        &self,
+        envelope: &Value,
+        expected_sender_tee_pubkey: &str,
+    ) -> Result<Value> {
         let sender_tee_pubkey = envelope
             .get("sender_tee_pubkey")
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow!("KMS response missing sender_tee_pubkey"))?;
+        let sender_tee_pubkey = trim_0x(sender_tee_pubkey);
+        if sender_tee_pubkey.is_empty() {
+            bail!("KMS response sender_tee_pubkey is empty");
+        }
+        let expected_sender_tee_pubkey = trim_0x(expected_sender_tee_pubkey);
+        if expected_sender_tee_pubkey.is_empty() {
+            bail!("expected sender tee_pubkey is empty");
+        }
+        if sender_tee_pubkey != expected_sender_tee_pubkey {
+            bail!(
+                "KMS response sender_tee_pubkey mismatch: expected={} observed={}",
+                truncate_for_log(&expected_sender_tee_pubkey, 24),
+                truncate_for_log(&sender_tee_pubkey, 24),
+            );
+        }
         let nonce = envelope
             .get("nonce")
             .and_then(Value::as_str)
@@ -1133,7 +1157,7 @@ impl NovaKmsProxy {
                 "/v1/encryption/decrypt",
                 &json!({
                     "nonce": format!("0x{}", trim_0x(nonce)),
-                    "client_public_key": format!("0x{}", trim_0x(sender_tee_pubkey)),
+                    "client_public_key": format!("0x{}", sender_tee_pubkey),
                     "encrypted_data": format!("0x{}", trim_0x(encrypted_data)),
                 }),
             )
@@ -1671,7 +1695,16 @@ impl NovaKmsProxy {
             if let Some(base_url) = normalize_base_url(&instance.instance_url)
                 && dedup.insert(base_url.clone())
             {
-                nodes.push(KmsNodeCacheEntry::new(canonical, base_url));
+                let tee_pubkey = trim_0x(&instance.tee_pubkey);
+                if tee_pubkey.is_empty() {
+                    warn!(
+                        "Nova KMS discovery skipping node={} wallet={} because registry tee_pubkey is empty",
+                        base_url,
+                        canonical
+                    );
+                    continue;
+                }
+                nodes.push(KmsNodeCacheEntry::new(canonical, base_url, tee_pubkey));
             }
         }
 
@@ -1760,6 +1793,10 @@ impl NovaKmsProxy {
                 &tuple[GET_INSTANCE_BY_WALLET_INSTANCE_URL_IDX],
                 "getInstanceByWallet.instanceUrl",
             )?,
+            tee_pubkey: hex::encode(token_to_bytes(
+                &tuple[GET_INSTANCE_BY_WALLET_TEE_PUBKEY_IDX],
+                "getInstanceByWallet.teePubkey",
+            )?),
             zk_verified: token_to_bool(
                 &tuple[GET_INSTANCE_BY_WALLET_ZK_VERIFIED_IDX],
                 "getInstanceByWallet.zkVerified",
@@ -2026,6 +2063,13 @@ fn token_to_address(token: &Token, field: &str) -> Result<String> {
     }
 }
 
+fn token_to_bytes(token: &Token, field: &str) -> Result<Vec<u8>> {
+    match token {
+        Token::Bytes(v) => Ok(v.clone()),
+        other => bail!("{field} expected bytes, got {:?}", other),
+    }
+}
+
 fn parse_h160(address: &str) -> Result<H160> {
     let clean = trim_0x(address);
     if clean.len() != 40 {
@@ -2185,6 +2229,59 @@ fn format_node_refresh_list(nodes: &[KmsNodeCacheEntry], now_ms: u64) -> String 
         })
         .collect::<Vec<_>>()
         .join(",")
+}
+
+fn verify_node_identity_binding(
+    request_id: &str,
+    node: &KmsNodeCacheEntry,
+    status_identity: &KmsNodeIdentity,
+) -> Result<String> {
+    let registry_wallet = canonical_wallet(&node.wallet)?;
+    let status_wallet = canonical_wallet(&status_identity.wallet)?;
+    if status_wallet != registry_wallet {
+        bail!(
+            "KMS node wallet mismatch for node={} registry_wallet={} status_wallet={}",
+            node.base_url,
+            registry_wallet,
+            status_wallet
+        );
+    }
+
+    let registry_tee_pubkey = trim_0x(&node.tee_pubkey);
+    if registry_tee_pubkey.is_empty() {
+        bail!(
+            "registry discovery missing tee_pubkey for node={} wallet={}",
+            node.base_url,
+            registry_wallet
+        );
+    }
+
+    let status_tee_pubkey = trim_0x(&status_identity.tee_pubkey);
+    if status_tee_pubkey.is_empty() {
+        bail!(
+            "KMS /status returned empty tee_pubkey for node={} wallet={}",
+            node.base_url,
+            status_wallet
+        );
+    }
+
+    if status_tee_pubkey != registry_tee_pubkey {
+        warn!(
+            "Nova KMS [{}] registry/status tee_pubkey mismatch for node={} wallet={} registry_len={} status_len={}",
+            request_id,
+            node.base_url,
+            registry_wallet,
+            registry_tee_pubkey.len(),
+            status_tee_pubkey.len()
+        );
+        bail!(
+            "KMS node tee_pubkey mismatch for node={} wallet={}",
+            node.base_url,
+            registry_wallet
+        );
+    }
+
+    Ok(registry_tee_pubkey)
 }
 
 fn trim_0x(value: &str) -> String {
@@ -2351,9 +2448,8 @@ mod tests {
     use crate::manifest::KmsIntegration;
     use ethabi::ethereum_types::U256;
 
-    #[test]
-    fn reserved_path_detection_matches_prefix() {
-        let proxy = NovaKmsProxy {
+    fn test_proxy() -> NovaKmsProxy {
+        NovaKmsProxy {
             client: reqwest::Client::new(),
             local_client: reqwest::Client::new(),
             odyn_endpoint: "http://127.0.0.1:18000".to_string(),
@@ -2370,7 +2466,12 @@ mod tests {
             node_identity_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
             authz_cache: Arc::new(RwLock::new(None)),
             app_wallet_cache: Arc::new(RwLock::new(None)),
-        };
+        }
+    }
+
+    #[test]
+    fn reserved_path_detection_matches_prefix() {
+        let proxy = test_proxy();
 
         assert!(proxy.is_reserved_derive_path("wallet/eth/app/main"));
         assert!(!proxy.is_reserved_derive_path("s3/v1/config.json"));
@@ -2486,6 +2587,7 @@ mod tests {
         );
         assert!(GET_INSTANCE_BY_WALLET_APP_ID_IDX < instance_tuple_len);
         assert!(GET_INSTANCE_BY_WALLET_INSTANCE_URL_IDX < instance_tuple_len);
+        assert!(GET_INSTANCE_BY_WALLET_TEE_PUBKEY_IDX < instance_tuple_len);
         assert!(GET_INSTANCE_BY_WALLET_ZK_VERIFIED_IDX < instance_tuple_len);
         assert!(GET_INSTANCE_BY_WALLET_STATUS_IDX < instance_tuple_len);
 
@@ -2596,6 +2698,7 @@ mod tests {
         KmsNodeCacheEntry {
             wallet: wallet.to_string(),
             base_url: base_url.to_string(),
+            tee_pubkey: String::new(),
             reachable,
             expires_at_ms,
             last_checked_ms,
@@ -2827,5 +2930,63 @@ mod tests {
         assert!(expired.is_none());
         let guard = proxy.node_identity_cache.read().await;
         assert!(!guard.contains_key(base_url));
+    }
+
+    #[test]
+    fn verify_node_identity_binding_accepts_matching_wallet_and_tee_pubkey() {
+        let node = KmsNodeCacheEntry {
+            wallet: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            base_url: "https://kms-identity.example.com".to_string(),
+            tee_pubkey: "0x112233".to_string(),
+            reachable: None,
+            expires_at_ms: 0,
+            last_checked_ms: 0,
+            last_http_status: None,
+            last_error: None,
+        };
+        let status_identity = KmsNodeIdentity {
+            wallet: "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string(),
+            tee_pubkey: "112233".to_string(),
+        };
+
+        let resolved = verify_node_identity_binding("req-1", &node, &status_identity).unwrap();
+        assert_eq!(resolved, "112233");
+    }
+
+    #[test]
+    fn verify_node_identity_binding_rejects_tee_pubkey_mismatch() {
+        let node = KmsNodeCacheEntry {
+            wallet: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+            base_url: "https://kms-identity.example.com".to_string(),
+            tee_pubkey: "aabbcc".to_string(),
+            reachable: None,
+            expires_at_ms: 0,
+            last_checked_ms: 0,
+            last_http_status: None,
+            last_error: None,
+        };
+        let status_identity = KmsNodeIdentity {
+            wallet: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+            tee_pubkey: "ddeeff".to_string(),
+        };
+
+        let err = verify_node_identity_binding("req-2", &node, &status_identity).unwrap_err();
+        assert!(err.to_string().contains("tee_pubkey mismatch"));
+    }
+
+    #[tokio::test]
+    async fn decrypt_envelope_rejects_unexpected_sender_tee_pubkey() {
+        let proxy = test_proxy();
+        let envelope = serde_json::json!({
+            "sender_tee_pubkey": "0xaaaabbbb",
+            "nonce": "00112233445566778899aabb",
+            "encrypted_data": "deadbeef",
+        });
+
+        let err = proxy
+            .decrypt_envelope(&envelope, "ccccdddd")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("sender_tee_pubkey mismatch"));
     }
 }
