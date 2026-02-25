@@ -59,6 +59,8 @@ jobs:
 
       - name: Build Release Binaries (native cargo)
         if: ${{ !matrix.uses_musl }}
+        env:
+          ENCLAVER_GIT_REVISION: ${{ github.sha }}
         run: |
           cargo build \
           --target ${{ matrix.target }} \
@@ -69,6 +71,8 @@ jobs:
       - name: Build Release Binaries (cargo-zigbuild)
         if: ${{ matrix.uses_musl }}
         uses: ./.github/actions/cargo-zigbuild
+        env:
+          ENCLAVER_GIT_REVISION: ${{ github.sha }}
         with:
           args: |
             --target ${{ matrix.target }}
@@ -244,4 +248,3 @@ jobs:
           files: |
             ${{ matrix.release_name }}-${{ github.ref_name }}.tar.gz
             ${{ matrix.release_name }}-${{ github.ref_name }}.tar.gz.sha256
-
