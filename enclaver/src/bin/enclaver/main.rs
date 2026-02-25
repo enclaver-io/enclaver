@@ -7,7 +7,7 @@ use enclaver::{
 use log::{debug, error};
 
 #[derive(Debug, Parser)]
-#[clap(author, version)]
+#[clap(author, version = env!("ENCLAVER_VERSION_WITH_GIT"))]
 /// Package and run applications in Nitro Enclaves.
 struct Cli {
     #[clap(subcommand)]
