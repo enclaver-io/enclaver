@@ -18,7 +18,12 @@ const ENCLAVE_FATAL: u8 = 108;
 const ENCLAVER_INTERRUPTED: u8 = 109;
 
 #[derive(Debug, Parser)]
-#[clap(author, version, about, long_about = None)]
+#[clap(
+    author,
+    version = env!("ENCLAVER_VERSION_WITH_GIT"),
+    about,
+    long_about = None
+)]
 struct Cli {
     #[clap(long, value_parser)]
     eif_file: Option<PathBuf>,

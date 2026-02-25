@@ -499,16 +499,16 @@ impl ApiHandler {
     async fn handle_app_wallet_address(&self) -> Result<Response<Full<Bytes>>> {
         let proxy = match &self.nova_kms {
             Some(proxy) => proxy,
-            None => return Self::kms_not_configured(),
+            None => return Self::app_wallet_not_configured(),
         };
 
         let authz = match proxy.ensure_app_wallet_authorized().await {
             Ok(v) => v,
-            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+            Err(err) => return Ok(Self::app_wallet_unavailable(err.to_string())),
         };
         let address = match proxy.app_wallet_address().await {
             Ok(v) => v,
-            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+            Err(err) => return Ok(Self::app_wallet_unavailable(err.to_string())),
         };
 
         let response = json::object! {
@@ -525,7 +525,7 @@ impl ApiHandler {
     async fn handle_app_wallet_sign(&self, body: Bytes) -> Result<Response<Full<Bytes>>> {
         let proxy = match &self.nova_kms {
             Some(proxy) => proxy,
-            None => return Self::kms_not_configured(),
+            None => return Self::app_wallet_not_configured(),
         };
 
         let req: EthSignRequest = match serde_json::from_slice(&body) {
@@ -542,12 +542,12 @@ impl ApiHandler {
 
         let authz = match proxy.ensure_app_wallet_authorized().await {
             Ok(v) => v,
-            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+            Err(err) => return Ok(Self::app_wallet_unavailable(err.to_string())),
         };
 
         let app_wallet_key = match proxy.app_wallet_key().await {
             Ok(v) => v,
-            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+            Err(err) => return Ok(Self::app_wallet_unavailable(err.to_string())),
         };
 
         // Construct EIP-191 personal message prefix.
@@ -577,7 +577,7 @@ impl ApiHandler {
     async fn handle_app_wallet_sign_tx(&self, body: Bytes) -> Result<Response<Full<Bytes>>> {
         let proxy = match &self.nova_kms {
             Some(proxy) => proxy,
-            None => return Self::kms_not_configured(),
+            None => return Self::app_wallet_not_configured(),
         };
 
         let req: EthSignTxRequest = match serde_json::from_slice(&body) {
@@ -587,7 +587,7 @@ impl ApiHandler {
 
         let authz = match proxy.ensure_app_wallet_authorized().await {
             Ok(v) => v,
-            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+            Err(err) => return Ok(Self::app_wallet_unavailable(err.to_string())),
         };
 
         let unsigned_tx = match req.payload.into_unsigned_tx() {
@@ -597,7 +597,7 @@ impl ApiHandler {
 
         let app_wallet_key = match proxy.app_wallet_key().await {
             Ok(v) => v,
-            Err(err) => return Ok(http_util::bad_request(err.to_string())),
+            Err(err) => return Ok(Self::app_wallet_unavailable(err.to_string())),
         };
 
         let signable_payload = unsigned_tx.signing_payload();
@@ -883,6 +883,23 @@ impl ApiHandler {
     fn s3_not_configured() -> Result<Response<Full<Bytes>>> {
         Ok(http_util::bad_request(
             "S3 storage not configured".to_string(),
+        ))
+    }
+
+    fn app_wallet_unavailable(message: String) -> Response<Full<Bytes>> {
+        Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .header("Retry-After", "10")
+            .body(Full::new(Bytes::from(format!(
+                "App wallet service unavailable: {}",
+                message
+            ))))
+            .unwrap()
+    }
+
+    fn app_wallet_not_configured() -> Result<Response<Full<Bytes>>> {
+        Ok(Self::app_wallet_unavailable(
+            "KMS integration not configured".to_string(),
         ))
     }
 
@@ -1942,5 +1959,5 @@ async fn test_app_wallet_address_without_kms_integration() {
         .unwrap();
     let (head, body) = req.into_parts();
     let resp = handler.handle_request(&head, body).await.unwrap();
-    assert!(resp.status() == StatusCode::BAD_REQUEST);
+    assert!(resp.status() == StatusCode::SERVICE_UNAVAILABLE);
 }
