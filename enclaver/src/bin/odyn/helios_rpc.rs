@@ -30,7 +30,7 @@ const LOG_PREVIEW_CHARS: usize = 160;
 /// Helios RPC Service for trustless Ethereum/OP Stack access
 pub struct HeliosRpcService {
     tasks: Vec<JoinHandle<()>>,
-    ready_rxs: Vec<tokio::sync::oneshot::Receiver<bool>>,
+    ready_rxs: Vec<(u16, tokio::sync::oneshot::Receiver<bool>)>,
 }
 
 impl HeliosRpcService {
@@ -104,7 +104,7 @@ impl HeliosRpcService {
             });
 
             tasks.push(task);
-            ready_rxs.push(ready_rx);
+            ready_rxs.push((port, ready_rx));
         }
 
         Ok(Self { tasks, ready_rxs })
@@ -455,11 +455,34 @@ impl HeliosRpcService {
         }
 
         let mut all_ready = true;
-        for rx in self.ready_rxs.drain(..) {
+        for (_, rx) in self.ready_rxs.drain(..) {
             all_ready &= rx.await.unwrap_or(false);
         }
 
         all_ready
+    }
+
+    /// Wait for readiness of a specific Helios local RPC port.
+    /// Returns false when the tracked port is missing or that Helios task fails.
+    pub async fn wait_ready_for_port(&mut self, port: u16) -> bool {
+        if self.ready_rxs.is_empty() {
+            return true;
+        }
+
+        let Some(idx) = self
+            .ready_rxs
+            .iter()
+            .position(|(tracked_port, _)| *tracked_port == port)
+        else {
+            warn!(
+                "No Helios readiness tracker found for required local RPC port {}",
+                port
+            );
+            return false;
+        };
+
+        let (_, rx) = self.ready_rxs.swap_remove(idx);
+        rx.await.unwrap_or(false)
     }
 
     /// Stop the Helios service
@@ -619,5 +642,31 @@ mod tests {
 
         // Should not panic
         service.stop().await;
+    }
+
+    #[tokio::test]
+    async fn test_wait_ready_for_port_tracks_requested_port_only() {
+        let (tx_auth, rx_auth) = tokio::sync::oneshot::channel();
+        let (tx_optional, rx_optional) = tokio::sync::oneshot::channel();
+        let mut service = HeliosRpcService {
+            tasks: Vec::new(),
+            ready_rxs: vec![(18545, rx_auth), (18546, rx_optional)],
+        };
+
+        tx_auth.send(true).unwrap();
+        tx_optional.send(false).unwrap();
+
+        assert!(service.wait_ready_for_port(18545).await);
+    }
+
+    #[tokio::test]
+    async fn test_wait_ready_for_port_missing_port_returns_false() {
+        let (_tx, rx) = tokio::sync::oneshot::channel();
+        let mut service = HeliosRpcService {
+            tasks: Vec::new(),
+            ready_rxs: vec![(18545, rx)],
+        };
+
+        assert!(!service.wait_ready_for_port(19999).await);
     }
 }
