@@ -17,7 +17,7 @@ use helios::opstack::config::Network as OpNetwork;
 use helios::opstack::config::NetworkConfig as OpNetworkConfig;
 use helios::opstack::{OpStackClient, OpStackClientBuilder};
 use log::{info, warn};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 
 use crate::config::{Configuration, HeliosRuntimeConfig};
@@ -25,12 +25,18 @@ use crate::config::{Configuration, HeliosRuntimeConfig};
 const SLOTS_PER_SYNC_COMMITTEE_PERIOD: u64 = 8192;
 const CHECKPOINT_LOOKBACK_PERIODS: u64 = 4;
 const CHECKPOINT_HTTP_TIMEOUT_SECS: u64 = 10;
+const EXECUTION_RPC_PROBE_TIMEOUT_SECS: u64 = 8;
 const LOG_PREVIEW_CHARS: usize = 160;
+const ETHEREUM_MAINNET_CHAIN_ID: &str = "0x1";
+const ETHEREUM_MAINNET_EXECUTION_RPC_FALLBACKS: [&str; 2] = [
+    "https://ethereum-rpc.publicnode.com",
+    "https://eth.drpc.org",
+];
 
 /// Helios RPC Service for trustless Ethereum/OP Stack access
 pub struct HeliosRpcService {
     tasks: Vec<JoinHandle<()>>,
-    ready_rxs: Vec<tokio::sync::oneshot::Receiver<bool>>,
+    ready_rxs: Vec<(u16, tokio::sync::oneshot::Receiver<bool>)>,
 }
 
 impl HeliosRpcService {
@@ -104,7 +110,7 @@ impl HeliosRpcService {
             });
 
             tasks.push(task);
-            ready_rxs.push(ready_rx);
+            ready_rxs.push((port, ready_rx));
         }
 
         Ok(Self { tasks, ready_rxs })
@@ -124,8 +130,11 @@ impl HeliosRpcService {
             .parse()
             .map_err(|e| anyhow!("Invalid address: {}", e))?;
 
+        let selected_execution_rpc =
+            Self::select_ethereum_execution_rpc(network, execution_rpc).await;
+
         info!("Building Helios Ethereum client for {} network", network);
-        info!("Execution RPC: {}", execution_rpc);
+        info!("Execution RPC: {}", selected_execution_rpc);
         if let Some(consensus) = consensus_rpc {
             info!("Consensus RPC: {}", consensus);
         } else {
@@ -134,7 +143,7 @@ impl HeliosRpcService {
 
         let mut builder: EthereumClientBuilder<ConfigDB> = EthereumClientBuilder::new()
             .network(net)
-            .execution_rpc(execution_rpc)
+            .execution_rpc(selected_execution_rpc.as_str())
             .map_err(|e| anyhow!("Invalid execution RPC: {}", e))?
             .rpc_address(addr);
 
@@ -185,6 +194,123 @@ impl HeliosRpcService {
         info!("Helios Ethereum sync complete");
 
         Ok(client)
+    }
+
+    async fn select_ethereum_execution_rpc(network: &str, configured_rpc: &str) -> String {
+        let candidates = Self::ethereum_execution_rpc_candidates(network, configured_rpc);
+        if candidates.len() <= 1 {
+            return configured_rpc.to_string();
+        }
+
+        let client = match reqwest::Client::builder()
+            .timeout(Duration::from_secs(EXECUTION_RPC_PROBE_TIMEOUT_SECS))
+            .build()
+        {
+            Ok(client) => client,
+            Err(err) => {
+                warn!(
+                    "Failed to build HTTP client for execution RPC probing: {}",
+                    err
+                );
+                return configured_rpc.to_string();
+            }
+        };
+
+        for candidate in &candidates {
+            match Self::probe_execution_chain_id(&client, candidate).await {
+                Ok(chain_id) if chain_id.eq_ignore_ascii_case(ETHEREUM_MAINNET_CHAIN_ID) => {
+                    if candidate != configured_rpc {
+                        warn!(
+                            "Configured execution RPC {} is unavailable; using fallback {}",
+                            configured_rpc, candidate
+                        );
+                    }
+                    return candidate.clone();
+                }
+                Ok(chain_id) => {
+                    warn!(
+                        "Execution RPC {} returned unexpected chain_id {}, skipping",
+                        candidate, chain_id
+                    );
+                }
+                Err(err) => {
+                    warn!("Execution RPC probe failed for {}: {}", candidate, err);
+                }
+            }
+        }
+
+        warn!(
+            "All execution RPC candidates failed probing for network {}. Keeping configured endpoint {}",
+            network, configured_rpc
+        );
+        configured_rpc.to_string()
+    }
+
+    fn ethereum_execution_rpc_candidates(network: &str, configured_rpc: &str) -> Vec<String> {
+        let configured = configured_rpc.trim();
+        let mut candidates = if configured.is_empty() {
+            Vec::new()
+        } else {
+            vec![configured.to_string()]
+        };
+
+        if network.eq_ignore_ascii_case("mainnet") {
+            for fallback in ETHEREUM_MAINNET_EXECUTION_RPC_FALLBACKS {
+                if !candidates.iter().any(|existing| existing == fallback) {
+                    candidates.push(fallback.to_string());
+                }
+            }
+        }
+
+        if candidates.is_empty() {
+            candidates.push(configured_rpc.to_string());
+        }
+
+        candidates
+    }
+
+    async fn probe_execution_chain_id(client: &reqwest::Client, rpc_url: &str) -> Result<String> {
+        let response = client
+            .post(rpc_url)
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "method": "eth_chainId",
+                "params": [],
+                "id": 1,
+            }))
+            .send()
+            .await
+            .map_err(|e| anyhow!("POST {} failed: {}", rpc_url, e))?;
+
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|e| anyhow!("reading response body from {} failed: {}", rpc_url, e))?;
+
+        if !status.is_success() {
+            return Err(anyhow!(
+                "POST {} returned status {} body='{}'",
+                rpc_url,
+                status,
+                Self::truncate_for_log(&body, LOG_PREVIEW_CHARS)
+            ));
+        }
+
+        let parsed: Value = serde_json::from_str(&body)
+            .map_err(|e| anyhow!("invalid JSON from {}: {}", rpc_url, e))?;
+        if let Some(error) = parsed.get("error") {
+            return Err(anyhow!(
+                "eth_chainId returned error from {}: {}",
+                rpc_url,
+                Self::truncate_for_log(&error.to_string(), LOG_PREVIEW_CHARS)
+            ));
+        }
+        let chain_id = parsed
+            .get("result")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("eth_chainId response from {} missing result", rpc_url))?;
+        Ok(chain_id.to_string())
     }
 
     async fn resolve_ethereum_checkpoint(consensus_rpc: &str) -> Result<B256> {
@@ -455,11 +581,34 @@ impl HeliosRpcService {
         }
 
         let mut all_ready = true;
-        for rx in self.ready_rxs.drain(..) {
+        for (_, rx) in self.ready_rxs.drain(..) {
             all_ready &= rx.await.unwrap_or(false);
         }
 
         all_ready
+    }
+
+    /// Wait for readiness of a specific Helios local RPC port.
+    /// Returns false when the tracked port is missing or that Helios task fails.
+    pub async fn wait_ready_for_port(&mut self, port: u16) -> bool {
+        if self.ready_rxs.is_empty() {
+            return true;
+        }
+
+        let Some(idx) = self
+            .ready_rxs
+            .iter()
+            .position(|(tracked_port, _)| *tracked_port == port)
+        else {
+            warn!(
+                "No Helios readiness tracker found for required local RPC port {}",
+                port
+            );
+            return false;
+        };
+
+        let (_, rx) = self.ready_rxs.swap_remove(idx);
+        rx.await.unwrap_or(false)
     }
 
     /// Stop the Helios service
@@ -547,6 +696,46 @@ mod tests {
         assert!(HeliosRpcService::parse_opstack_network("worldchain-sepolia").is_err());
     }
 
+    #[test]
+    fn test_ethereum_execution_rpc_candidates_mainnet_includes_fallbacks() {
+        let candidates = HeliosRpcService::ethereum_execution_rpc_candidates(
+            "mainnet",
+            "https://custom.mainnet.rpc",
+        );
+        assert_eq!(
+            candidates,
+            vec![
+                "https://custom.mainnet.rpc".to_string(),
+                "https://ethereum-rpc.publicnode.com".to_string(),
+                "https://eth.drpc.org".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_ethereum_execution_rpc_candidates_mainnet_deduplicates_configured() {
+        let candidates = HeliosRpcService::ethereum_execution_rpc_candidates(
+            "mainnet",
+            "https://ethereum-rpc.publicnode.com",
+        );
+        assert_eq!(
+            candidates,
+            vec![
+                "https://ethereum-rpc.publicnode.com".to_string(),
+                "https://eth.drpc.org".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_ethereum_execution_rpc_candidates_non_mainnet_keeps_configured_only() {
+        let candidates = HeliosRpcService::ethereum_execution_rpc_candidates(
+            "sepolia",
+            "https://rpc.sepolia.org",
+        );
+        assert_eq!(candidates, vec!["https://rpc.sepolia.org".to_string()]);
+    }
+
     /// Test address parsing
     #[test]
     fn test_address_parsing() {
@@ -619,5 +808,31 @@ mod tests {
 
         // Should not panic
         service.stop().await;
+    }
+
+    #[tokio::test]
+    async fn test_wait_ready_for_port_tracks_requested_port_only() {
+        let (tx_auth, rx_auth) = tokio::sync::oneshot::channel();
+        let (tx_optional, rx_optional) = tokio::sync::oneshot::channel();
+        let mut service = HeliosRpcService {
+            tasks: Vec::new(),
+            ready_rxs: vec![(18545, rx_auth), (18546, rx_optional)],
+        };
+
+        tx_auth.send(true).unwrap();
+        tx_optional.send(false).unwrap();
+
+        assert!(service.wait_ready_for_port(18545).await);
+    }
+
+    #[tokio::test]
+    async fn test_wait_ready_for_port_missing_port_returns_false() {
+        let (_tx, rx) = tokio::sync::oneshot::channel();
+        let mut service = HeliosRpcService {
+            tasks: Vec::new(),
+            ready_rxs: vec![(18545, rx)],
+        };
+
+        assert!(!service.wait_ready_for_port(19999).await);
     }
 }

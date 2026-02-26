@@ -28,6 +28,8 @@ use egress::EgressService;
 use helios_rpc::HeliosRpcService;
 use ingress::IngressService;
 
+const KMS_AUTH_CHAIN_HELIOS_PORT: u16 = 18545;
+
 #[derive(Parser)]
 struct CliArgs {
     #[clap(long = "no-bootstrap", action)]
@@ -69,9 +71,13 @@ async fn launch(args: &CliArgs) -> Result<launcher::ExitStatus> {
         .unwrap_or(false)
     {
         info!("Waiting for Helios auth-chain RPC readiness required by Nova KMS");
-        if !helios_rpc.wait_ready().await {
+        if !helios_rpc
+            .wait_ready_for_port(KMS_AUTH_CHAIN_HELIOS_PORT)
+            .await
+        {
             return Err(anyhow!(
-                "Helios auth-chain RPC failed to become ready on local port 18545"
+                "Helios auth-chain RPC failed to become ready on local port {}",
+                KMS_AUTH_CHAIN_HELIOS_PORT
             ));
         }
     }
