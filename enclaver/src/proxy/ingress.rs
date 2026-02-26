@@ -148,7 +148,15 @@ mod tests {
     fn is_vsock_io_unavailable(err: &io::Error) -> bool {
         matches!(
             err.raw_os_error(),
-            Some(1) | Some(38) | Some(95) | Some(97) | Some(104) | Some(110) | Some(111)
+            Some(1)
+                | Some(6)
+                | Some(19)
+                | Some(38)
+                | Some(95)
+                | Some(97)
+                | Some(104)
+                | Some(110)
+                | Some(111)
         ) || matches!(
             err.kind(),
             io::ErrorKind::PermissionDenied
