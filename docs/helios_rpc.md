@@ -65,6 +65,9 @@ helios_rpc:
 | `consensus_rpc` | No | Custom consensus RPC endpoint. |
 | `checkpoint` | No | Weak subjectivity checkpoint (ethereum). |
 
+When `kind=ethereum` and `checkpoint` is omitted, odyn will try to derive a recent checkpoint from `consensus_rpc` at startup.  
+If derivation fails, it falls back to Helios external checkpoint discovery.
+
 ## Application usage
 
 Use the chain's `local_rpc_port` from `helios_rpc.chains`.

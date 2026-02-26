@@ -3197,7 +3197,7 @@ dependencies = [
 
 [[package]]
 name = "enclaver"
-version = "1.4.1"
+version = "1.5.1"
 dependencies = [
  "aes",
  "aes-gcm",
