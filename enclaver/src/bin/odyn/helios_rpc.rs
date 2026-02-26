@@ -208,7 +208,10 @@ impl HeliosRpcService {
         {
             Ok(client) => client,
             Err(err) => {
-                warn!("Failed to build HTTP client for execution RPC probing: {}", err);
+                warn!(
+                    "Failed to build HTTP client for execution RPC probing: {}",
+                    err
+                );
                 return configured_rpc.to_string();
             }
         };
