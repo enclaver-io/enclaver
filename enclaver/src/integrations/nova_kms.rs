@@ -2478,6 +2478,16 @@ mod tests {
     use super::*;
     use crate::manifest::KmsIntegration;
     use ethabi::ethereum_types::U256;
+    use http_body_util::{BodyExt, Full};
+    use hyper::body::{Bytes, Incoming};
+    use hyper::server::conn::http1;
+    use hyper::service::service_fn;
+    use hyper::{Method as HyperMethod, Request, Response};
+    use hyper_util::rt::TokioIo;
+    use std::convert::Infallible;
+    use std::sync::Arc;
+    use tokio::net::TcpListener;
+    use tokio::sync::Mutex as TokioMutex;
 
     fn test_proxy() -> NovaKmsProxy {
         NovaKmsProxy {
@@ -2497,6 +2507,386 @@ mod tests {
             node_identity_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
             authz_cache: Arc::new(RwLock::new(None)),
             app_wallet_cache: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    fn json_response(status: hyper::StatusCode, value: Value) -> Response<Full<Bytes>> {
+        Response::builder()
+            .status(status)
+            .header(CONTENT_TYPE, "application/json")
+            .body(Full::new(Bytes::from(value.to_string())))
+            .unwrap()
+    }
+
+    #[derive(Clone, Default)]
+    struct MockKmsObserved {
+        pop_verified: bool,
+        request_envelope_verified: bool,
+        requested_path: Option<String>,
+        requested_context: Option<String>,
+    }
+
+    #[derive(Clone)]
+    struct MockKmsState {
+        nonce_b64: String,
+        app_wallet: String,
+        app_tee_pubkey: String,
+        node_wallet: String,
+        node_tee_pubkey: String,
+        node_private_key_hex: String,
+        observed: Arc<TokioMutex<MockKmsObserved>>,
+    }
+
+    #[derive(Clone)]
+    struct MockOdynState {
+        app_private_key_hex: String,
+        app_wallet: String,
+        app_tee_pubkey: String,
+        node_tee_pubkey: String,
+    }
+
+    async fn spawn_mock_odyn_server(state: MockOdynState) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let shared = Arc::new(state);
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let state = shared.clone();
+                tokio::spawn(async move {
+                    let io = TokioIo::new(stream);
+                    let service = service_fn(move |req: Request<Incoming>| {
+                        let state = state.clone();
+                        async move { Ok::<_, Infallible>(handle_mock_odyn_request(state, req).await) }
+                    });
+                    let _ = http1::Builder::new().serve_connection(io, service).await;
+                });
+            }
+        });
+        (format!("http://{}", addr), handle)
+    }
+
+    async fn handle_mock_odyn_request(
+        state: Arc<MockOdynState>,
+        req: Request<Incoming>,
+    ) -> Response<Full<Bytes>> {
+        let method = req.method().clone();
+        let path = req.uri().path().to_string();
+        let (parts, body) = req.into_parts();
+        let body_bytes = body.collect().await.unwrap().to_bytes();
+        let body_json: Value = if body_bytes.is_empty() {
+            json!({})
+        } else {
+            serde_json::from_slice(&body_bytes).unwrap_or_else(|_| json!({}))
+        };
+
+        match (method, path.as_str()) {
+            (HyperMethod::GET, "/v1/eth/address") => json_response(
+                hyper::StatusCode::OK,
+                json!({
+                    "address": state.app_wallet,
+                    "public_key": "0x00",
+                }),
+            ),
+            (HyperMethod::POST, "/v1/eth/sign") => {
+                let message = body_json
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if message.is_empty() {
+                    return json_response(
+                        hyper::StatusCode::BAD_REQUEST,
+                        json!({"error":"missing message"}),
+                    );
+                }
+                let signer = match EthKey::new_from_bytes(&state.app_private_key_hex) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        return json_response(
+                            hyper::StatusCode::INTERNAL_SERVER_ERROR,
+                            json!({"error":"invalid signer"}),
+                        );
+                    }
+                };
+                let prefixed = eip191_personal_message_bytes(message);
+                let sig = format!("0x{}", hex::encode(signer.sign_message(&prefixed)));
+                json_response(
+                    hyper::StatusCode::OK,
+                    json!({
+                        "signature": sig,
+                        "address": state.app_wallet,
+                        "attestation": Value::Null,
+                    }),
+                )
+            }
+            (HyperMethod::GET, "/v1/encryption/public_key") => json_response(
+                hyper::StatusCode::OK,
+                json!({
+                    "public_key_der": format!("0x{}", state.app_tee_pubkey),
+                    "public_key_pem": "",
+                }),
+            ),
+            (HyperMethod::POST, "/v1/encryption/encrypt") => {
+                let plaintext = body_json
+                    .get("plaintext")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let receiver = body_json
+                    .get("client_public_key")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if trim_0x(receiver) != state.node_tee_pubkey {
+                    return json_response(
+                        hyper::StatusCode::BAD_REQUEST,
+                        json!({"error":"unexpected receiver pubkey"}),
+                    );
+                }
+                json_response(
+                    hyper::StatusCode::OK,
+                    json!({
+                        "encrypted_data": format!("0x{}", hex::encode(plaintext.as_bytes())),
+                        "nonce": "0x00112233445566778899aabb",
+                    }),
+                )
+            }
+            (HyperMethod::POST, "/v1/encryption/decrypt") => {
+                let sender = body_json
+                    .get("client_public_key")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if trim_0x(sender) != state.node_tee_pubkey {
+                    return json_response(
+                        hyper::StatusCode::BAD_REQUEST,
+                        json!({"error":"unexpected sender pubkey"}),
+                    );
+                }
+                let encrypted_data = body_json
+                    .get("encrypted_data")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let decoded = match hex::decode(trim_0x(encrypted_data)) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        return json_response(
+                            hyper::StatusCode::BAD_REQUEST,
+                            json!({"error":"invalid encrypted_data"}),
+                        );
+                    }
+                };
+                let plaintext = match String::from_utf8(decoded) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        return json_response(
+                            hyper::StatusCode::BAD_REQUEST,
+                            json!({"error":"invalid plaintext utf8"}),
+                        );
+                    }
+                };
+                json_response(
+                    hyper::StatusCode::OK,
+                    json!({
+                        "plaintext": plaintext,
+                    }),
+                )
+            }
+            _ => {
+                let _ = parts;
+                json_response(hyper::StatusCode::NOT_FOUND, json!({"error":"not found"}))
+            }
+        }
+    }
+
+    async fn spawn_mock_kms_server(state: MockKmsState) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let shared = Arc::new(state);
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let state = shared.clone();
+                tokio::spawn(async move {
+                    let io = TokioIo::new(stream);
+                    let service = service_fn(move |req: Request<Incoming>| {
+                        let state = state.clone();
+                        async move { Ok::<_, Infallible>(handle_mock_kms_request(state, req).await) }
+                    });
+                    let _ = http1::Builder::new().serve_connection(io, service).await;
+                });
+            }
+        });
+        (format!("http://{}", addr), handle)
+    }
+
+    async fn handle_mock_kms_request(
+        state: Arc<MockKmsState>,
+        req: Request<Incoming>,
+    ) -> Response<Full<Bytes>> {
+        let method = req.method().clone();
+        let path = req.uri().path().to_string();
+        let (parts, body) = req.into_parts();
+        let headers = parts.headers;
+        let body_bytes = body.collect().await.unwrap().to_bytes();
+        let body_json: Value = if body_bytes.is_empty() {
+            json!({})
+        } else {
+            match serde_json::from_slice(&body_bytes) {
+                Ok(v) => v,
+                Err(_) => {
+                    return json_response(
+                        hyper::StatusCode::BAD_REQUEST,
+                        json!({"error":"invalid json body"}),
+                    );
+                }
+            }
+        };
+
+        match (method, path.as_str()) {
+            (HyperMethod::GET, "/status") => json_response(
+                hyper::StatusCode::OK,
+                json!({
+                    "node": {
+                        "tee_wallet": state.node_wallet,
+                        "tee_pubkey": format!("0x{}", state.node_tee_pubkey),
+                    }
+                }),
+            ),
+            (HyperMethod::GET, "/nonce") => {
+                json_response(hyper::StatusCode::OK, json!({ "nonce": state.nonce_b64 }))
+            }
+            (HyperMethod::POST, "/kms/derive") => {
+                let app_sig = headers
+                    .get("x-app-signature")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                let app_nonce = headers
+                    .get("x-app-nonce")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                let app_ts = headers
+                    .get("x-app-timestamp")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                let app_wallet = headers
+                    .get("x-app-wallet")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+
+                let pop_message = format!(
+                    "NovaKMS:AppAuth:{}:{}:{}",
+                    app_nonce, state.node_wallet, app_ts
+                );
+                let pop_prefixed = eip191_personal_message_bytes(&pop_message);
+                let canonical_app_wallet = canonical_wallet(app_wallet).unwrap_or_default();
+                let pop_verified = app_nonce == state.nonce_b64
+                    && canonical_app_wallet == state.app_wallet
+                    && EthKey::verify_message(
+                        app_sig.to_string(),
+                        &pop_prefixed,
+                        state.app_wallet.clone(),
+                    );
+
+                let sender_tee_pubkey = body_json
+                    .get("sender_tee_pubkey")
+                    .and_then(Value::as_str)
+                    .map(trim_0x)
+                    .unwrap_or_default();
+                let encrypted_data = body_json
+                    .get("encrypted_data")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let decrypted_bytes = match hex::decode(trim_0x(encrypted_data)) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        return json_response(
+                            hyper::StatusCode::BAD_REQUEST,
+                            json!({"error":"invalid encrypted_data"}),
+                        );
+                    }
+                };
+                let decrypted_text = match String::from_utf8(decrypted_bytes) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        return json_response(
+                            hyper::StatusCode::BAD_REQUEST,
+                            json!({"error":"invalid decrypted utf8"}),
+                        );
+                    }
+                };
+                let decrypted_json: Value = match serde_json::from_str(&decrypted_text) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        return json_response(
+                            hyper::StatusCode::BAD_REQUEST,
+                            json!({"error":"invalid decrypted json"}),
+                        );
+                    }
+                };
+
+                let requested_path = decrypted_json
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string);
+                let requested_context = decrypted_json
+                    .get("context")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string);
+                let request_envelope_verified = sender_tee_pubkey == state.app_tee_pubkey;
+
+                {
+                    let mut observed = state.observed.lock().await;
+                    observed.pop_verified = pop_verified;
+                    observed.request_envelope_verified = request_envelope_verified;
+                    observed.requested_path = requested_path.clone();
+                    observed.requested_context = requested_context.clone();
+                }
+
+                if !pop_verified || !request_envelope_verified {
+                    return json_response(
+                        hyper::StatusCode::UNAUTHORIZED,
+                        json!({"error":"pop/envelope verification failed"}),
+                    );
+                }
+
+                let response_plain = json!({
+                    "key": general_purpose::STANDARD.encode(b"derived-key"),
+                    "path": requested_path.unwrap_or_default(),
+                    "context": requested_context.unwrap_or_default(),
+                    "length": 32,
+                });
+                let response_plain_text = response_plain.to_string();
+                let response_envelope = json!({
+                    "sender_tee_pubkey": format!("0x{}", state.node_tee_pubkey),
+                    "nonce": "00112233445566778899aabb",
+                    "encrypted_data": hex::encode(response_plain_text.as_bytes()),
+                });
+
+                let signer = match EthKey::new_from_bytes(&state.node_private_key_hex) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        return json_response(
+                            hyper::StatusCode::INTERNAL_SERVER_ERROR,
+                            json!({"error":"invalid node signer"}),
+                        );
+                    }
+                };
+                let verify_message = format!("NovaKMS:Response:{}:{}", app_sig, state.node_wallet);
+                let verify_prefixed = eip191_personal_message_bytes(&verify_message);
+                let response_sig =
+                    format!("0x{}", hex::encode(signer.sign_message(&verify_prefixed)));
+
+                Response::builder()
+                    .status(hyper::StatusCode::OK)
+                    .header(CONTENT_TYPE, "application/json")
+                    .header("x-kms-response-signature", response_sig)
+                    .body(Full::new(Bytes::from(response_envelope.to_string())))
+                    .unwrap()
+            }
+            _ => json_response(hyper::StatusCode::NOT_FOUND, json!({"error":"not found"})),
         }
     }
 
@@ -3023,6 +3413,91 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("sender_tee_pubkey mismatch"));
+    }
+
+    #[tokio::test]
+    async fn smoke_test_call_kms_on_node_with_mock_odyn_and_kms() {
+        let app_private_key_hex =
+            "0x2151833c4e545b28d64d87ed80dcc735a14d70f537e8885b227a5dbe7994da26".to_string();
+        let node_private_key_hex =
+            "0x3f2e1d0c9b8a7766554433221100ffeeddccbbaa99887766554433221100aa55".to_string();
+
+        let app_key = EthKey::new_from_bytes(&app_private_key_hex).unwrap();
+        let node_key = EthKey::new_from_bytes(&node_private_key_hex).unwrap();
+        let app_wallet = canonical_wallet(&app_key.address()).unwrap();
+        let node_wallet = canonical_wallet(&node_key.address()).unwrap();
+
+        let app_tee_pubkey = "aaaabbbbccccddddeeeeffff11112222".to_string();
+        let node_tee_pubkey = "99998888777766665555444433332222".to_string();
+        let nonce_b64 = general_purpose::STANDARD.encode(b"smoke_nonce_12345");
+
+        let observed = Arc::new(TokioMutex::new(MockKmsObserved::default()));
+        let kms_state = MockKmsState {
+            nonce_b64: nonce_b64.clone(),
+            app_wallet: app_wallet.clone(),
+            app_tee_pubkey: app_tee_pubkey.clone(),
+            node_wallet: node_wallet.clone(),
+            node_tee_pubkey: node_tee_pubkey.clone(),
+            node_private_key_hex: node_private_key_hex.clone(),
+            observed: observed.clone(),
+        };
+        let odyn_state = MockOdynState {
+            app_private_key_hex,
+            app_wallet,
+            app_tee_pubkey,
+            node_tee_pubkey: node_tee_pubkey.clone(),
+        };
+
+        let (odyn_base_url, odyn_handle) = spawn_mock_odyn_server(odyn_state).await;
+        let (kms_base_url, kms_handle) = spawn_mock_kms_server(kms_state).await;
+
+        let mut proxy = test_proxy();
+        proxy.odyn_endpoint = odyn_base_url;
+        proxy.require_mutual_signature = true;
+        proxy.max_retries = 1;
+
+        let node = KmsNodeCacheEntry::new(node_wallet, kms_base_url, node_tee_pubkey);
+        let payload = json!({
+            "path": "smoke/path",
+            "context": "smoke-context",
+            "length": 32,
+        });
+
+        let result = proxy
+            .call_kms_on_node(
+                "req-smoke",
+                &node,
+                reqwest::Method::POST,
+                "/kms/derive",
+                Some(payload),
+            )
+            .await
+            .unwrap();
+
+        let observed_state = observed.lock().await.clone();
+        assert!(observed_state.pop_verified);
+        assert!(observed_state.request_envelope_verified);
+        assert_eq!(observed_state.requested_path.as_deref(), Some("smoke/path"));
+        assert_eq!(
+            observed_state.requested_context.as_deref(),
+            Some("smoke-context")
+        );
+        assert_eq!(
+            result.get("path").and_then(Value::as_str),
+            Some("smoke/path")
+        );
+        assert_eq!(
+            result.get("context").and_then(Value::as_str),
+            Some("smoke-context")
+        );
+        assert_eq!(result.get("length").and_then(Value::as_u64), Some(32));
+        assert_eq!(
+            result.get("key").and_then(Value::as_str),
+            Some("ZGVyaXZlZC1rZXk=")
+        );
+
+        odyn_handle.abort();
+        kms_handle.abort();
     }
 
     #[test]
