@@ -159,15 +159,14 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
   - Provide ECDH-based encryption/decryption using P-384 key pairs for secure client-enclave communication.
   - Optionally wire `NovaKmsProxy` (`kms_integration`) and `S3Proxy` (`storage.s3`) into API routes.
   - Enforce KMS dependency for `storage.s3.encryption.mode=kms` and surface startup-time configuration errors early.
-  - Periodically archive Nova KMS audit logs into S3 when both KMS integration and S3 KMS encryption are enabled.
 
 - Key data structures
-  - `ApiService { task: Option<JoinHandle<()>>, audit_archive_task: Option<JoinHandle<()>> }` and the `ApiHandler` implementing routes.
+  - `ApiService { task: Option<JoinHandle<()>> }` and the `ApiHandler` implementing routes.
 
 - External deps
   - The project's http server util, the NSM attestation helper, `EncryptionKey` for P-384 ECDH, and route/handler types.
   - `enclaver::integrations::nova_kms::NovaKmsProxy` for `/v1/kms/*` and `/v1/app-wallet/*`.
-  - `enclaver::integrations::s3::S3Proxy` and `aws_sdk_s3` for `/v1/s3/*` and audit-log archival.
+  - `enclaver::integrations::s3::S3Proxy` and `aws_sdk_s3` for `/v1/s3/*`.
 
 - Lifecycle
   - `start()` binds the API listen port and spawns the server task.
@@ -178,8 +177,7 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
   - `/v1/kms/*` keeps registry-backed authz; app-wallet routes run in enclave-local mode and are initialized from Nova KMS KV state.
   - If `storage.s3` is configured, `start()` constructs `S3Proxy` and loads AWS config through IMDS via egress proxy.
   - If `storage.s3.encryption.mode=kms`, `start()` requires `kms_integration.enabled=true`; otherwise startup fails.
-  - If KMS integration + S3 KMS encryption are both enabled, `start()` spawns a background archive loop that rotates internal KMS audit `*.jsonl` files into S3 (`kms-audit/...`).
-  - `stop()` aborts both the API task and audit archive task.
+  - `stop()` aborts the API task.
 
 - Common errors
   - Bind failures or missing attestation artifacts.
