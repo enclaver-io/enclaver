@@ -32,7 +32,7 @@ Repository layout (important files)
 - `enclaver/src/keypair.rs` — Generic key pair trait abstraction.
 - `enclaver/src/proxy/` — network proxy implementations: `ingress.rs`, `egress_http.rs`.
 - `enclaver/src/integrations/` — external service integrations:
-  - `nova_kms.rs` — Nova KMS proxy (derive, KV, audit, node discovery).
+  - `nova_kms.rs` — Nova KMS proxy (derive, KV, node discovery).
   - `nova_kms/app_wallet.rs` — App wallet lifecycle backed by KMS KV (create/read/sign).
   - `s3.rs` — S3 storage proxy with optional KMS-derived encryption.
   - `aws_util.rs` — AWS credential and region resolution via IMDS.

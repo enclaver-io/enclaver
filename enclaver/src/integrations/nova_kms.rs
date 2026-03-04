@@ -392,7 +392,7 @@ impl NovaKmsProxy {
             "length": length,
         });
         let response = self
-            .call_kms_json_internal(Method::POST, "/kms/derive", Some(payload), true)
+            .call_kms_json_internal(Method::POST, "/kms/derive", Some(payload))
             .await?;
         let key_b64 = response
             .get("key")
@@ -411,7 +411,7 @@ impl NovaKmsProxy {
         let path = format!("/kms/data/{key_encoded}");
 
         match self
-            .call_kms_json_internal(Method::GET, &path, None, true)
+            .call_kms_json_internal(Method::GET, &path, None)
             .await
         {
             Ok(response) => {
@@ -445,7 +445,7 @@ impl NovaKmsProxy {
             "value": value_b64,
             "ttl_ms": ttl_ms,
         });
-        self.call_kms_json_internal(Method::PUT, "/kms/data", Some(payload), true)
+        self.call_kms_json_internal(Method::PUT, "/kms/data", Some(payload))
             .await
             .map(|_| ())
     }
@@ -456,7 +456,7 @@ impl NovaKmsProxy {
         }
 
         let payload = json!({ "key": key });
-        self.call_kms_json_internal(Method::DELETE, "/kms/data", Some(payload), true)
+        self.call_kms_json_internal(Method::DELETE, "/kms/data", Some(payload))
             .await
             .map(|_| ())
     }
@@ -555,11 +555,9 @@ impl NovaKmsProxy {
         method: Method,
         path: &str,
         payload: Option<Value>,
-        include_authz_metadata: bool,
     ) -> Result<Value> {
         let request_id = Uuid::new_v4().to_string();
         let payload_hash = self.hash_payload(payload.as_ref());
-        let _ = include_authz_metadata;
         let mut last_error: Option<anyhow::Error> = None;
         let node_candidates = self.resolve_node_candidates(&request_id).await?;
         let payload_preview = payload
