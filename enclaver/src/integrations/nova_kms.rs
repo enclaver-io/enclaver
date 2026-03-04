@@ -1,6 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -20,9 +18,7 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::fs::OpenOptions;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -47,7 +43,6 @@ const DEFAULT_KMS_NODE_IDENTITY_CACHE_TTL_MS: u64 = 30_000;
 const DEFAULT_KMS_BACKGROUND_REFRESH_INTERVAL_MS: u64 = 20_000;
 const DEFAULT_KMS_REQUIRE_MUTUAL_SIGNATURE: bool = true;
 const DEFAULT_KMS_RESERVED_DERIVE_PREFIXES: [&str; 1] = ["wallet/eth/app/"];
-const DEFAULT_KMS_AUDIT_LOG_PATH: &str = "/var/log/odyn/odyn_kms_audit.log";
 const DEFAULT_REGISTRY_ETH_CALL_MAX_ATTEMPTS: usize = 5;
 const DEFAULT_REGISTRY_ETH_CALL_RETRY_BACKOFF_BASE_MS: u64 = 400;
 const KMS_DEBUG_LOG_MAX_LEN: usize = 1024;
@@ -70,8 +65,6 @@ pub struct NovaKmsProxy {
     max_retries: usize,
     require_mutual_signature: bool,
     reserved_derive_prefixes: Arc<Vec<String>>,
-    audit_log_path: Option<PathBuf>,
-    audit_log_sender: Option<mpsc::UnboundedSender<String>>,
     registry_discovery: Option<RegistryDiscoveryConfig>,
     discovery_cache: Arc<RwLock<Option<DiscoveryCacheEntry>>>,
     background_refresh_started: Arc<AtomicBool>,
@@ -173,17 +166,6 @@ impl KmsNodeCacheEntry {
     }
 }
 
-struct AuditLogEntry<'a> {
-    request_id: &'a str,
-    instance_wallet: &'a str,
-    action: &'a str,
-    payload_hash: &'a str,
-    kms_node: &'a str,
-    result: &'a str,
-    error_code: Option<&'a str>,
-    authz_context: Option<&'a AppAuthzContext>,
-}
-
 #[derive(Clone)]
 struct RegistryInstance {
     app_id: u64,
@@ -282,43 +264,6 @@ struct JsonRpcError {
 }
 
 impl NovaKmsProxy {
-    fn initialize_audit_log_path() -> Option<PathBuf> {
-        let path = PathBuf::from(DEFAULT_KMS_AUDIT_LOG_PATH);
-        match Self::ensure_audit_log_permissions(&path) {
-            Ok(()) => Some(path),
-            Err(err) => {
-                warn!(
-                    "Nova KMS audit log disabled: failed to initialize {}: {}",
-                    DEFAULT_KMS_AUDIT_LOG_PATH, err
-                );
-                None
-            }
-        }
-    }
-
-    fn ensure_audit_log_permissions(path: &PathBuf) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-            }
-        }
-
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-        }
-
-        Ok(())
-    }
-
     pub fn new(config: &KmsIntegration, odyn_endpoint: String) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_millis(DEFAULT_KMS_REQUEST_TIMEOUT_MS))
@@ -334,9 +279,6 @@ impl NovaKmsProxy {
             .collect::<Vec<_>>();
 
         let registry_discovery = Self::build_registry_discovery(config)?;
-        let audit_log_path = Self::initialize_audit_log_path();
-        let audit_log_sender = Self::spawn_audit_log_writer(audit_log_path.clone());
-
         let http_proxy_present =
             std::env::var_os("HTTP_PROXY").is_some() || std::env::var_os("http_proxy").is_some();
         let https_proxy_present =
@@ -368,8 +310,6 @@ impl NovaKmsProxy {
             max_retries: DEFAULT_KMS_MAX_ATTEMPTS,
             require_mutual_signature: DEFAULT_KMS_REQUIRE_MUTUAL_SIGNATURE,
             reserved_derive_prefixes: Arc::new(reserved_derive_prefixes),
-            audit_log_path,
-            audit_log_sender,
             registry_discovery,
             discovery_cache: Arc::new(RwLock::new(None)),
             background_refresh_started: Arc::new(AtomicBool::new(false)),
@@ -423,44 +363,11 @@ impl NovaKmsProxy {
         }
     }
 
-    fn spawn_audit_log_writer(path: Option<PathBuf>) -> Option<mpsc::UnboundedSender<String>> {
-        let path = path?;
-        let (sender, mut receiver) = mpsc::unbounded_channel::<String>();
-        let handle = match tokio::runtime::Handle::try_current() {
-            Ok(handle) => handle,
-            Err(err) => {
-                warn!(
-                    "Nova KMS audit log writer not started (runtime unavailable: {}); falling back to inline writes",
-                    err
-                );
-                return None;
-            }
-        };
-        handle.spawn(async move {
-            while let Some(line) = receiver.recv().await {
-                let mut options = OpenOptions::new();
-                options.create(true).append(true);
-                #[cfg(unix)]
-                {
-                    options.mode(0o600);
-                }
-                if let Ok(mut file) = options.open(&path).await {
-                    let _ = file.write_all(line.as_bytes()).await;
-                }
-            }
-        });
-        Some(sender)
-    }
-
     pub fn is_reserved_derive_path(&self, path: &str) -> bool {
         let normalized = path.trim();
         self.reserved_derive_prefixes
             .iter()
             .any(|prefix| normalized.starts_with(prefix))
-    }
-
-    pub fn audit_log_path(&self) -> Option<PathBuf> {
-        self.audit_log_path.clone()
     }
 
     pub fn is_app_wallet_enabled(&self) -> bool {
@@ -469,39 +376,6 @@ impl NovaKmsProxy {
 
     pub async fn ensure_kms_access_authorized(&self) -> Result<AppAuthzContext> {
         self.resolve_authz_context().await
-    }
-
-    pub async fn audit_local_action(
-        &self,
-        action: &str,
-        payload: Option<&Value>,
-        result: &str,
-        error_code: Option<&str>,
-    ) {
-        let request_id = Uuid::new_v4().to_string();
-        let payload_hash = self.hash_payload(payload);
-        let instance_wallet = match self.local_eth_address().await {
-            Ok(value) => value,
-            Err(err) => {
-                warn!(
-                    "Skipping Nova KMS local audit entry due to missing local wallet identity: {}",
-                    err
-                );
-                return;
-            }
-        };
-        let authz_ctx = self.cached_authz_context().await;
-        self.append_audit_log(AuditLogEntry {
-            request_id: &request_id,
-            instance_wallet: &instance_wallet,
-            action,
-            payload_hash: &payload_hash,
-            kms_node: "local",
-            result,
-            error_code,
-            authz_context: authz_ctx.as_ref(),
-        })
-        .await;
     }
 
     pub async fn derive_key(&self, path: &str, context: &str, length: usize) -> Result<Vec<u8>> {
@@ -518,7 +392,7 @@ impl NovaKmsProxy {
             "length": length,
         });
         let response = self
-            .call_kms_json_internal(Method::POST, "/kms/derive", Some(payload), true)
+            .call_kms_json_internal(Method::POST, "/kms/derive", Some(payload))
             .await?;
         let key_b64 = response
             .get("key")
@@ -536,10 +410,7 @@ impl NovaKmsProxy {
         let key_encoded = byte_serialize(key.as_bytes()).collect::<String>();
         let path = format!("/kms/data/{key_encoded}");
 
-        match self
-            .call_kms_json_internal(Method::GET, &path, None, true)
-            .await
-        {
+        match self.call_kms_json_internal(Method::GET, &path, None).await {
             Ok(response) => {
                 let value = response
                     .get("value")
@@ -571,7 +442,7 @@ impl NovaKmsProxy {
             "value": value_b64,
             "ttl_ms": ttl_ms,
         });
-        self.call_kms_json_internal(Method::PUT, "/kms/data", Some(payload), true)
+        self.call_kms_json_internal(Method::PUT, "/kms/data", Some(payload))
             .await
             .map(|_| ())
     }
@@ -582,7 +453,7 @@ impl NovaKmsProxy {
         }
 
         let payload = json!({ "key": key });
-        self.call_kms_json_internal(Method::DELETE, "/kms/data", Some(payload), true)
+        self.call_kms_json_internal(Method::DELETE, "/kms/data", Some(payload))
             .await
             .map(|_| ())
     }
@@ -681,16 +552,9 @@ impl NovaKmsProxy {
         method: Method,
         path: &str,
         payload: Option<Value>,
-        include_authz_metadata: bool,
     ) -> Result<Value> {
         let request_id = Uuid::new_v4().to_string();
         let payload_hash = self.hash_payload(payload.as_ref());
-        let instance_wallet = self.local_eth_address().await?;
-        let authz_ctx = if include_authz_metadata {
-            self.cached_authz_context().await
-        } else {
-            None
-        };
         let mut last_error: Option<anyhow::Error> = None;
         let node_candidates = self.resolve_node_candidates(&request_id).await?;
         let payload_preview = payload
@@ -732,17 +596,6 @@ impl NovaKmsProxy {
                             "Nova KMS [{}] success node={} action={} response={}",
                             request_id, base_url, action, response_preview,
                         );
-                        self.append_audit_log(AuditLogEntry {
-                            request_id: &request_id,
-                            instance_wallet: &instance_wallet,
-                            action: &action,
-                            payload_hash: &payload_hash,
-                            kms_node: base_url,
-                            result: "ok",
-                            error_code: None,
-                            authz_context: authz_ctx.as_ref(),
-                        })
-                        .await;
                         return Ok(value);
                     }
                     Err(err) => {
@@ -775,18 +628,6 @@ impl NovaKmsProxy {
                             err_text,
                         );
                         last_error = Some(err);
-                        let error_code = last_error.as_ref().map(ToString::to_string);
-                        self.append_audit_log(AuditLogEntry {
-                            request_id: &request_id,
-                            instance_wallet: &instance_wallet,
-                            action: &action,
-                            payload_hash: &payload_hash,
-                            kms_node: base_url,
-                            result: "error",
-                            error_code: error_code.as_deref(),
-                            authz_context: authz_ctx.as_ref(),
-                        })
-                        .await;
                     }
                 }
             }
@@ -1264,48 +1105,6 @@ impl NovaKmsProxy {
             .unwrap_or_default();
         let hash = Sha256::digest(bytes);
         hex::encode(hash)
-    }
-
-    async fn append_audit_log(&self, entry: AuditLogEntry<'_>) {
-        let Some(path) = self.audit_log_path.as_ref() else {
-            return;
-        };
-
-        let (app_id, app_wallet) = if let Some(ctx) = entry.authz_context {
-            (Some(ctx.app_id), Some(ctx.app_wallet.clone()))
-        } else {
-            (None, None)
-        };
-
-        let entry = json!({
-            "request_id": entry.request_id,
-            "instance_wallet": entry.instance_wallet,
-            "app_id": app_id,
-            "app_wallet": app_wallet,
-            "action": entry.action,
-            "payload_hash": entry.payload_hash,
-            "kms_node": entry.kms_node,
-            "result": entry.result,
-            "error_code": entry.error_code,
-            "timestamp": current_unix_timestamp(),
-        });
-        let mut line = entry.to_string();
-        line.push('\n');
-
-        if let Some(sender) = self.audit_log_sender.as_ref() {
-            if sender.send(line.clone()).is_ok() {
-                return;
-            }
-            warn!("Nova KMS audit log channel unavailable; falling back to inline write");
-        }
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .await
-        {
-            let _ = file.write_all(line.as_bytes()).await;
-        }
     }
 
     async fn resolve_authz_context(&self) -> Result<AppAuthzContext> {
@@ -2498,8 +2297,6 @@ mod tests {
             max_retries: 1,
             require_mutual_signature: true,
             reserved_derive_prefixes: Arc::new(vec!["wallet/eth/app/".to_string()]),
-            audit_log_path: None,
-            audit_log_sender: None,
             registry_discovery: None,
             discovery_cache: Arc::new(RwLock::new(None)),
             background_refresh_started: Arc::new(AtomicBool::new(false)),

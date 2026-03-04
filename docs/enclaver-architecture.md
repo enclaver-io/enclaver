@@ -32,7 +32,7 @@ Repository layout (important files)
 - `enclaver/src/keypair.rs` — Generic key pair trait abstraction.
 - `enclaver/src/proxy/` — network proxy implementations: `ingress.rs`, `egress_http.rs`.
 - `enclaver/src/integrations/` — external service integrations:
-  - `nova_kms.rs` — Nova KMS proxy (derive, KV, audit, node discovery).
+  - `nova_kms.rs` — Nova KMS proxy (derive, KV, node discovery).
   - `nova_kms/app_wallet.rs` — App wallet lifecycle backed by KMS KV (create/read/sign).
   - `s3.rs` — S3 storage proxy with optional KMS-derived encryption.
   - `aws_util.rs` — AWS credential and region resolution via IMDS.
@@ -85,7 +85,7 @@ Top-level modules and responsibilities
   - `egress_http.rs`: inside-enclave HTTP proxy + host-side vsock proxy for outbound HTTP(S); supports CONNECT and normal proxying; enforces `policy::EgressPolicy`.
 
 - integrations (`src/integrations/*`) (feature `odyn`)
-  - `nova_kms.rs`: Nova KMS integration used by the internal API (`/v1/kms/*`, `/v1/app-wallet/*`), including registry-backed authorization/discovery, node failover, mutual signature verification, and audit logging.
+  - `nova_kms.rs`: Nova KMS integration used by the internal API (`/v1/kms/*`, `/v1/app-wallet/*`), including registry-backed authorization/discovery, node failover, and mutual signature verification.
   - `nova_kms/app_wallet.rs`: App wallet lifecycle backed by Nova KMS KV.
   - `s3.rs`: S3-backed storage APIs with optional KMS-derived AES-256-GCM encryption.
   - `aws_util.rs`: AWS IMDS-based credential and region resolution.
@@ -172,7 +172,7 @@ KMS integration (feature `odyn`)
 - `integrations::nova_kms` serves internal API KMS/app-wallet endpoints; `/v1/kms/*` uses registry discovery/authz via `kms_integration` (`kms_app_id`, `nova_app_registry`) and built-in Helios registry RPC, while app-wallet routes run in enclave-local mode.
 - `integrations::nova_kms` maintains a background-refreshed KMS node cache (wallet + URL + reachability) and uses it for node selection and mutual signature verification.
 - `integrations::nova_kms::app_wallet` manages app-wallet key material in KMS KV when `use_app_wallet=true`.
-- When `storage.s3.encryption.mode=kms`, `odyn` wires `integrations::s3::S3Proxy` to `NovaKmsProxy`; a background task periodically archives internal KMS audit JSONL chunks to S3.
+- When `storage.s3.encryption.mode=kms`, `odyn` wires `integrations::s3::S3Proxy` to `NovaKmsProxy`.
 
 Ports and constants
 -------------------
@@ -221,7 +221,7 @@ Important files to inspect quickly
 - `enclaver/src/api.rs` — Primary Internal API handler (all `/v1/*` endpoints).
 - `enclaver/src/aux_api.rs` — Auxiliary API handler (restricted subset with sanitization).
 - `enclaver/src/proxy/egress_http.rs` — HTTP proxying logic and CONNECT handling.
-- `enclaver/src/integrations/nova_kms.rs` — Nova KMS integration, audit, and node lifecycle.
+- `enclaver/src/integrations/nova_kms.rs` — Nova KMS integration and node lifecycle.
 - `enclaver/src/integrations/nova_kms/app_wallet.rs` — App wallet lifecycle backed by KMS KV.
 - `enclaver/src/integrations/s3.rs` — S3 storage proxy with KMS encryption.
 - `enclaver/src/integrations/aws_util.rs` — AWS IMDS credential/region helpers.

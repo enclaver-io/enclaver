@@ -104,7 +104,7 @@ egress:
 # - App-wallet local mode (`enabled=true`, `use_app_wallet=true`) can run without registry fields.
 # - Instances that resolve to the same KMS app namespace will share the same app-wallet material.
 # - App-wallet routes are local-use only.
-# - Timeout/retry/discovery/audit settings are ODYN internal defaults (not YAML-configurable).
+# - Timeout/retry/discovery settings are ODYN internal defaults (not YAML-configurable).
 # - Any extra fields under `kms_integration` are rejected.
 # - If `storage.s3.encryption.mode=kms`, this integration must also be enabled.
 kms_integration:
