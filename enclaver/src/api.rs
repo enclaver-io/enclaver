@@ -556,13 +556,6 @@ impl ApiHandler {
         prefixed_msg.extend_from_slice(msg_bytes);
         let signature = app_wallet_key.sign_message(&prefixed_msg);
 
-        let audit_payload = serde_json::json!({
-            "message_len": msg_bytes.len()
-        });
-        proxy
-            .audit_local_action("app_wallet_sign", Some(&audit_payload), "ok", None)
-            .await;
-
         let response = json::object! {
             signature: format!("0x{}", hex::encode(signature)),
             address: app_wallet_key.address(),
@@ -609,12 +602,6 @@ impl ApiHandler {
 
         let raw_tx = unsigned_tx.finalize(&tx_signature);
         let tx_hash = eth_tx::keccak256(&raw_tx);
-
-        let audit_payload = serde_json::from_slice::<Value>(&body)
-            .unwrap_or_else(|_| serde_json::json!({ "payload": "unparseable" }));
-        proxy
-            .audit_local_action("app_wallet_sign_tx", Some(&audit_payload), "ok", None)
-            .await;
 
         let response = json::object! {
             raw_transaction: format!("0x{}", hex::encode(&raw_tx)),
