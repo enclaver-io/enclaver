@@ -410,10 +410,7 @@ impl NovaKmsProxy {
         let key_encoded = byte_serialize(key.as_bytes()).collect::<String>();
         let path = format!("/kms/data/{key_encoded}");
 
-        match self
-            .call_kms_json_internal(Method::GET, &path, None)
-            .await
-        {
+        match self.call_kms_json_internal(Method::GET, &path, None).await {
             Ok(response) => {
                 let value = response
                     .get("value")
