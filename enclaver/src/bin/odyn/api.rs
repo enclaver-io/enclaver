@@ -1,16 +1,15 @@
-use std::sync::Arc;
 use anyhow::Result;
 use aws_sdk_s3::Client as S3Client;
 use aws_sdk_s3::config::Region;
 use enclaver::manifest::S3EncryptionMode;
 use log::info;
+use std::sync::Arc;
 use tokio::task::JoinHandle;
 
 use crate::config::Configuration;
 use enclaver::api::ApiHandler;
 use enclaver::http_util::HttpServer;
 use enclaver::integrations::nova_kms::NovaKmsProxy;
-use enclaver::integrations::s3::S3Proxy;
 use enclaver::nsm::{Nsm, NsmAttestationProvider};
 
 pub struct ApiService {
