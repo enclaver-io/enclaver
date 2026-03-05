@@ -90,7 +90,7 @@ impl Configuration {
             .aux_api
             .as_ref()
             .and_then(|a| a.listen_port)
-            .or(Some(api_port + 1))
+            .or_else(|| api_port.checked_add(1))
     }
 
     pub fn s3_config(&self) -> Option<&enclaver::manifest::S3StorageConfig> {
@@ -178,6 +178,26 @@ mod tests {
             listen_port: Some(9100),
         });
         assert_eq!(cfg.aux_api_port(), Some(9100));
+    }
+
+    #[test]
+    fn aux_api_port_with_max_api_and_explicit_value_does_not_overflow() {
+        let mut cfg = base_config();
+        cfg.manifest.api = Some(Api { listen_port: u16::MAX });
+        cfg.manifest.aux_api = Some(AuxApi {
+            listen_port: Some(9001),
+        });
+        assert_eq!(cfg.aux_api_port(), Some(9001));
+    }
+
+    #[test]
+    fn aux_api_port_with_max_api_and_no_aux_returns_none() {
+        let mut cfg = base_config();
+        cfg.manifest.api = Some(Api {
+            listen_port: u16::MAX,
+        });
+        cfg.manifest.aux_api = None;
+        assert_eq!(cfg.aux_api_port(), None);
     }
 
     #[test]

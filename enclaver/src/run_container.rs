@@ -43,7 +43,7 @@ impl Sleeve {
             return Err(anyhow!("container already running"));
         }
 
-        let port_re = regex::Regex::new(r"(\d+):(\d+)")?;
+        let port_re = regex::Regex::new(r"^(\d+):(\d+)$")?;
 
         let mut exposed_ports: HashMap<String, HashMap<(), ()>> = HashMap::new();
         let mut port_bindings = PortMap::new();

@@ -126,7 +126,7 @@ impl Enclave {
         Ok(Self {
             cli: NitroCLI::new(),
             eif_path: eif_path.to_path_buf(),
-            manifest: load_manifest(&manifest_path).await?,
+            manifest,
             cpu_count,
             memory_mb,
             debug_mode: opts.debug_mode,
