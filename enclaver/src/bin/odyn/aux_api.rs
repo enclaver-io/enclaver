@@ -13,12 +13,7 @@ pub struct AuxApiService {
 impl AuxApiService {
     pub async fn start(config: &Configuration) -> Result<Self> {
         let task = if let Some(port) = config.aux_api_port() {
-            // Verify API port exists as a safety check
-            if config.api_port().is_none() {
-                return Ok(Self { task: None });
-            }
-
-            let api_port = config.api_port().unwrap();
+            let api_port = config.api_port().expect("aux_api_port implies api_port");
             info!("Starting Aux API on port {port} (proxying to API on port {api_port})");
 
             let srv = HttpServer::bind(port).await?;

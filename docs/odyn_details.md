@@ -206,7 +206,7 @@ The `enclaver/src/bin/odyn` binary is organized into the following modules. Each
   - hyper, http-body-util for HTTP client and proxying.
 
 - Lifecycle / behaviors
-  - `start()` checks if both `aux_api` and `api` sections are configured in the manifest. If `aux_api.listen_port` is specified, uses that port; otherwise defaults to `api_port + 1`.
+  - `start()` requires `api` to be configured. If `aux_api.listen_port` is specified, it uses that port; otherwise it defaults to `api_port + 1`.
   - Binds the aux API listen port and spawns a server task that handles incoming requests.
   - Routes supported:
     - `GET /v1/eth/address` — proxies to internal API to retrieve the enclave's Ethereum address.
