@@ -420,7 +420,7 @@ impl NovaKmsProxy {
             }
             Err(err) => {
                 let msg = err.to_string();
-                if msg.contains("KMS HTTP 404") || msg.contains("Key not found") {
+                if looks_like_kms_not_found_error(&msg) {
                     Ok(None)
                 } else {
                     Err(err)
@@ -501,10 +501,17 @@ impl NovaKmsProxy {
         info!("Nova KMS authz passed for /v1/kms/kv/get");
 
         match self.kv_get(&req.key).await {
-            Ok(value) => Ok(http_util::ok_json(&KvGetApiResponse {
-                found: value.is_some(),
-                value,
+            Ok(Some(value)) => Ok(http_util::ok_json(&KvGetApiResponse {
+                found: true,
+                value: Some(value),
             })?),
+            Ok(None) => Ok(http_util::json_response(
+                StatusCode::NOT_FOUND,
+                &KvGetApiResponse {
+                    found: false,
+                    value: None,
+                },
+            )?),
             Err(err) => Ok(kms_operation_error_response(err.to_string())),
         }
     }
@@ -556,6 +563,7 @@ impl NovaKmsProxy {
         let request_id = Uuid::new_v4().to_string();
         let payload_hash = self.hash_payload(payload.as_ref());
         let mut last_error: Option<anyhow::Error> = None;
+        let mut not_found_error: Option<anyhow::Error> = None;
         let node_candidates = self.resolve_node_candidates(&request_id).await?;
         let payload_preview = payload
             .as_ref()
@@ -600,6 +608,9 @@ impl NovaKmsProxy {
                     }
                     Err(err) => {
                         let err_text = err.to_string();
+                        if looks_like_kms_not_found_error(&err_text) {
+                            not_found_error.get_or_insert_with(|| anyhow!(err_text.clone()));
+                        }
                         if err_text.contains("mutual response signature verification failed")
                             || err_text.contains("KMS response missing X-KMS-Response-Signature")
                         {
@@ -637,6 +648,9 @@ impl NovaKmsProxy {
             }
         }
 
+        if let Some(err) = not_found_error {
+            return Err(err);
+        }
         Err(last_error.unwrap_or_else(|| anyhow!("KMS call failed with unknown error")))
     }
 
@@ -2171,6 +2185,11 @@ fn looks_like_connectivity_error(message: &str) -> bool {
     markers.iter().any(|marker| lowered.contains(marker))
 }
 
+fn looks_like_kms_not_found_error(message: &str) -> bool {
+    let lowered = message.to_ascii_lowercase();
+    lowered.contains("kms http 404") || lowered.contains("key not found")
+}
+
 fn looks_like_transient_registry_error(message: &str) -> bool {
     let lowered = message.to_ascii_lowercase();
     looks_like_connectivity_error(message) || lowered.contains("out of sync")
@@ -2865,6 +2884,17 @@ mod tests {
     }
 
     #[test]
+    fn kms_not_found_error_detector_identifies_missing_key_errors() {
+        assert!(looks_like_kms_not_found_error(
+            "KMS HTTP 404: {\"code\":\"not_found\",\"message\":\"Key not found\"}"
+        ));
+        assert!(looks_like_kms_not_found_error("key not found"));
+        assert!(!looks_like_kms_not_found_error(
+            "error sending request for url (https://kms.example.com/nonce)"
+        ));
+    }
+
+    #[test]
     fn build_registry_discovery_none_when_registry_fields_absent() {
         let config = KmsIntegration {
             enabled: true,
@@ -3333,5 +3363,18 @@ mod tests {
             "Failed to decrypt request: envelope decryption failed".to_string(),
         );
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn kv_get_not_found_returns_404_json() {
+        let response = http_util::json_response(
+            StatusCode::NOT_FOUND,
+            &KvGetApiResponse {
+                found: false,
+                value: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }
