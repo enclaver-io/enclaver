@@ -183,7 +183,9 @@ mod tests {
     #[test]
     fn aux_api_port_with_max_api_and_explicit_value_does_not_overflow() {
         let mut cfg = base_config();
-        cfg.manifest.api = Some(Api { listen_port: u16::MAX });
+        cfg.manifest.api = Some(Api {
+            listen_port: u16::MAX,
+        });
         cfg.manifest.aux_api = Some(AuxApi {
             listen_port: Some(9001),
         });
