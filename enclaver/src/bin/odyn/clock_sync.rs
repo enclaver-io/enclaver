@@ -199,7 +199,7 @@ fn get_current_time() -> Result<Timestamp> {
         anyhow::bail!("clock_gettime failed: {}", std::io::Error::last_os_error());
     }
 
-    Ok(Timestamp::new(tv.tv_sec as i64, tv.tv_nsec as u32))
+    Ok(Timestamp::new(tv.tv_sec, tv.tv_nsec as u32))
 }
 
 /// Set the system clock to the given timestamp.
