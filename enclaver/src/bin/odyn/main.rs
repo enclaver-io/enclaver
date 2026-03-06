@@ -65,7 +65,7 @@ async fn launch(args: &CliArgs) -> Result<launcher::ExitStatus> {
 
     let egress = EgressService::start(&config).await?;
 
-    // Start clock sync service (if enabled in manifest)
+    // Start clock sync service. It is enabled by default unless disabled in the manifest.
     let clock_sync = ClockSyncService::start(&config);
 
     // Start Helios in background (non-blocking, app starts immediately)

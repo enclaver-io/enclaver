@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use log::{error, info, warn};
+use nix::libc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::task::JoinHandle;
 use tokio_vsock::VsockStream;
@@ -9,6 +10,11 @@ use tokio_vsock::VsockStream;
 use crate::config::Configuration;
 use enclaver::constants::CLOCK_SYNC_PORT;
 use enclaver::vsock::VMADDR_CID_HOST;
+
+const INITIAL_SYNC_MAX_ATTEMPTS: usize = 10;
+const INITIAL_SYNC_RETRY_DELAY: Duration = Duration::from_secs(2);
+const CLOCK_SYNC_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const CLOCK_SYNC_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Enclave-side clock synchronization service.
 ///
@@ -22,15 +28,12 @@ pub struct ClockSyncService {
 impl ClockSyncService {
     pub fn start(config: &Configuration) -> Self {
         let Some(cs_config) = config.clock_sync_config() else {
-            info!("Clock sync disabled (not configured)");
+            info!("Clock sync disabled in manifest");
             return Self { task: None };
         };
 
         let interval_secs = cs_config.interval_secs;
-        info!(
-            "Starting clock sync service (interval: {}s)",
-            interval_secs
-        );
+        info!("Starting clock sync service (interval: {}s)", interval_secs);
 
         // Do an initial sync immediately, then periodically
         let task = tokio::spawn(async move {
@@ -41,12 +44,14 @@ impl ClockSyncService {
                     Ok(()) => break,
                     Err(e) => {
                         retries += 1;
-                        if retries > 10 {
+                        if retries >= INITIAL_SYNC_MAX_ATTEMPTS {
                             error!("Clock sync: failed initial sync after {retries} attempts: {e}");
                             break;
                         }
-                        warn!("Clock sync: initial sync attempt {retries} failed: {e}, retrying...");
-                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        warn!(
+                            "Clock sync: initial sync attempt {retries} failed: {e}, retrying..."
+                        );
+                        tokio::time::sleep(INITIAL_SYNC_RETRY_DELAY).await;
                     }
                 }
             }
@@ -75,26 +80,38 @@ impl ClockSyncService {
 
 /// Perform a single clock synchronization: connect to host, get time, set clock.
 async fn sync_once() -> Result<()> {
-    let mut stream = VsockStream::connect(VMADDR_CID_HOST, CLOCK_SYNC_PORT).await?;
+    let mut stream = tokio::time::timeout(
+        CLOCK_SYNC_CONNECT_TIMEOUT,
+        VsockStream::connect(VMADDR_CID_HOST, CLOCK_SYNC_PORT),
+    )
+    .await
+    .map_err(|_| anyhow!("timed out connecting to host time server"))??;
     let client_transmit = get_current_time()?;
 
     // Send a request (single newline)
-    stream.write_all(b"time\n").await?;
-    stream.flush().await?;
+    let line = tokio::time::timeout(CLOCK_SYNC_RESPONSE_TIMEOUT, async {
+        stream.write_all(b"time\n").await?;
+        stream.flush().await?;
 
-    // Read the response: a JSON line with host receive/transmit timestamps.
-    let reader = BufReader::new(&mut stream);
-    let mut lines = reader.lines();
-    let line = lines
-        .next_line()
-        .await?
-        .ok_or_else(|| anyhow!("no response from host time server"))?;
+        // Read the response: a JSON line with host receive/transmit timestamps.
+        let reader = BufReader::new(&mut stream);
+        let mut lines = reader.lines();
+        lines
+            .next_line()
+            .await?
+            .ok_or_else(|| anyhow!("no response from host time server"))
+    })
+    .await
+    .map_err(|_| anyhow!("timed out waiting for host time server response"))??;
     let client_receive = get_current_time()?;
 
     let response: TimeResponse = serde_json::from_str(&line)?;
-    let server_receive = Timestamp::new(response.server_receive_secs, response.server_receive_nanos);
-    let server_transmit =
-        Timestamp::new(response.server_transmit_secs, response.server_transmit_nanos);
+    let server_receive =
+        Timestamp::new(response.server_receive_secs, response.server_receive_nanos);
+    let server_transmit = Timestamp::new(
+        response.server_transmit_secs,
+        response.server_transmit_nanos,
+    );
 
     let t1 = client_transmit.as_nanos();
     let t2 = server_receive.as_nanos();
@@ -179,10 +196,7 @@ fn get_current_time() -> Result<Timestamp> {
         libc::clock_gettime(libc::CLOCK_REALTIME, &mut tv)
     };
     if ret != 0 {
-        anyhow::bail!(
-            "clock_gettime failed: {}",
-            std::io::Error::last_os_error()
-        );
+        anyhow::bail!("clock_gettime failed: {}", std::io::Error::last_os_error());
     }
 
     Ok(Timestamp::new(tv.tv_sec as i64, tv.tv_nsec as u32))
@@ -199,10 +213,7 @@ fn set_system_time(timestamp: Timestamp) -> Result<()> {
         libc::clock_settime(libc::CLOCK_REALTIME, &tv)
     };
     if ret != 0 {
-        anyhow::bail!(
-            "clock_settime failed: {}",
-            std::io::Error::last_os_error()
-        );
+        anyhow::bail!("clock_settime failed: {}", std::io::Error::last_os_error());
     }
     Ok(())
 }

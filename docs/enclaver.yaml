@@ -164,10 +164,13 @@ storage:
 # Nitro Enclaves do not automatically synchronize their system clock with the host.
 # Over time, the enclave clock drifts (~7 seconds per week). This can cause failures
 # in JWT validation, TLS certificate checks, and cryptographic protocols.
-# When enabled, odyn periodically syncs the enclave clock with the host via vsock.
+# Enclaver enables clock sync by default, even if this block is omitted.
+# Use this block only to disable clock sync or adjust the sync interval.
+# Omit the block entirely to keep defaults, or write `clock_sync: {}` to keep
+# defaults while documenting the setting explicitly.
 clock_sync:
-  enabled: true              # [ODYN + SLEEVE] Enable automatic clock synchronization.
-  interval_secs: 300         # [ODYN] Sync interval in seconds (default: 300).
+  # enabled: false           # [ODYN + SLEEVE] Optional. Set to false to disable automatic clock synchronization.
+  interval_secs: 300         # [ODYN] Optional. Sync interval in seconds (default: 300).
                              # ODYN: connects to host time server via vsock, estimates RTT/offset,
                              # and sets system clock.
                              # SLEEVE: starts a vsock time server on the host side.
@@ -216,7 +219,7 @@ clock_sync:
 # | storage.s3.encryption.aad_mode | ODYN | AAD binding mode for ciphertext metadata     |
 # | storage.s3.encryption.key_version | ODYN | Encryption key version label              |
 # | storage.s3.encryption.accept_plaintext | ODYN | Allow plaintext reads when present      |
-# | clock_sync.enabled     | ODYN+SLEEVE | Enable automatic clock synchronization     |
-# | clock_sync.interval_secs | ODYN      | Clock sync interval in seconds (default 300) |
+# | clock_sync.enabled     | ODYN+SLEEVE | Disable clock sync when set to false (default: enabled) |
+# | clock_sync.interval_secs | ODYN      | Override clock sync interval in seconds (default 300) |
 #
 # ============================================================================

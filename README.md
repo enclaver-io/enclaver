@@ -34,6 +34,7 @@ See [docs/http_proxy_support_guidance_for_enclave_applications.md](docs/http_pro
 ### Odyn Supervisor
 - [Odyn User Guide](docs/odyn.md) — User-focused guide to Odyn modules and configuration
 - [Odyn Implementation Details](docs/odyn_details.md) — Deep dive into Odyn internals (for contributors)
+- [Clock Drift & Time Sync](docs/nitro_enclave_clock_drift.md) — Nitro Enclave clock behavior and Enclaver's default synchronization strategy
 
 ### Internal API
 - [Internal API Reference](docs/internal_api.md) — Complete API endpoint documentation for attestation, signing, encryption

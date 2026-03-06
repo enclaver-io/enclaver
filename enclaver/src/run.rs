@@ -23,6 +23,7 @@ use crate::proxy::ingress::HostProxy;
 const LOG_VSOCK_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 const STATUS_VSOCK_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 const STATUS_VSOCK_RETRY_LIMIT: i32 = 100;
+const CLOCK_SYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 const DEFAULT_CPU_COUNT: i32 = 2;
 const DEFAULT_MEMORY_MB: i32 = 4096;
@@ -249,23 +250,18 @@ impl Enclave {
     }
 
     fn start_clock_sync_server(&mut self) -> Result<()> {
-        let clock_sync_enabled = self
-            .manifest
-            .clock_sync
-            .as_ref()
-            .is_some_and(|cs| cs.enabled);
+        let clock_sync_enabled = self.manifest.effective_clock_sync().enabled;
 
         if !clock_sync_enabled {
-            info!("clock sync not enabled, skipping host time server");
+            info!("clock sync disabled in manifest, skipping host time server");
             return Ok(());
         }
 
         info!("starting host-side clock sync time server on vsock port {CLOCK_SYNC_PORT}");
 
         let listener = crate::vsock::serve(CLOCK_SYNC_PORT)?;
-        self.tasks.push(utils::spawn!(
-            "clock sync time server",
-            async move {
+        self.tasks
+            .push(utils::spawn!("clock sync time server", async move {
                 tokio::pin!(listener);
                 while let Some(stream) = listener.next().await {
                     tokio::spawn(async move {
@@ -274,8 +270,7 @@ impl Enclave {
                         }
                     });
                 }
-            }
-        )?);
+            })?);
 
         Ok(())
     }
@@ -408,7 +403,9 @@ async fn handle_time_request(stream: tokio_vsock::VsockStream) -> Result<()> {
     let (reader, mut writer) = tokio::io::split(stream);
     let mut buf_reader = BufReader::new(reader);
     let mut line = String::new();
-    buf_reader.read_line(&mut line).await?;
+    tokio::time::timeout(CLOCK_SYNC_REQUEST_TIMEOUT, buf_reader.read_line(&mut line))
+        .await
+        .map_err(|_| anyhow!("clock sync request timed out"))??;
     let server_receive = current_unix_timestamp()?;
 
     let server_transmit = current_unix_timestamp()?;

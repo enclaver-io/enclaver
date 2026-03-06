@@ -240,6 +240,50 @@ drift.
 
 ------------------------------------------------------------------------
 
+# Enclaver Built-In Clock Sync
+
+Enclaver implements the first approach above out of the box.
+
+How it works today:
+
+-   `enclaver-run` starts a host-side VSOCK time server before launching
+    the enclave
+-   `odyn` performs an initial sync on boot, then continues syncing
+    periodically
+-   The sync logic estimates **offset** and **round-trip time (RTT)**
+    using host receive/transmit timestamps before calling
+    `clock_settime`
+-   Clock sync is **enabled by default**
+
+Default behavior:
+
+-   If `clock_sync` is omitted from `enclaver.yaml`, Enclaver still
+    syncs time every **300 seconds**
+-   Use `clock_sync.enabled: false` only if you want to disable this
+    behavior
+-   Use `clock_sync.interval_secs` only if you want a different sync
+    interval
+
+Example:
+
+    # Keep default behavior: omit the block entirely
+
+    # Disable clock sync
+    clock_sync:
+      enabled: false
+
+    # Keep clock sync enabled, but sync every minute
+    clock_sync:
+      interval_secs: 60
+
+Important limitation:
+
+-   This improves operational correctness for JWT/TLS/expiry checks
+-   It does **not** create a cryptographically trusted time source
+-   The enclave is still following the parent instance's wall clock
+
+------------------------------------------------------------------------
+
 # Enclave Restart Behavior
 
 Another important characteristic:
@@ -278,6 +322,9 @@ Nitro Enclave clock behavior can be summarized as follows.
 
 Developers building enclave-based systems should explicitly account for
 time synchronization when designing their infrastructure.
+
+For Enclaver users, the operational default is already to synchronize
+time with the host unless you disable it explicitly.
 
 ------------------------------------------------------------------------
 

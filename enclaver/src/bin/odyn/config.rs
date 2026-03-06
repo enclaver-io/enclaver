@@ -132,18 +132,16 @@ impl Configuration {
         configs
     }
 
-    pub fn clock_sync_config(&self) -> Option<&enclaver::manifest::ClockSync> {
-        self.manifest
-            .clock_sync
-            .as_ref()
-            .filter(|cs| cs.enabled)
+    pub fn clock_sync_config(&self) -> Option<enclaver::manifest::ClockSync> {
+        let clock_sync = self.manifest.effective_clock_sync();
+        clock_sync.enabled.then_some(clock_sync)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use enclaver::manifest::{Api, AuxApi, HeliosRpc, HeliosRpcChain, Sources};
+    use enclaver::manifest::{Api, AuxApi, ClockSync, HeliosRpc, HeliosRpcChain, Sources};
 
     fn base_config() -> Configuration {
         Configuration {
@@ -255,6 +253,44 @@ mod tests {
         assert_eq!(configs.len(), 2);
         assert_eq!(configs[0].chain_name, "L2-base-sepolia");
         assert_eq!(configs[1].chain_name, "ethereum-mainnet");
+    }
+
+    #[test]
+    fn clock_sync_defaults_to_enabled_when_omitted() {
+        let cfg = base_config();
+
+        let clock_sync = cfg
+            .clock_sync_config()
+            .expect("clock sync should default to enabled");
+
+        assert!(clock_sync.enabled);
+        assert_eq!(clock_sync.interval_secs, 300);
+    }
+
+    #[test]
+    fn clock_sync_can_be_disabled_explicitly() {
+        let mut cfg = base_config();
+        cfg.manifest.clock_sync = Some(ClockSync {
+            enabled: false,
+            interval_secs: 300,
+        });
+
+        assert!(cfg.clock_sync_config().is_none());
+    }
+
+    #[test]
+    fn clock_sync_uses_custom_interval_when_configured() {
+        let mut cfg = base_config();
+        cfg.manifest.clock_sync = Some(ClockSync {
+            enabled: true,
+            interval_secs: 42,
+        });
+
+        let clock_sync = cfg
+            .clock_sync_config()
+            .expect("clock sync should remain enabled");
+
+        assert_eq!(clock_sync.interval_secs, 42);
     }
 
     #[test]

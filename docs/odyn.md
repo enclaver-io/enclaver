@@ -53,6 +53,7 @@ sequenceDiagram
     Enclave->>Odyn: Start (as PID 1)
     Odyn->>Odyn: Bootstrap (loopback, RNG seed)
     Odyn->>Odyn: Start Egress Proxy (if configured)
+    Odyn->>Odyn: Start Clock Sync (default; unless disabled)
     Odyn->>Odyn: Start Internal API Server
     Odyn->>Odyn: Start Ingress Proxies
     Odyn->>App: Launch your application
@@ -141,7 +142,28 @@ egress:
 
 ---
 
-### 3. Internal API Server
+### 3. Clock Synchronization
+
+**Purpose**: Keeps the enclave wall clock close to host time so long-running enclaves do not accumulate drift.
+
+**How it works**:
+- Enabled by default, even when `clock_sync` is omitted from `enclaver.yaml`
+- Performs an initial sync during Odyn startup, then repeats periodically
+- Uses a host-side VSOCK time server plus an RTT/offset estimate before updating `CLOCK_REALTIME`
+
+**Configuration**:
+```yaml
+# Omit this block to keep defaults (enabled, every 300 seconds)
+clock_sync:
+  interval_secs: 300
+  # enabled: false          # Optional: disable clock sync entirely
+```
+
+**For your app**: No integration is required. This improves operational correctness for JWT/TLS/expiry checks, but it still follows host wall-clock time and should not be treated as a cryptographic trust root.
+
+---
+
+### 4. Internal API Server
 
 **Purpose**: Provides enclave-specific functionality to your application via HTTP endpoints.
 
@@ -190,7 +212,7 @@ Instances that map to the same KMS app namespace share one app-wallet.
 
 ---
 
-### 4. Auxiliary API
+### 5. Auxiliary API
 
 **Purpose**: Provides a restricted subset of the Internal API for sidecar processes or untrusted components.
 
@@ -215,7 +237,7 @@ aux_api:
 
 ---
 
-### 5. S3 Storage
+### 6. S3 Storage
 
 **Purpose**: Provides automated persistent storage for enclave applications.
 
@@ -253,7 +275,7 @@ storage:
 
 ---
 
-### 6. Console & Log Streaming
+### 7. Console & Log Streaming
 
 **Purpose**: Captures your application's stdout/stderr and streams it to the host.
 
@@ -295,6 +317,10 @@ egress:
   allow:
     - "api.openai.com"
     - "169.254.169.254"        # Required for IMDS-backed AWS access (e.g. S3)
+
+# Clock sync is enabled by default; include this block only to tune or disable it.
+clock_sync:
+  interval_secs: 300
 
 # Internal API for attestation and signing
 api:
@@ -344,6 +370,7 @@ storage:
 |--------|-------------|---------|----------------|
 | **Ingress** | `ingress[].listen_port` | Accept external connections | Bind to `127.0.0.1:<port>` |
 | **Egress** | `egress.proxy_port` | Make outbound HTTP requests | Automatic via `http_proxy` env var |
+| **Clock Sync** | `clock_sync.interval_secs` / `clock_sync.enabled` | Keep enclave wall clock aligned with host time | Automatic; no app changes |
 | **Internal API** | `api.listen_port` | Attestation, signing, encryption | HTTP to `http://127.0.0.1:<port>` |
 | **Aux API** | `aux_api.listen_port` | Restricted API for sidecars | HTTP to `http://127.0.0.1:<port>` |
 | **Storage** | N/A (Internal API) | Persistent S3 storage | HTTP to `/v1/s3/...` |
