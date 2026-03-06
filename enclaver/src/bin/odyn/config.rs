@@ -131,6 +131,13 @@ impl Configuration {
 
         configs
     }
+
+    pub fn clock_sync_config(&self) -> Option<&enclaver::manifest::ClockSync> {
+        self.manifest
+            .clock_sync
+            .as_ref()
+            .filter(|cs| cs.enabled)
+    }
 }
 
 #[cfg(test)]
@@ -160,6 +167,7 @@ mod tests {
                 storage: None,
                 kms_integration: None,
                 helios_rpc: None,
+                clock_sync: None,
             },
             listener_ports: Vec::new(),
         }

@@ -160,6 +160,18 @@ storage:
       accept_plaintext: true # [ODYN] Allow reading plaintext objects when present.
                              # Note: mode=kms requires kms_integration.enabled=true.
 
+# Optional: automatic clock synchronization between host and enclave
+# Nitro Enclaves do not automatically synchronize their system clock with the host.
+# Over time, the enclave clock drifts (~7 seconds per week). This can cause failures
+# in JWT validation, TLS certificate checks, and cryptographic protocols.
+# When enabled, odyn periodically syncs the enclave clock with the host via vsock.
+clock_sync:
+  enabled: true              # [ODYN + SLEEVE] Enable automatic clock synchronization.
+  interval_secs: 300         # [ODYN] Sync interval in seconds (default: 300).
+                             # ODYN: connects to host time server via vsock, estimates RTT/offset,
+                             # and sets system clock.
+                             # SLEEVE: starts a vsock time server on the host side.
+
 # ============================================================================
 # Summary: Parameter -> Module Mapping
 # ============================================================================
@@ -204,5 +216,7 @@ storage:
 # | storage.s3.encryption.aad_mode | ODYN | AAD binding mode for ciphertext metadata     |
 # | storage.s3.encryption.key_version | ODYN | Encryption key version label              |
 # | storage.s3.encryption.accept_plaintext | ODYN | Allow plaintext reads when present      |
+# | clock_sync.enabled     | ODYN+SLEEVE | Enable automatic clock synchronization     |
+# | clock_sync.interval_secs | ODYN      | Clock sync interval in seconds (default 300) |
 #
 # ============================================================================

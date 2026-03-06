@@ -27,6 +27,7 @@ pub struct Manifest {
     pub storage: Option<Storage>,
     pub kms_integration: Option<KmsIntegration>,
     pub helios_rpc: Option<HeliosRpc>,
+    pub clock_sync: Option<ClockSync>,
 }
 
 const KMS_REGISTRY_HELIOS_PORT: u16 = 18545;
@@ -328,6 +329,20 @@ pub enum HeliosRpcKind {
     Opstack,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClockSync {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Sync interval in seconds. Default: 300
+    #[serde(default = "default_clock_sync_interval")]
+    pub interval_secs: u64,
+}
+
+fn default_clock_sync_interval() -> u64 {
+    300
+}
+
 /// Configuration for Helios multi-chain light-client RPC services.
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -483,6 +498,25 @@ sources:
         assert_eq!(manifest.name, "test");
         assert_eq!(manifest.target, "target-image:latest");
         assert_eq!(manifest.sources.app, "app-image:latest");
+    }
+
+    #[test]
+    fn test_parse_clock_sync_defaults_interval_to_300_seconds() {
+        let raw_manifest = br#"
+version: v1
+name: "test-clock-sync"
+target: "target-image:latest"
+sources:
+  app: "app-image:latest"
+clock_sync:
+  enabled: true
+"#;
+
+        let manifest = parse_manifest(raw_manifest).unwrap();
+        let clock_sync = manifest.clock_sync.expect("clock_sync should be present");
+
+        assert!(clock_sync.enabled);
+        assert_eq!(clock_sync.interval_secs, 300);
     }
 
     #[test]

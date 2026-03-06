@@ -1,6 +1,6 @@
 use crate::constants::{
-    APP_LOG_PORT, EIF_FILE_NAME, HTTP_EGRESS_VSOCK_PORT, MANIFEST_FILE_NAME, RELEASE_BUNDLE_DIR,
-    STATUS_PORT,
+    APP_LOG_PORT, CLOCK_SYNC_PORT, EIF_FILE_NAME, HTTP_EGRESS_VSOCK_PORT, MANIFEST_FILE_NAME,
+    RELEASE_BUNDLE_DIR, STATUS_PORT,
 };
 use crate::manifest::{Defaults, Manifest, load_manifest};
 use crate::utils;
@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::fs::File;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::sync::CancellationToken;
 use tokio_vsock::VsockStream;
@@ -149,6 +150,9 @@ impl Enclave {
         // where something inside the enclave attempts egress before the proxy is ready.
         self.start_egress_proxy().await?;
 
+        // Start clock sync time server before the enclave so it's ready when odyn boots.
+        self.start_clock_sync_server()?;
+
         info!("starting enclave");
         let enclave_info = self
             .cli
@@ -240,6 +244,38 @@ impl Enclave {
         self.tasks.push(utils::spawn!("egress proxy", async move {
             proxy.serve().await;
         })?);
+
+        Ok(())
+    }
+
+    fn start_clock_sync_server(&mut self) -> Result<()> {
+        let clock_sync_enabled = self
+            .manifest
+            .clock_sync
+            .as_ref()
+            .is_some_and(|cs| cs.enabled);
+
+        if !clock_sync_enabled {
+            info!("clock sync not enabled, skipping host time server");
+            return Ok(());
+        }
+
+        info!("starting host-side clock sync time server on vsock port {CLOCK_SYNC_PORT}");
+
+        let listener = crate::vsock::serve(CLOCK_SYNC_PORT)?;
+        self.tasks.push(utils::spawn!(
+            "clock sync time server",
+            async move {
+                tokio::pin!(listener);
+                while let Some(stream) = listener.next().await {
+                    tokio::spawn(async move {
+                        if let Err(e) = handle_time_request(stream).await {
+                            error!("clock sync: error handling time request: {e}");
+                        }
+                    });
+                }
+            }
+        )?);
 
         Ok(())
     }
@@ -363,6 +399,43 @@ impl Enclave {
 
         Ok(())
     }
+}
+
+/// Handle a single clock sync time request from the enclave.
+/// Reads a request line, responds with host receive/transmit timestamps as JSON.
+#[cfg(feature = "vsock")]
+async fn handle_time_request(stream: tokio_vsock::VsockStream) -> Result<()> {
+    let (reader, mut writer) = tokio::io::split(stream);
+    let mut buf_reader = BufReader::new(reader);
+    let mut line = String::new();
+    buf_reader.read_line(&mut line).await?;
+    let server_receive = current_unix_timestamp()?;
+
+    let server_transmit = current_unix_timestamp()?;
+
+    let response = serde_json::json!({
+        "server_receive_secs": server_receive.0,
+        "server_receive_nanos": server_receive.1,
+        "server_transmit_secs": server_transmit.0,
+        "server_transmit_nanos": server_transmit.1,
+    });
+
+    let mut resp_line = serde_json::to_string(&response)?;
+    resp_line.push('\n');
+    writer.write_all(resp_line.as_bytes()).await?;
+    writer.flush().await?;
+
+    debug!("clock sync: served time to enclave");
+
+    Ok(())
+}
+
+fn current_unix_timestamp() -> Result<(i64, u32)> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| anyhow!("system time error: {e}"))?;
+
+    Ok((now.as_secs() as i64, now.subsec_nanos()))
 }
 
 #[derive(Debug, Serialize, Deserialize)]

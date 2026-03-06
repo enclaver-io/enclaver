@@ -2,6 +2,7 @@
 
 pub mod api;
 pub mod aux_api;
+pub mod clock_sync;
 pub mod config;
 pub mod console;
 pub mod egress;
@@ -22,6 +23,7 @@ use enclaver::nsm::Nsm;
 
 use api::ApiService;
 use aux_api::AuxApiService;
+use clock_sync::ClockSyncService;
 use config::Configuration;
 use console::{AppLog, AppStatus};
 use egress::EgressService;
@@ -63,6 +65,9 @@ async fn launch(args: &CliArgs) -> Result<launcher::ExitStatus> {
 
     let egress = EgressService::start(&config).await?;
 
+    // Start clock sync service (if enabled in manifest)
+    let clock_sync = ClockSyncService::start(&config);
+
     // Start Helios in background (non-blocking, app starts immediately)
     let mut helios_rpc = HeliosRpcService::start(&config).await?;
     if config
@@ -99,6 +104,7 @@ async fn launch(args: &CliArgs) -> Result<launcher::ExitStatus> {
 
     aux_api.stop().await;
     api.stop().await;
+    clock_sync.stop().await;
     helios_rpc.stop().await;
     ingress.stop().await;
     egress.stop().await;
