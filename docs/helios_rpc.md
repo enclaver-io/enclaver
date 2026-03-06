@@ -99,11 +99,12 @@ console.log(await ethProvider.getNetwork());
 ## Startup behavior
 
 - Odyn starts Helios in the background for each configured chain.
-- Your app can start immediately.
-- Helios endpoints become fully ready after initial sync.
+- In the normal case, your app can start before Helios finishes initial sync.
+- Helios endpoints become fully ready only after initial sync.
 - If registry-backed KMS mode is enabled (`kms_app_id` + `nova_app_registry`),
   one chain must use `local_rpc_port: 18545` so Nova KMS registry discovery can
-  use the built-in local RPC endpoint.
+  use the built-in local RPC endpoint, and Odyn waits for that auth-chain RPC to
+  become ready before it starts the Internal API and launches the app.
 
 ## Egress requirements
 

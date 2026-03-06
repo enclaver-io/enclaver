@@ -118,8 +118,10 @@ api:
   listen_port: 18000         # [ODYN] Required. TCP port (u16) for internal API server.
                              # ODYN: binds ApiService providing /v1/attestation, /v1/eth/*, etc.
 
-# Optional: auxiliary API for restricted external access (e.g., sidecars)
-# If not specified, defaults to api.listen_port + 1 when api is configured.
+# Optional: auxiliary API port override for restricted external access (e.g., sidecars)
+# Current implementation detail: if `api` is configured, Aux API also starts by default.
+# If not specified, it defaults to api.listen_port + 1 when that value fits in `u16`.
+# There is no separate Aux API enabled/disabled flag today.
 aux_api:
   listen_port: 18001         # [ODYN] Optional. TCP port (u16) for auxiliary API server.
                              # ODYN: binds AuxApiService with sanitized attestation endpoint.

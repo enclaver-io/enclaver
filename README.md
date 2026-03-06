@@ -40,15 +40,29 @@ See [docs/http_proxy_support_guidance_for_enclave_applications.md](docs/http_pro
 - [Internal API Reference](docs/internal_api.md) — Complete API endpoint documentation for attestation, signing, encryption
 - [Internal API Mock Service](docs/internal_api_mockup.md) — Local development without an enclave, includes Python wrapper
 
+### Usage
+- [Enclaver CLI Reference](docs/enclaver-cli.md) — CLI commands, flags, and runtime override behavior
+- [Helios RPC Integration](docs/helios_rpc.md) — Trustless Ethereum / OP Stack light-client RPC inside the enclave
+- [Port Handling](docs/port_handling.md) — End-to-end port flow across build, sleeve, odyn, and ingress
+
 ### Configuration
 - [enclaver.yaml Reference](docs/enclaver.yaml) — Complete manifest configuration with parameter usage annotations
+
+### Development
+- [Base Images](docs/base-images.md) — What the odyn / sleeve base images contain and how to inspect them
+- [Building Images](docs/BUILDING_IMAGES.md) — Local build flow for odyn, sleeve, and nitro-cli images
+- [CI and Release Workflows](docs/ci.md) — How repository CI and release pipelines are structured
 
 
 ## Container and EIF Layout
 
-The diagram below shows how the release Docker image runs as a single container, what layers it contains, and how the EIF (enclave) is structured inside with Odyn and its modules.
+The diagram below shows the runtime component relationships across the host container, the enclave, Odyn, and the main integrations.
 
-```
+![Enclaver runtime architecture](docs/img/diagram-enclaver-components.svg)
+
+The ASCII view below keeps the original file/layout-oriented perspective: what the release image contains, how `enclaver-run` launches the EIF, and what is embedded inside the enclave image.
+
+```text
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ Docker Image (release) - runs as a single container                          │
 │                                                                              │
@@ -61,7 +75,7 @@ The diagram below shows how the release Docker image runs as a single container,
 │  Image layers (top -> bottom):                                               │
 │    [L3] /enclave/application.eif                                             │
 │    [L2] /enclave/enclaver.yaml                                               │
-│    [L1] Sleeve image (contains enclaver-run, nitro-cli)       │
+│    [L1] Sleeve image (contains enclaver-run, nitro-cli)                      │
 │                                                                              │
 │  Runtime control flow:                                                       │
 │    enclaver-run --> nitro-cli run-enclave --eif /enclave/application.eif     │
@@ -74,23 +88,28 @@ The diagram below shows how the release Docker image runs as a single container,
 │ /etc/enclaver/enclaver.yaml (config, also inside EIF)                        │
 │                                                                              │
 │ /sbin/odyn (supervisor)                                                      │
-│   - launcher: start/monitor App                                              │
-│   - ingress:  inbound traffic --> App                                        │
-│   - egress:   App --> outbound traffic                                       │
-│   - kms-integration: internal `/v1/kms/*` + `/v1/app-wallet/*` backed by Nova KMS │
-│   - encryption: ECDH (P-384) encrypt/decrypt for secure client communication │
-│   - storage:  S3 persistent storage integration via Internal API             │
-│   - helios:   trustless Ethereum/OP Stack light client RPC                   │
-│   - console:  collect App stdout/stderr --> container logs                   │
-│   - api:      internal API for attestation, signing, encryption, storage     │
+│   Runtime services                                                           │
+│   - launcher:   start and monitor the application                            │
+│   - ingress:    inbound traffic --> app                                      │
+│   - egress:     app --> outbound traffic                                     │
+│   - clock-sync: keep enclave wall clock aligned with host time               │
+│   - helios:     trustless Ethereum / OP Stack light client RPC               │
+│   - console:    collect app stdout/stderr --> container logs                 │
+│                                                                              │
+│   Internal API (`/v1/*`)                                                     │
+│   - core:       attestation, signing, random                                 │
+│   - encryption: `/v1/encryption/*` (P-384 ECDH)                              │
+│   - storage:    `/v1/s3/*` persistent storage integration                    │
+│   - kms:        `/v1/kms/*` + `/v1/app-wallet/*` backed by Nova KMS          │
 │                                                                              │
 │ [User Application] (started and supervised by odyn)                          │
 └──────────────────────────────────────────────────────────────────────────────┘
+```
 
 Data paths overview:
 
-  External clients --> Container networking --> odyn.ingress --> App
-  App --> odyn.egress --> Container networking --> External services
-  odyn./v1/kms/* <--> Nova KMS cluster (network, via registry discovery)
-  App stdout/stderr --> odyn.console --> Docker container logs
-```
+- External clients -> container networking -> `odyn.ingress` -> app
+- App -> `odyn.egress` -> container networking -> external services
+- `odyn.clock-sync` <-> host vsock time server <-> host wall clock
+- `odyn` Internal API (`/v1/kms/*`) <-> Nova KMS cluster via registry discovery
+- App stdout/stderr -> `odyn.console` -> Docker container logs
