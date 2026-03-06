@@ -6,8 +6,9 @@ use crate::manifest::{Defaults, Manifest, load_manifest};
 use crate::utils;
 use anyhow::{Result, anyhow};
 use futures_util::stream::StreamExt;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::fs::File;
@@ -251,16 +252,29 @@ impl Enclave {
     }
 
     fn start_clock_sync_server(&mut self) -> Result<()> {
-        let clock_sync_enabled = self.manifest.effective_clock_sync().enabled;
+        let clock_sync = self.manifest.effective_clock_sync();
 
-        if !clock_sync_enabled {
+        if !clock_sync.enabled {
             info!("clock sync disabled in manifest, skipping host time server");
             return Ok(());
         }
 
         info!("starting host-side clock sync time server on vsock port {CLOCK_SYNC_PORT}");
 
-        let listener = crate::vsock::serve(CLOCK_SYNC_PORT)?;
+        let listener = match crate::vsock::serve(CLOCK_SYNC_PORT) {
+            Ok(listener) => listener,
+            Err(e) => {
+                let source = if self.manifest.clock_sync.is_some() {
+                    "configured in manifest"
+                } else {
+                    "enabled by default"
+                };
+                warn!(
+                    "clock sync is {source}, but failed to bind host time server on vsock port {CLOCK_SYNC_PORT}: {e}; continuing without host clock sync"
+                );
+                return Ok(());
+            }
+        };
         self.tasks
             .push(utils::spawn!("clock sync time server", async move {
                 tokio::pin!(listener);
@@ -417,12 +431,17 @@ async fn handle_time_request(stream: tokio_vsock::VsockStream) -> Result<()> {
 
     let server_receive = current_unix_timestamp()?;
 
-    let server_transmit = current_unix_timestamp()?;
+    // Build the static prefix first so t3 is sampled as close to write_all as possible.
     let mut resp_line = format!(
-        "{{\"server_receive_secs\":{},\"server_receive_nanos\":{},\"server_transmit_secs\":{},\"server_transmit_nanos\":{}}}",
-        server_receive.0, server_receive.1, server_transmit.0, server_transmit.1,
+        "{{\"server_receive_secs\":{},\"server_receive_nanos\":{},",
+        server_receive.0, server_receive.1,
     );
-    resp_line.push('\n');
+    let server_transmit = current_unix_timestamp()?;
+    write!(
+        resp_line,
+        "\"server_transmit_secs\":{},\"server_transmit_nanos\":{}}}\n",
+        server_transmit.0, server_transmit.1,
+    )?;
     writer.write_all(resp_line.as_bytes()).await?;
     writer.flush().await?;
 
