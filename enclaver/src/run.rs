@@ -437,9 +437,9 @@ async fn handle_time_request(stream: tokio_vsock::VsockStream) -> Result<()> {
         server_receive.0, server_receive.1,
     );
     let server_transmit = current_unix_timestamp()?;
-    write!(
+    writeln!(
         resp_line,
-        "\"server_transmit_secs\":{},\"server_transmit_nanos\":{}}}\n",
+        "\"server_transmit_secs\":{},\"server_transmit_nanos\":{}}}",
         server_transmit.0, server_transmit.1,
     )?;
     writer.write_all(resp_line.as_bytes()).await?;
