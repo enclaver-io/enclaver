@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::fs::File;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::sync::CancellationToken;
 use tokio_vsock::VsockStream;
@@ -24,6 +24,7 @@ const LOG_VSOCK_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 const STATUS_VSOCK_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 const STATUS_VSOCK_RETRY_LIMIT: i32 = 100;
 const CLOCK_SYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const CLOCK_SYNC_MAX_REQUEST_LEN: usize = 16;
 
 const DEFAULT_CPU_COUNT: i32 = 2;
 const DEFAULT_MEMORY_MB: i32 = 4096;
@@ -401,23 +402,26 @@ impl Enclave {
 #[cfg(feature = "vsock")]
 async fn handle_time_request(stream: tokio_vsock::VsockStream) -> Result<()> {
     let (reader, mut writer) = tokio::io::split(stream);
-    let mut buf_reader = BufReader::new(reader);
-    let mut line = String::new();
-    tokio::time::timeout(CLOCK_SYNC_REQUEST_TIMEOUT, buf_reader.read_line(&mut line))
+    let mut reader = FramedRead::new(reader, LinesCodec::new_with_max_length(CLOCK_SYNC_MAX_REQUEST_LEN));
+    let line = tokio::time::timeout(CLOCK_SYNC_REQUEST_TIMEOUT, reader.next())
         .await
-        .map_err(|_| anyhow!("clock sync request timed out"))??;
+        .map_err(|_| anyhow!("clock sync request timed out"))?
+        .ok_or_else(|| anyhow!("clock sync client closed connection before sending a request"))??;
+
+    if line != "time" {
+        return Err(anyhow!("invalid clock sync request: expected 'time'"));
+    }
+
     let server_receive = current_unix_timestamp()?;
 
     let server_transmit = current_unix_timestamp()?;
-
-    let response = serde_json::json!({
-        "server_receive_secs": server_receive.0,
-        "server_receive_nanos": server_receive.1,
-        "server_transmit_secs": server_transmit.0,
-        "server_transmit_nanos": server_transmit.1,
-    });
-
-    let mut resp_line = serde_json::to_string(&response)?;
+    let mut resp_line = format!(
+        "{{\"server_receive_secs\":{},\"server_receive_nanos\":{},\"server_transmit_secs\":{},\"server_transmit_nanos\":{}}}",
+        server_receive.0,
+        server_receive.1,
+        server_transmit.0,
+        server_transmit.1,
+    );
     resp_line.push('\n');
     writer.write_all(resp_line.as_bytes()).await?;
     writer.flush().await?;
