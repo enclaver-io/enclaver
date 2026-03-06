@@ -1,201 +1,181 @@
-## CI and Release workflows
+# CI and Release Workflows
 
-This document explains the two GitHub Actions workflows in this repository:
-- `.github/workflows/ci.yaml` (CI)
-- `.github/workflows/release.yaml` (Release / Build Release)
+This repository has two GitHub Actions workflows:
 
-It describes triggers, jobs, important steps, permissions, how to reproduce key steps locally, and suggestions for improvements.
+- `.github/workflows/ci.yaml`
+- `.github/workflows/release.yaml`
 
----
+This document describes the workflows as they exist in the repository today.
 
-## 1. CI (`.github/workflows/ci.yaml`)
+## CI
 
-### Trigger
-- Runs on `push` and `pull_request` events.
+`ci.yaml` runs on:
 
-### Concurrency and environment
-- Concurrency: grouped by `${{ github.workflow }}-${{ github.ref }}` with `cancel-in-progress: true` to avoid redundant runs.
-- Global env variables:
-  - `CARGO_REGISTRIES_CRATES_IO_PROTOCOL: "sparse"` — use sparse protocol for crates.io
-  - `RUSTFLAGS: "-Dwarnings"` — treat warnings as errors
+- `push` to `sparsity`
+- `pull_request` targeting `sparsity`
 
-### Job: `clippy-check`
-- Runner: `ubuntu-latest`
-- Key steps:
-  1. Checkout the repository (`actions/checkout@v4`).
-  2. Parse MSRV from `enclaver/Cargo.toml` and set `RUSTUP_TOOLCHAIN`.
-  3. Install the toolchain (`rustup toolchain install $RUSTUP_TOOLCHAIN`).
-  4. Install Clippy and Rustfmt (`rustup component add clippy rustfmt`).
-  5. Run `cargo clippy --no-deps --manifest-path enclaver/Cargo.toml` (default features).
-  6. Run clippy again with `--features=run_enclave,odyn` to check all binaries.
-  7. Run clippy with tracing enabled (`RUSTFLAGS="--cfg=tokio_unstable"`) and the `tracing` feature.
+Shared behavior:
 
-### Purpose
-- Static analysis gate: enforces Clippy lints and fails on any warnings (because warnings are denied).
+- concurrency group: `${{ github.workflow }}-${{ github.ref }}`
+- `cancel-in-progress: true`
+- `CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse`
 
-### Local reproduction
-Run the equivalent steps locally to match CI behavior:
+Jobs:
+
+1. `fmt-check`
+   - installs the MSRV from `enclaver/Cargo.toml`
+   - installs `rustfmt`
+   - runs:
+     ```bash
+     cargo fmt --manifest-path enclaver/Cargo.toml --all -- --check
+     ```
+
+2. `clippy-check`
+   - installs the MSRV
+   - installs `clippy`
+   - caches `enclaver/target`
+   - runs:
+     ```bash
+     RUSTFLAGS="-Dwarnings" \
+       cargo clippy --quiet --no-deps --manifest-path enclaver/Cargo.toml
+
+     RUSTFLAGS="-Dwarnings" \
+       cargo clippy --quiet --no-deps --manifest-path enclaver/Cargo.toml \
+       --features=run_enclave,odyn
+
+     RUSTFLAGS="--cfg=tokio_unstable -Dwarnings" \
+       cargo clippy --quiet --no-deps --manifest-path enclaver/Cargo.toml \
+       --features=run_enclave,odyn,tracing
+     ```
+
+3. `test`
+   - installs the MSRV
+   - caches `enclaver/target`
+   - runs `cargo test` across this feature matrix:
+     - default
+     - `run_enclave`
+     - `odyn`
+     - `run_enclave,odyn`
+
+Local reproduction:
 
 ```bash
-# install matching toolchain (example: 1.86)
-rustup toolchain install 1.86
-rustup component add clippy rustfmt
+rustup toolchain install "$(sed -n 's/^rust-version = \"\\(.*\\)\"$/\\1/p' enclaver/Cargo.toml)"
+rustup component add rustfmt clippy
 
-# default feature check
-cargo clippy --no-deps --manifest-path enclaver/Cargo.toml
+cargo fmt --manifest-path enclaver/Cargo.toml --all -- --check
 
-# check all binaries
-cargo clippy --no-deps --manifest-path enclaver/Cargo.toml --features=run_enclave,odyn
+RUSTFLAGS="-Dwarnings" \
+  cargo clippy --quiet --no-deps --manifest-path enclaver/Cargo.toml
 
-# check with tracing enabled
-RUSTFLAGS="--cfg=tokio_unstable" \
-  cargo clippy --no-deps --manifest-path enclaver/Cargo.toml --features=run_enclave,odyn,tracing
+RUSTFLAGS="-Dwarnings" \
+  cargo clippy --quiet --no-deps --manifest-path enclaver/Cargo.toml \
+  --features=run_enclave,odyn
+
+RUSTFLAGS="--cfg=tokio_unstable -Dwarnings" \
+  cargo clippy --quiet --no-deps --manifest-path enclaver/Cargo.toml \
+  --features=run_enclave,odyn,tracing
+
+cargo test --quiet --manifest-path enclaver/Cargo.toml
+cargo test --quiet --manifest-path enclaver/Cargo.toml --features=run_enclave
+cargo test --quiet --manifest-path enclaver/Cargo.toml --features=odyn
+cargo test --quiet --manifest-path enclaver/Cargo.toml --features=run_enclave,odyn
 ```
 
-Tip: set `RUSTFLAGS="-Dwarnings"` locally to match the CI strictness.
+## Release
 
----
+`release.yaml` runs on:
 
-## 2. Release (`.github/workflows/release.yaml`)
+- `push` to `sparsity`
+- `push` tags matching `v*`
+- `workflow_dispatch`
 
-### Trigger
-- Runs on `push` to `main` and on pushes of tags matching `v*` (used for releases).
+Manual workflow inputs:
 
-### Concurrency and permissions
-- Concurrency: same grouping strategy as CI.
-- Requires extra permissions: `id-token: write`, `attestations: write` for SLSA provenance and OIDC-based AWS auth.
+- `publish_images`
+- `upload_artifacts`
+- `repo` (defaults to `sparsity-xyz/enclaver`)
 
-### Jobs overview
-There are three main responsibilities in this workflow:
-1. `build-release-binaries` — build release binaries for multiple platforms.
-2. `publish-images` — build and push multi-arch Docker images (only runs for the official repo and main/tag refs).
-3. `upload-release-artifact` — package and upload release artifacts to GitHub Releases (only for tags).
+Jobs:
 
-### `build-release-binaries` details
-- Uses a matrix that includes:
-  - `x86_64-unknown-linux-musl` (Ubuntu, musl)
-  - `aarch64-unknown-linux-musl` (Ubuntu, musl)
-- Steps:
-  - Install the target toolchain (`actions-rs/toolchain@v1`).
-  - Use `Swatinem/rust-cache@v2` to cache `target` artifacts per target.
-  - For musl targets: use the repo's `./.github/actions/cargo-zigbuild` (a wrapper around `cargo-zigbuild`) to produce static musl binaries.
-  - Generate SLSA provenance and upload the built binaries as artifacts: `enclaver`, `enclaver-run`, `odyn`.
+1. `build-release-binaries`
+   - targets:
+     - `x86_64-unknown-linux-musl`
+     - `aarch64-unknown-linux-musl`
+   - builds with `--features=run_enclave,odyn`
+   - uses `./.github/actions/cargo-zigbuild` for musl builds
+   - uploads three binaries per target:
+     - `enclaver`
+     - `enclaver-run`
+     - `odyn`
+   - emits SLSA build provenance for `enclaver`
 
-### `publish-images` details
-- Runs only when `github.repository == 'enclaver-io/enclaver'` and on main/tag refs.
-- Steps:
-  - Download artifacts produced by the build job.
-  - Re-arrange directories so architecture-specific binaries match Dockerfile expectations (rename `x86_64-unknown-linux-musl` → `amd64`, `aarch64-unknown-linux-musl` → `arm64`).
-  - Set up Docker Buildx and authenticate to AWS (assume a role using `aws-actions/configure-aws-credentials@v5`).
-  - Use `docker/metadata-action` to generate tags, then `docker/build-push-action` to build & push multi-arch images (odyn and runtime base).
-  - Generate and push SLSA provenance for images.
+2. `publish-images`
+   - runs when either:
+     - the repo is exactly `sparsity-xyz/enclaver` and the ref is `sparsity` or a tag
+     - a manual dispatch sets `publish_images=true`
+   - downloads build artifacts
+   - renames target directories to Docker architecture names:
+     - `x86_64-unknown-linux-musl` -> `amd64`
+     - `aarch64-unknown-linux-musl` -> `arm64`
+   - publishes only these images:
+     - `public.ecr.aws/d4t4u8d2/sparsity-ai/odyn`
+     - `public.ecr.aws/d4t4u8d2/sparsity-ai/sleeve`
+   - authenticates to AWS via OIDC and pushes image provenance
 
-### `upload-release-artifact` details
-- Runs on tag pushes (and only for the official repo). For each target it:
-  - Downloads artifacts, packages them into a platform-specific tar.gz, computes a SHA256, and uploads them to a GitHub Release (as a draft) using `softprops/action-gh-release`.
+3. `upload-release-artifact`
+   - runs when either:
+     - the repo is `sparsity-xyz/enclaver` and the ref is a tag
+     - a manual dispatch sets `upload_artifacts=true`
+   - packages only the `enclaver` binary into release tarballs
+   - uploads draft GitHub Release assets plus matching SHA256 files
 
-### Local reproduction notes
+Notably:
 
-Building musl targets locally:
+- the release workflow does not publish a `nitro-cli` image
+- it does not upload `odyn` or `enclaver-run` as standalone GitHub Release tarballs
+
+## Local release reproduction
+
+Build musl release binaries locally:
 
 ```bash
-# install cargo-zigbuild and zig
 cargo install cargo-zigbuild
-# build musl binary
-cargo zigbuild --release --target x86_64-unknown-linux-musl --manifest-path enclaver/Cargo.toml --features="run_enclave,odyn"
+
+cargo zigbuild --release \
+  --target x86_64-unknown-linux-musl \
+  --manifest-path enclaver/Cargo.toml \
+  --features=run_enclave,odyn
 ```
 
-Building images locally (example):
+Build release images locally after arranging `amd64/` and `arm64/` artifact directories:
 
 ```bash
-# prepare directories amd64/ and arm64/ containing the built binaries
-docker buildx build --platform linux/amd64,linux/arm64 \
+docker buildx build \
   --file dockerfiles/odyn-release.dockerfile \
   --build-context artifacts=. \
-  --push \
-  -t public.ecr.aws/your-repo/odyn:localtest .
+  --platform linux/amd64,linux/arm64 \
+  -t odyn:local .
+
+docker buildx build \
+  --file dockerfiles/sleeve-release.dockerfile \
+  --build-context artifacts=. \
+  --platform linux/amd64,linux/arm64 \
+  -t sleeve:local .
 ```
 
-Note: CI authenticates to AWS ECR by assuming a hard-coded role. To push to ECR locally you need equivalent AWS credentials or use an alternate registry for testing.
+## AWS prerequisites for `publish-images`
 
----
+The repository includes AWS infrastructure definitions in `aws/cloudformation/infrastructure.yml`.
+To run the official publish flow, you need:
 
-## Key differences (CI vs Release)
+- an OIDC trust relationship for GitHub Actions
+- the IAM role referenced by `release.yaml`
+- public ECR repositories for `sparsity-ai/odyn` and `sparsity-ai/sleeve`
 
-- Purpose:
-  - CI: static analysis and linting (Clippy).
-  - Release: building cross-platform release binaries, producing provenance, pushing multi-arch images, and publishing release artifacts.
-- Trigger:
-  - CI: push/PR
-  - Release: push to main or tag
-- Permissions:
-  - Release requires more permissions (OIDC/AWS, attestations) than CI.
+## References
 
----
-
-## Suggestions
-
-- Add a `tests` job to CI that runs `cargo test` (or split fast/slow tests) to catch runtime regressions earlier.
-- Make `publish-images` registry/role configurable via workflow inputs or secrets so contributors can test image builds against alternative registries.
-- Monitor transitive dependency future-compat warnings (e.g., `num-bigint-dig`) and consider automated dependency updates.
-
----
-
-## AWS Infrastructure Setup
-
-The release workflow requires AWS resources for OIDC authentication and ECR access. These are defined in the CloudFormation template at `aws/cloudformation/infrastructure.yml`.
-
-### Required Resources
-
-| Resource | Purpose |
-|----------|---------|
-| **GitHubOIDCProvider** | Enables GitHub Actions to authenticate with AWS using OIDC (no long-lived credentials) |
-| **GitHubActionsECRRole** | IAM Role assumed by GitHub Actions to push images to ECR Public |
-
-### Deployment
-
-Deploy the CloudFormation stack in **us-east-1** (required for ECR Public):
-
-```bash
-aws cloudformation deploy \
-  --stack-name enclaver-ci \
-  --template-file aws/cloudformation/infrastructure.yml \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --region us-east-1
-```
-
-### ECR Public Repositories
-
-After deploying the stack, manually create the following ECR Public repositories in the AWS Console under the `sparsity-ai` namespace:
-
-- `sparsity-ai/odyn`
-- `sparsity-ai/sleeve`
-- `sparsity-ai/nitro-cli`
-
-### Workflow Configuration
-
-The workflows reference the IAM role by ARN:
-
-```yaml
-# In .github/workflows/release.yaml
-- name: Configure AWS credentials from OIDC
-  uses: aws-actions/configure-aws-credentials@v5
-  with:
-    aws-region: us-east-1
-    role-to-assume: arn:aws:iam::<ACCOUNT_ID>:role/Github-Workflow-Publish-AWS-ECR
-```
-
-The role ARN is output by the CloudFormation stack as `GitHubActionsRoleArn`.
-
----
-
-## References / locations
-
-- CI workflow: `.github/workflows/ci.yaml`
-- Release workflow: `.github/workflows/release.yaml`
-- AWS infrastructure: `aws/cloudformation/infrastructure.yml`
-- Local image build helper: `scripts/build-docker-images.sh`
-- Custom action used in Release: `./.github/actions/cargo-zigbuild`
-
-If you'd like, I can add a `tests` job draft to `ci.yaml` or add a `workflow_dispatch` input to `release.yaml` for manual runs. Let me know which you prefer.
-
+- workflow definitions: `.github/workflows/ci.yaml`, `.github/workflows/release.yaml`
+- custom build action: `./.github/actions/cargo-zigbuild`
+- local helper: `scripts/build-docker-images.sh`
+- AWS infra: `aws/cloudformation/infrastructure.yml`

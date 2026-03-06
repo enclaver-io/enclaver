@@ -10,30 +10,35 @@ Odyn is the supervisor process that runs inside the AWS Nitro Enclave. It acts a
 
 1. **Bootstrapping the enclave environment** — Setting up networking and secure random number generation
 2. **Launching your application** — Starting and supervising your application process
-3. **Providing security services** — Attestation, signing, encryption via the Internal API
-4. **Managing network connectivity** — Ingress proxies for incoming traffic, egress proxies for outgoing traffic
+3. **Providing platform services** — Attestation, signing, encryption, storage, and KMS/app-wallet routes via the Internal API
+4. **Managing runtime plumbing** — Ingress, egress, clock sync, and optional Helios RPC
 5. **Streaming logs and status** — Making application logs available to the host
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     AWS Nitro Enclave                       │
-│                                                             │
-│   ┌─────────────────────────────────────────────────────┐   │
-│   │                 Odyn Supervisor                     │   │
-│   │                    (PID 1)                          │   │
-│   │                                                     │   │
-│   │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐  │   │
-│   │  │ Ingress │ │ Egress  │ │   API   │ │ Storage │  │   │
-│   │  │  Proxy  │ │  Proxy  │ │ Server  │ │  (S3)   │  │   │
-│   │  └─────────┘ └─────────┘ └─────────┘ └─────────┘  │   │
-│   │                      │                              │   │
-│   │                      ▼                              │   │
-│   │  ┌─────────────────────────────────────────────┐   │   │
-│   │  │              Your Application               │   │   │
-│   │  └─────────────────────────────────────────────┘   │   │
-│   └─────────────────────────────────────────────────────┘   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+```text
+┌──────────────────────────────────────────────────────────────────────┐
+│                        AWS Nitro Enclave                             │
+│                                                                      │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │                   Odyn Supervisor (PID 1)                     │  │
+│  │                                                                │  │
+│  │  Runtime services                                              │  │
+│  │  ┌─────────┐ ┌─────────┐ ┌────────────┐ ┌─────────┐ ┌────────┐ │  │
+│  │  │ Ingress │ │ Egress  │ │ Clock Sync │ │ Helios  │ │Console │ │  │
+│  │  │ Proxy   │ │ Proxy   │ │            │ │ RPC     │ │ / Logs │ │  │
+│  │  └─────────┘ └─────────┘ └────────────┘ └─────────┘ └────────┘ │  │
+│  │                                                                │  │
+│  │  Internal API (`/v1/*`)                                        │  │
+│  │  - attestation / signing / random                              │  │
+│  │  - encryption (`/v1/encryption/*`)                             │  │
+│  │  - storage (`/v1/s3/*`)                                        │  │
+│  │  - kms + app-wallet (`/v1/kms/*`, `/v1/app-wallet/*`)          │  │
+│  │                                                                │  │
+│  │  ┌──────────────────────────────────────────────────────────┐  │  │
+│  │  │                  Your Application                        │  │  │
+│  │  └──────────────────────────────────────────────────────────┘  │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -53,7 +58,10 @@ sequenceDiagram
     Enclave->>Odyn: Start (as PID 1)
     Odyn->>Odyn: Bootstrap (loopback, RNG seed)
     Odyn->>Odyn: Start Egress Proxy (if configured)
-    Odyn->>Odyn: Start Internal API Server
+    Odyn->>Odyn: Start Clock Sync (default; unless disabled)
+    Odyn->>Odyn: Start Helios RPC (if configured)
+    Odyn->>Odyn: Wait for Helios :18545 if registry-backed KMS is enabled
+    Odyn->>Odyn: Start Internal API + Aux API
     Odyn->>Odyn: Start Ingress Proxies
     Odyn->>App: Launch your application
     
@@ -93,6 +101,8 @@ Odyn automatically sets the following environment variables for your application
 ## Odyn Modules
 
 Odyn consists of several configurable modules, each providing specific functionality:
+
+Standalone runtime services include ingress, egress, clock sync, console/log streaming, and optional Helios RPC. Encryption, storage, and KMS/app-wallet features are exposed through the Internal API rather than running as peer daemons.
 
 ### 1. Ingress Proxy
 
@@ -141,7 +151,28 @@ egress:
 
 ---
 
-### 3. Internal API Server
+### 3. Clock Synchronization
+
+**Purpose**: Keeps the enclave wall clock close to host time so long-running enclaves do not accumulate drift.
+
+**How it works**:
+- Enabled by default, even when `clock_sync` is omitted from `enclaver.yaml`
+- Performs an initial sync during Odyn startup, then repeats periodically
+- Uses a host-side VSOCK time server plus an RTT/offset estimate before updating `CLOCK_REALTIME`
+
+**Configuration**:
+```yaml
+# Omit this block to keep defaults (enabled, every 300 seconds)
+clock_sync:
+  interval_secs: 300
+  # enabled: false          # Optional: disable clock sync entirely
+```
+
+**For your app**: No integration is required. This improves operational correctness for JWT/TLS/expiry checks, but it still follows host wall-clock time and should not be treated as a cryptographic trust root.
+
+---
+
+### 4. Internal API Server
 
 **Purpose**: Provides enclave-specific functionality to your application via HTTP endpoints.
 
@@ -149,7 +180,7 @@ egress:
 - Runs an HTTP server on a configured port
 - Provides attestation, signing, encryption, and random number generation
 - Uses the Nitro Secure Module (NSM) for hardware-backed security
-- Optionally exposes Nova KMS + app-wallet endpoints when `kms_integration` is enabled
+- Optionally exposes Nova KMS routes when `kms_integration` is enabled, and app-wallet routes when `kms_integration.use_app_wallet=true`
 
 **Configuration**:
 ```yaml
@@ -186,15 +217,16 @@ Instances that map to the same KMS app namespace share one app-wallet.
 
 📖 **See [Internal API Reference](internal_api.md) for complete endpoint documentation.**
 
-📖 **See [Internal API Mock Service](internal_api_mockup.md) for local development without an enclave.**
+📖 **See [Internal API Mock Service](internal_api_mockup.md) for guidance on external mock endpoints and compatibility caveats.**
 
 ---
 
-### 4. Auxiliary API
+### 5. Auxiliary API
 
 **Purpose**: Provides a restricted subset of the Internal API for sidecar processes or untrusted components.
 
 **How it works**:
+- Starts automatically whenever the Internal API is enabled
 - Proxies requests to the Internal API
 - Sanitizes attestation requests (removes `public_key` to prevent key spoofing; `user_data` is forwarded)
 - Only exposes safe, read-only endpoints
@@ -202,7 +234,7 @@ Instances that map to the same KMS app namespace share one app-wallet.
 **Configuration**:
 ```yaml
 aux_api:
-  listen_port: 18001         # Defaults to api_port + 1
+  listen_port: 18001         # Optional override; otherwise defaults to api_port + 1
 ```
 
 **Available Endpoints**:
@@ -215,7 +247,7 @@ aux_api:
 
 ---
 
-### 5. S3 Storage
+### 6. S3 Storage
 
 **Purpose**: Provides automated persistent storage for enclave applications.
 
@@ -253,7 +285,7 @@ storage:
 
 ---
 
-### 6. Console & Log Streaming
+### 7. Console & Log Streaming
 
 **Purpose**: Captures your application's stdout/stderr and streams it to the host.
 
@@ -296,11 +328,15 @@ egress:
     - "api.openai.com"
     - "169.254.169.254"        # Required for IMDS-backed AWS access (e.g. S3)
 
+# Clock sync is enabled by default; include this block only to tune or disable it.
+clock_sync:
+  interval_secs: 300
+
 # Internal API for attestation and signing
 api:
   listen_port: 18000
 
-# Auxiliary API for sidecars (optional)
+# Aux API port override (the service also starts by default when API is enabled)
 aux_api:
   listen_port: 18001
 
@@ -344,9 +380,10 @@ storage:
 |--------|-------------|---------|----------------|
 | **Ingress** | `ingress[].listen_port` | Accept external connections | Bind to `127.0.0.1:<port>` |
 | **Egress** | `egress.proxy_port` | Make outbound HTTP requests | Automatic via `http_proxy` env var |
-| **Internal API** | `api.listen_port` | Attestation, signing, encryption | HTTP to `http://127.0.0.1:<port>` |
-| **Aux API** | `aux_api.listen_port` | Restricted API for sidecars | HTTP to `http://127.0.0.1:<port>` |
-| **Storage** | N/A (Internal API) | Persistent S3 storage | HTTP to `/v1/s3/...` |
+| **Clock Sync** | `clock_sync.interval_secs` / `clock_sync.enabled` | Keep enclave wall clock aligned with host time | Automatic; no app changes |
+| **Internal API** | `api.listen_port` | Attestation, signing, encryption, KMS/app-wallet, storage | HTTP to `http://127.0.0.1:<port>` |
+| **Aux API** | `aux_api.listen_port` | Restricted API for sidecars; defaults to `api_port + 1` | HTTP to `http://127.0.0.1:<port>` |
+| **Storage** | `storage.s3.*` | Persistent S3 storage exposed via the Internal API | HTTP to `/v1/s3/...` |
 | **Helios RPC** | `helios_rpc.chains[].local_rpc_port` | Trustless multi-chain RPC | HTTP to `http://127.0.0.1:<chain_port>` |
 | **Console** | N/A (automatic) | Log streaming | Print to stdout/stderr |
 
@@ -355,7 +392,7 @@ storage:
 ## Related Documentation
 
 - [Internal API Reference](internal_api.md) — Complete API endpoint documentation
-- [Internal API Mock Service](internal_api_mockup.md) — Local development without an enclave
+- [Internal API Mock Service](internal_api_mockup.md) — External mock endpoint guidance and compatibility caveats
 - [Helios RPC Integration](helios_rpc.md) — Trustless multi-chain light client
 - [enclaver.yaml Reference](enclaver.yaml) — Complete manifest configuration
 - [Architecture Overview](architecture.md) — System architecture and component relationships

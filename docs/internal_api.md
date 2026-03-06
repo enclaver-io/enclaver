@@ -1,598 +1,582 @@
 # Enclaver Internal API
 
-Enclaver provides internal HTTP APIs that allow applications running inside the enclave to perform sensitive operations, such as signing transactions with the enclave's secure key and obtaining high-quality random numbers.
+Enclaver exposes localhost-only HTTP APIs inside the enclave.
 
-There are two distinct API services available:
+There are two services:
 
-1.  **Primary Internal API (`api`)**: Provides full access to all functionality, including signing with custom payloads and generating attestations with custom user data. This is intended for the main application logic.
-2.  **Auxiliary API (`aux_api`)**: Provides a restricted subset of functionality. It proxies requests to the internal API but enforces security restrictions, such as sanitizing attestation requests to prevent spoofing of user data. This is intended for sidecars or auxiliary processes.
+- Primary API: full `/v1/*` surface from `enclaver/src/api.rs`
+- Aux API: a restricted proxy surface from `enclaver/src/aux_api.rs`
+
+Both servers bind `127.0.0.1`, not `0.0.0.0`.
 
 ## Configuration
 
-The ports for these APIs are defined in the `enclaver.yaml` manifest.
-
-**Example `enclaver.yaml` configuration:**
+Example manifest:
 
 ```yaml
 api:
-  listen_port: 9000
+  listen_port: 18000
 
 aux_api:
-  listen_port: 9001
+  listen_port: 18001
 ```
 
-In this example:
-- The **Primary API** is available at `http://127.0.0.1:9000`.
-- The **Auxiliary API** is available at `http://127.0.0.1:9001`.
+Current implementation details:
 
-If `aux_api` is not explicitly configured, it defaults to `api.listen_port + 1`.
+- the Primary API is enabled only when `api.listen_port` is configured
+- if the Primary API is enabled, the Aux API also starts by default
+- if `aux_api.listen_port` is omitted, Aux API binds `api.listen_port + 1` when that value fits in `u16`
+- there is no separate `enabled` flag for Aux API today
 
-## Primary Internal API Endpoints
+The API request body limit is 10 MiB.
 
-The Primary API supports all the endpoints listed below without restrictions.
+## Primary API
 
-### Get Ethereum Address
+### `GET /v1/eth/address`
 
-Retrieve the Ethereum address and public key associated with the enclave's secure key.
+Returns the enclave Ethereum key identity:
 
-- **URL:** `/v1/eth/address`
-- **Method:** `GET`
-- **Success Response:**
-  - **Code:** 200 OK
-  - **Content-Type:** `application/json`
-  - **Body:**
-    ```json
-    {
-      "address": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
-      "public_key": "0x04..."
-    }
-    ```
+```json
+{
+  "address": "0x...",
+  "public_key": "0x..."
+}
+```
 
-### Sign Transaction
+`public_key` is the enclave secp256k1 public key in hex.
 
-Sign an Ethereum transaction using the enclave's secure key.
+### `POST /v1/eth/sign`
 
-- **URL:** `/v1/eth/sign-tx`
-- **Method:** `POST`
-- **Content-Type:** `application/json`
-- **Request Body:**
+Signs a non-empty UTF-8 string using the Ethereum personal-sign prefix.
 
-  **Option 1: Structured Payload (EIP-1559)**
-  ```json
-  {
-    "include_attestation": false,
-    "payload": {
-      "kind": "structured",
-      "chain_id": "0x1",
-      "nonce": "0x0",
-      "max_priority_fee_per_gas": "0x3b9aca00",
-      "max_fee_per_gas": "0x77359400",
-      "gas_limit": "0x5208",
-      "to": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
-      "value": "0xde0b6b3a7640000",
-      "data": "0x",
-      "access_list": []
-    }
+Request:
+
+```json
+{
+  "message": "hello world",
+  "include_attestation": false
+}
+```
+
+Response:
+
+```json
+{
+  "signature": "0x...",
+  "address": "0x...",
+  "attestation": null
+}
+```
+
+If `include_attestation=true`, `attestation` is a base64-encoded CBOR attestation document whose nonce is the message hash and whose public key is the enclave Ethereum key.
+
+### `POST /v1/eth/sign-tx`
+
+Signs an EIP-1559 transaction.
+
+Structured request:
+
+```json
+{
+  "include_attestation": false,
+  "payload": {
+    "kind": "structured",
+    "chain_id": "0x1",
+    "nonce": "0x0",
+    "max_priority_fee_per_gas": "0x3b9aca00",
+    "max_fee_per_gas": "0x77359400",
+    "gas_limit": "0x5208",
+    "to": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+    "value": "0xde0b6b3a7640000",
+    "data": "0x",
+    "access_list": []
   }
-  ```
+}
+```
 
-  **Option 2: Raw RLP Payload**
-  ```json
-  {
-    "include_attestation": false,
-    "payload": {
-      "kind": "raw_rlp",
-      "raw_payload": "0x..."
-    }
+Raw-RLP request:
+
+```json
+{
+  "include_attestation": false,
+  "payload": {
+    "kind": "raw_rlp",
+    "raw_payload": "0x..."
   }
-  ```
+}
+```
 
-- **Success Response:**
-  - **Code:** 200 OK
-  - **Content-Type:** `application/json`
-  - **Body:**
-    ```json
-    {
-      "raw_transaction": "0x02...",
-      "transaction_hash": "0x...",
-      "signature": "0x...",
-      "address": "0x...",
-      "attestation": null
-    }
-    ```
+Response:
 
-### Get Random Bytes
+```json
+{
+  "raw_transaction": "0x02...",
+  "transaction_hash": "0x...",
+  "signature": "0x...",
+  "address": "0x...",
+  "attestation": null
+}
+```
 
-Obtain cryptographically secure random bytes from the Nitro Secure Module (NSM).
+If `include_attestation=true`, the attestation nonce is the finalized transaction hash.
 
-- **URL:** `/v1/random`
-- **Method:** `GET`
-- **Success Response:**
-  - **Code:** 200 OK
-  - **Content-Type:** `application/json`
-  - **Body:**
-    ```json
-    {
-      "random_bytes": "0x..." // 32 bytes hex encoded
-    }
-    ```
+### `GET /v1/random`
 
-### Sign Message
+Returns 32 random bytes:
 
-Sign a plain-text message using the EIP-191 personal message prefix (`personal_sign`).
+```json
+{
+  "random_bytes": "0x..."
+}
+```
 
-- **URL:** `/v1/eth/sign`
-- **Method:** `POST`
-- **Content-Type:** `application/json`
-- **Request Body:**
-  ```json
-  {
-    "message": "hello world", // plain-text string (must be non-empty)
-    "include_attestation": false
+Production uses NSM-backed randomness. Tests fall back to `OsRng`.
+
+### `POST /v1/attestation`
+
+Generates an NSM attestation document.
+
+Request:
+
+```json
+{
+  "nonce": "base64-encoded bytes",
+  "public_key": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----",
+  "user_data": {
+    "custom": "value"
   }
-  ```
-  The service builds the EIP-191 prefix `"\u0019Ethereum Signed Message:\n<len>"`, concatenates it with the provided message, then signs the result.
-- **Success Response:**
-  - **Code:** 200 OK
-  - **Content-Type:** `application/json`
-  - **Body:**
-    ```json
-    {
-      "signature": "0x...",
-      "address": "0x...",
-      "attestation": null
-    }
-    ```
+}
+```
 
-### Generate Attestation
+Rules:
 
-Generate an attestation document from the Nitro Secure Module.
+- `nonce` is optional and base64-decoded if present
+- `public_key` is optional PEM; if omitted, the enclave P-384 encryption public key is used
+- `user_data` is optional, but when present it must be a JSON object
+- the API always injects `eth_addr` into `user_data`
+- if app-wallet material is available quickly enough, it also injects `app_wallet`
+- if the caller already provided `eth_addr` or `app_wallet`, the injected values win
 
-- **URL:** `/v1/attestation`
-- **Method:** `POST`
-- **Content-Type:** `application/json`
-- **Request Body:**
-  ```json
-  {
-    "nonce": "base64_encoded_nonce",       // Optional
-    "public_key": "PEM_encoded_public_key", // Optional
-    "user_data": "base64_encoded_user_data" // Optional
-  }
-  ```
-- **Success Response:**
-  - **Code:** 200 OK
-  - **Content-Type:** `application/cbor`
-  - **Body:** Binary CBOR data (Attestation Document)
+Response:
 
-### Get Encryption Public Key
+- status: `200 OK`
+- content type: `application/cbor`
+- body: raw CBOR attestation document bytes
 
-Retrieve the enclave's P-384 public key for ECDH-based encryption.
+### `GET /v1/encryption/public_key`
 
-- **URL:** `/v1/encryption/public_key`
-- **Method:** `GET`
-- **Success Response:**
-  - **Code:** 200 OK
-  - **Content-Type:** `application/json`
-  - **Body:**
-    ```json
-    {
-      "public_key_der": "0x3076...",
-      "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"
-    }
-    ```
+Returns the enclave P-384 public key:
 
-The `public_key_der` is hex-encoded DER (SPKI format), suitable for use in encryption operations.
-The `public_key_pem` is PEM format, suitable for use with standard crypto libraries.
+```json
+{
+  "public_key_der": "0x3076...",
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"
+}
+```
 
-### Decrypt Data
+### `POST /v1/encryption/decrypt`
 
-Decrypt data sent from a client using ECDH + AES-256-GCM.
+Decrypts client data using P-384 ECDH + HKDF-SHA256 + AES-256-GCM.
 
-- **URL:** `/v1/encryption/decrypt`
-- **Method:** `POST`
-- **Content-Type:** `application/json`
-- **Request Body:**
-  ```json
-  {
-    "nonce": "0x...",          // Hex-encoded nonce (exactly 12 bytes)
-    "client_public_key": "0x...", // Hex-encoded DER public key
-    "encrypted_data": "0x..."  // Hex-encoded ciphertext with auth tag
-  }
-  ```
-- **Success Response:**
-  - **Code:** 200 OK
-  - **Content-Type:** `application/json`
-  - **Body:**
-    ```json
-    {
-      "plaintext": "decrypted string"
-    }
-    ```
+Request:
 
-### Encrypt Data
+```json
+{
+  "nonce": "0x...",
+  "client_public_key": "0x...",
+  "encrypted_data": "0x..."
+}
+```
 
-Encrypt data to send to a client using ECDH + AES-256-GCM.
+Rules:
 
-- **URL:** `/v1/encryption/encrypt`
-- **Method:** `POST`
-- **Content-Type:** `application/json`
-- **Request Body:**
-  ```json
-  {
-    "plaintext": "string to encrypt",
-    "client_public_key": "0x..." // Hex-encoded DER public key
-  }
-  ```
-- **Success Response:**
-  - **Code:** 200 OK
-  - **Content-Type:** `application/json`
-  - **Body:**
-    ```json
-    {
-      "encrypted_data": "a1b2c3...",     // Hex-encoded ciphertext (no 0x prefix)
-      "enclave_public_key": "3076...", // Hex-encoded DER public key (no 0x prefix)
-      "nonce": "d4e5f6..."               // Hex-encoded nonce (no 0x prefix)
-    }
-    ```
+- hex values may be sent with or without `0x`
+- `client_public_key` is DER/SPKI
+- the normal nonce length is 12 bytes
+- for backward compatibility, a 32-byte legacy nonce is still accepted and truncated to its first 12 bytes
+- the API rejects nonce reuse for the same `client_public_key`
+- decrypted plaintext must be valid UTF-8
 
-  > **Note**: Unlike other endpoints that use `0x` prefixes, the encrypt response returns raw hex strings without the `0x` prefix.
+Response:
 
-## KMS Integration API Endpoints (Primary API only)
+```json
+{
+  "plaintext": "decrypted string"
+}
+```
 
-These endpoints are available only when `kms_integration.enabled=true` in `enclaver.yaml`.
-`/v1/kms/*` requires registry mode (`kms_app_id` + `nova_app_registry`), which also requires
-`helios_rpc.enabled=true` and one chain with `local_rpc_port: 18545` for registry discovery.
-If KMS integration is not configured, they return `400 Bad Request` with plain-text body:
-`KMS integration not configured`.
+### `POST /v1/encryption/encrypt`
 
-### Derive KMS Key Material
+Encrypts plaintext back to a client.
 
-Derive key material from Nova KMS.
+Request:
 
-- **URL:** `/v1/kms/derive`
-- **Method:** `POST`
-- **Content-Type:** `application/json`
-- **Request Body:**
-  ```json
-  {
-    "path": "app/session/alpha",
-    "context": "optional-context",
-    "length": 32
-  }
-  ```
-  `context` is optional (defaults to empty string). `length` is optional (defaults to `32`).
-- **Success Response:**
-  - **Code:** 200 OK
-  - **Body:**
-    ```json
-    {
-      "key": "base64_encoded_key_bytes"
-    }
-    ```
+```json
+{
+  "plaintext": "string to encrypt",
+  "client_public_key": "0x..."
+}
+```
 
-### KMS KV Get
+Response:
 
-Read a value from KMS-backed key/value storage.
+```json
+{
+  "encrypted_data": "a1b2c3...",
+  "enclave_public_key": "3076...",
+  "nonce": "d4e5f6..."
+}
+```
 
-- **URL:** `/v1/kms/kv/get`
-- **Method:** `POST`
-- **Request Body:**
-  ```json
-  {
-    "key": "config/service_token"
-  }
-  ```
-- **Success Response:**
-  ```json
-  {
-    "found": true,
-    "value": "base64_encoded_opaque_string_value"
-  }
-  ```
-  Note: The returned `value` is base64-encoded. If the original data was stored as bytes or a string, you must base64-decode the `value` to retrieve it.
-  When not found:
-  ```json
-  {
-    "found": false,
-    "value": null
-  }
-  ```
+Important detail:
 
-### KMS KV Put
+- unlike most other endpoints, this response uses raw hex strings without a `0x` prefix
 
-Write a value to KMS-backed key/value storage.
+## S3 storage endpoints
 
-- **URL:** `/v1/kms/kv/put`
-- **Method:** `POST`
-- **Request Body:**
-  ```json
-  {
-    "key": "config/service_token",
-    "value": "base64_encoded_opaque_string_value",
-    "ttl_ms": 60000
-  }
-  ```
-  `value` **must** be a base64-encoded string representing the bytes you wish to store.
-  `ttl_ms` is optional (defaults to `0`).
-- **Success Response:**
-  ```json
-  {
-    "success": true
-  }
-  ```
+These routes exist only when `storage.s3.enabled=true`.
 
-### KMS KV Delete
+If S3 is not configured, they return:
 
-Delete a value from KMS-backed key/value storage.
+- status: `400 Bad Request`
+- body: `S3 storage not configured`
 
-- **URL:** `/v1/kms/kv/delete`
-- **Method:** `POST`
-- **Request Body:**
-  ```json
-  {
-    "key": "config/service_token"
-  }
-  ```
-- **Success Response:**
-  ```json
-  {
-    "success": true
-  }
-  ```
+Key rules:
 
-## App Wallet API Endpoints (Primary API only)
+- keys may not contain `..`
+- keys may not start with `/`
+- missing objects return `404 Not Found`
 
-These endpoints are also gated by `kms_integration.enabled=true`.
-They are local-use endpoints for enclave apps.
-Instances mapped to the same KMS app namespace share the same app-wallet.
-Typical app-wallet setup for local mode:
+### `POST /v1/s3/get`
+
+Request:
+
+```json
+{
+  "key": "relative/path/to/object"
+}
+```
+
+Response:
+
+```json
+{
+  "value": "base64-encoded bytes",
+  "content_type": "text/plain"
+}
+```
+
+`content_type` is omitted when unavailable.
+
+### `POST /v1/s3/put`
+
+Request:
+
+```json
+{
+  "key": "relative/path/to/object",
+  "value": "base64-encoded bytes",
+  "content_type": "text/plain"
+}
+```
+
+Response:
+
+```json
+{
+  "success": true
+}
+```
+
+### `POST /v1/s3/delete`
+
+Request:
+
+```json
+{
+  "key": "relative/path/to/object"
+}
+```
+
+Response:
+
+```json
+{
+  "success": true
+}
+```
+
+### `POST /v1/s3/list`
+
+Request:
+
+```json
+{
+  "prefix": "optional/sub-prefix",
+  "continuation_token": "optional-token",
+  "max_keys": 100
+}
+```
+
+Response:
+
+```json
+{
+  "keys": ["a.txt", "b/c.txt"],
+  "continuation_token": null,
+  "is_truncated": false
+}
+```
+
+If `storage.s3.encryption.mode=kms`, KMS integration must also be enabled.
+
+## Nova KMS endpoints
+
+These routes are usable only when:
+
+- `kms_integration.enabled=true`
+- registry discovery is configured with both `kms_app_id` and `nova_app_registry`
+
+If KMS integration is entirely absent, the API returns:
+
+- status: `400 Bad Request`
+- body: `KMS integration not configured`
+
+Transient registry/authz failures return:
+
+- status: `503 Service Unavailable`
+- header: `Retry-After: 10`
+
+Validation and non-transient failures return `400 Bad Request`.
+
+### `POST /v1/kms/derive`
+
+Request:
+
+```json
+{
+  "path": "app/session/alpha",
+  "context": "optional-context",
+  "length": 32
+}
+```
+
+Defaults:
+
+- `context`: empty string
+- `length`: `32`
+
+Response:
+
+```json
+{
+  "key": "base64-encoded key bytes"
+}
+```
+
+Some derive paths are reserved internally and are rejected.
+
+### `POST /v1/kms/kv/get`
+
+Request:
+
+```json
+{
+  "key": "config/service_token"
+}
+```
+
+Found response:
+
+```json
+{
+  "found": true,
+  "value": "base64-encoded opaque value"
+}
+```
+
+Missing-key response:
+
+- status: `404 Not Found`
+
+```json
+{
+  "found": false,
+  "value": null
+}
+```
+
+### `POST /v1/kms/kv/put`
+
+Request:
+
+```json
+{
+  "key": "config/service_token",
+  "value": "base64-encoded opaque value",
+  "ttl_ms": 60000
+}
+```
+
+Response:
+
+```json
+{
+  "success": true
+}
+```
+
+`ttl_ms` defaults to `0`.
+
+### `POST /v1/kms/kv/delete`
+
+Request:
+
+```json
+{
+  "key": "config/service_token"
+}
+```
+
+Response:
+
+```json
+{
+  "success": true
+}
+```
+
+## App-wallet endpoints
+
+These routes require:
+
 - `kms_integration.enabled=true`
 - `kms_integration.use_app_wallet=true`
-- `kms_app_id`/`nova_app_registry` can be omitted when only app-wallet APIs are used.
 
-Initialization behavior:
-- If Nova KMS is unavailable, app-wallet endpoints return unavailable errors.
-- If both app-wallet KV records exist (private key + address), app-wallet is available.
-- If both records are missing, Enclaver generates local app-wallet material, writes it to KMS, then re-reads and requires it to match before marking app-wallet available.
+Current implementation detail:
 
-### Get App Wallet Address
+- app-wallet APIs run in enclave-local mode
+- responses currently report `app_id: 0`
 
-- **URL:** `/v1/app-wallet/address`
-- **Method:** `GET`
-- **Success Response:**
-  ```json
-  {
-    "address": "0x...",
-    "app_id": 0,
-    "instance_wallet": "0x..."
-  }
-  ```
-  `app_id` is currently fixed to `0` for enclave-local app-wallet mode.
+If the app-wallet service is unavailable or disabled, these routes return:
 
-### Sign Message with App Wallet
+- status: `503 Service Unavailable`
+- header: `Retry-After: 10`
+- body: plain-text error starting with `App wallet service unavailable:`
 
-Signs a plain-text message using EIP-191 personal-sign prefix.
+### `GET /v1/app-wallet/address`
 
-- **URL:** `/v1/app-wallet/sign`
-- **Method:** `POST`
-- **Request Body:**
-  ```json
-  {
-    "message": "hello app wallet"
-  }
-  ```
-- **Success Response:**
-  ```json
-  {
-    "signature": "0x...",
-    "address": "0x...",
-    "app_id": 0
-  }
-  ```
+Response:
 
-### Sign Transaction with App Wallet
+```json
+{
+  "address": "0x...",
+  "app_id": 0,
+  "instance_wallet": "0x..."
+}
+```
 
-- **URL:** `/v1/app-wallet/sign-tx`
-- **Method:** `POST`
-- **Request Body:** Same schema as `/v1/eth/sign-tx`.
-  > **Note**: The `include_attestation` field is accepted but silently ignored — app wallet sign-tx never produces attestation documents.
-- **Success Response:**
-  ```json
-  {
-    "raw_transaction": "0x02...",
-    "transaction_hash": "0x...",
-    "signature": "0x...",
-    "address": "0x...",
-    "app_id": 0
-  }
-  ```
+`instance_wallet` is the local enclave instance wallet when it can be resolved.
 
-## Auxiliary API Endpoints
+### `POST /v1/app-wallet/sign`
 
-The Auxiliary API exposes a **subset** of the Primary API endpoints with the following restrictions:
+Request:
 
-### Get Ethereum Address (Aux)
+```json
+{
+  "message": "hello app wallet"
+}
+```
 
-- **URL:** `/v1/eth/address`
-- **Method:** `GET`
-- **Behavior:** Same as Primary API.
+Response:
 
-### Generate Attestation (Aux)
+```json
+{
+  "signature": "0x...",
+  "address": "0x...",
+  "app_id": 0
+}
+```
 
-- **URL:** `/v1/attestation`
-- **Method:** `POST`
-- **Restrictions:**
-  - The `public_key` field in the request body is **removed** before forwarding to the Primary API, ensuring the attestation always uses the enclave's default P-384 encryption public key.
-  - The `user_data` field is **preserved and forwarded** to the Primary API, where `eth_addr` (and optionally `app_wallet`) are automatically injected into it.
-  - The `nonce` field is preserved.
+### `POST /v1/app-wallet/sign-tx`
 
-- **Request Body:**
-  ```json
-  {
-    "nonce": "base64_encoded_nonce", // Optional
-    "user_data": { "custom": "data" } // Optional, forwarded to Primary API
-  }
-  ```
+Request schema is the same as `/v1/eth/sign-tx`.
 
-### Get Encryption Public Key (Aux)
+Implementation detail:
 
-- **URL:** `/v1/encryption/public_key`
-- **Method:** `GET`
-- **Behavior:** Same as Primary API.
+- `include_attestation` is accepted by the request parser but ignored
+- app-wallet transaction signing never returns an attestation field
 
-### Unavailable Endpoints
+Response:
 
-The following endpoints are **NOT** available on the Auxiliary API:
-- `/v1/eth/sign-tx`
-- `/v1/eth/sign`
-- `/v1/random`
-- `/v1/encryption/decrypt`
-- `/v1/encryption/encrypt`
-- `/v1/kms/derive`
-- `/v1/kms/kv/get`
-- `/v1/kms/kv/put`
-- `/v1/kms/kv/delete`
-- `/v1/app-wallet/address`
-- `/v1/app-wallet/sign`
-- `/v1/app-wallet/sign-tx`
+```json
+{
+  "raw_transaction": "0x02...",
+  "transaction_hash": "0x...",
+  "signature": "0x...",
+  "address": "0x...",
+  "app_id": 0
+}
+```
 
-Attempts to access these endpoints on the Auxiliary API port will result in a 404 Not Found error.
-The following endpoints are also **NOT** available on the Auxiliary API:
-- `/v1/s3/get`
-- `/v1/s3/put`
-- `/v1/s3/delete`
-- `/v1/s3/list`
+## Aux API
 
-## S3 Storage API Endpoints
+Aux API exposes only:
 
-The Internal API provides an S3-compatible interface for persistent storage. These endpoints use the enclave's AWS credentials (obtained via IMDS) and enforce key isolation and path traversal protection. If S3 storage is not enabled in `enclaver.yaml`, these endpoints return `400 Bad Request` with `S3 storage not configured`.
+- `GET /v1/eth/address`
+- `POST /v1/attestation`
+- `GET /v1/encryption/public_key`
 
-### Get Object
+All other routes return `404 Not Found`.
+Unsupported methods on supported paths return `405 Method Not Allowed`.
 
-Retrieve a base64-encoded object from S3.
+### `GET /v1/eth/address`
 
-- **URL:** `/v1/s3/get`
-- **Method:** `POST`
-- **Content-Type:** `application/json`
-- **Request Body:**
-  ```json
-  {
-    "key": "relative/path/to/object"
-  }
-  ```
-- **Success Response:**
-  - **Code:** 200 OK
-  - **Content-Type:** `application/json`
-  - **Body:**
-    ```json
-    {
-      "value": "base64_encoded_data",
-      "content_type": "text/plain"  // Optional, present if set during upload
-    }
-    ```
-- **Example:**
-  ```bash
-  curl -X POST http://127.0.0.1:9000/v1/s3/get \
-    -H "Content-Type: application/json" \
-    -d '{"key": "config/settings.json"}'
-  ```
+Exact proxy to the Primary API.
 
-### Put Object
+### `GET /v1/encryption/public_key`
 
-Upload a base64-encoded object to S3.
+Exact proxy to the Primary API.
 
-- **URL:** `/v1/s3/put`
-- **Method:** `POST`
-- **Content-Type:** `application/json`
-- **Request Body:**
-  ```json
-  {
-    "key": "relative/path/to/object",
-    "value": "base64_encoded_data",
-    "content_type": "text/plain" // Optional
-  }
-  ```
-- **Success Response:**
-  - **Code:** 200 OK
-  - **Content-Type:** `application/json`
-  - **Body:**
-    ```json
-    {
-      "success": true
-    }
-    ```
-- **Example:**
-  ```bash
-  # Upload text data (base64 encoded)
-  curl -X POST http://127.0.0.1:9000/v1/s3/put \
-    -H "Content-Type: application/json" \
-    -d '{"key": "data/test.txt", "value": "SGVsbG8gV29ybGQh", "content_type": "text/plain"}'
-  ```
+### `POST /v1/attestation`
 
-### Delete Object
+Aux API sanitizes the request before forwarding it:
 
-Delete an object from S3.
+- removes `public_key`
+- preserves `nonce`
+- preserves `user_data`
 
-- **URL:** `/v1/s3/delete`
-- **Method:** `POST`
-- **Content-Type:** `application/json`
-- **Request Body:**
-  ```json
-  {
-    "key": "relative/path/to/object"
-  }
-  ```
-- **Success Response:**
-  - **Code:** 200 OK
-  - **Content-Type:** `application/json`
-  - **Body:**
-    ```json
-    {
-      "success": true
-    }
-    ```
-- **Example:**
-  ```bash
-  curl -X POST http://127.0.0.1:9000/v1/s3/delete \
-    -H "Content-Type: application/json" \
-    -d '{"key": "data/test.txt"}'
-  ```
+This means external callers cannot override the default attestation public key, but can still provide custom `user_data` that will later receive injected `eth_addr` and optional `app_wallet`.
 
-### List Objects
+Special behaviors:
 
-List objects in the app's persistent storage.
+- empty request body becomes `{}`
+- invalid non-empty JSON returns `400 Bad Request`
+- successful responses include `Access-Control-Allow-Origin: *`
+- `OPTIONS /v1/attestation` returns CORS preflight headers
 
-- **URL:** `/v1/s3/list`
-- **Method:** `POST`
-- **Content-Type:** `application/json`
-- **Request Body:**
-  ```json
-  {
-    "prefix": "optional/subdirectory/",
-    "continuation_token": "token_from_previous_response", // Optional
-    "max_keys": 100 // Optional
-  }
-  ```
-- **Success Response:**
-  - **Code:** 200 OK
-  - **Content-Type:** `application/json`
-  - **Body:**
-    ```json
-    {
-      "keys": ["file1.txt", "file2.txt"],
-      "continuation_token": "next_token", // Null if no more pages
-      "is_truncated": false
-    }
-    ```
-- **Example:**
-  ```bash
-  # List all objects
-  curl -X POST http://127.0.0.1:9000/v1/s3/list \
-    -H "Content-Type: application/json" \
-    -d '{}'
+CORS preflight response:
 
-  # List objects with prefix
-  curl -X POST http://127.0.0.1:9000/v1/s3/list \
-    -H "Content-Type: application/json" \
-    -d '{"prefix": "data/", "max_keys": 50}'
-  ```
+- status: `204 No Content`
+- headers:
+  - `Access-Control-Allow-Origin: *`
+  - `Access-Control-Allow-Methods: POST, OPTIONS`
+  - `Access-Control-Allow-Headers: Content-Type`
+  - `Access-Control-Max-Age: 86400`
+
+If the Primary API is unreachable, Aux API returns:
+
+- status: `503 Service Unavailable`
+- content type: `application/json`
+
+```json
+{
+  "error": "Internal API service unavailable"
+}
+```
+
+## Related documents
+
+- `docs/encryption.md`
+- `docs/odyn.md`
+- `docs/port_handling.md`

@@ -1,484 +1,136 @@
-# Enclaver Runtime Architecture
+# Enclaver Architecture
 
-This document provides a comprehensive overview of the Enclaver runtime architecture, explaining the relationships between all components and their responsibilities during both build-time and runtime phases.
+This is the high-level architecture view. For code-level module mapping, see `docs/enclaver-architecture.md`.
 
----
+## Build-time flow
 
-## Table of Contents
+`enclaver build` does four things:
 
-1. [Component Overview](#component-overview)
-2. [Build-Time Architecture](#build-time-architecture)
-3. [Runtime Architecture](#runtime-architecture)
-4. [What's Inside vs Outside the EIF](#whats-inside-vs-outside-the-eif)
-5. [Module Relationships](#module-relationships)
-6. [Data Flow Diagrams](#data-flow-diagrams)
+1. loads `enclaver.yaml`
+2. amends the source app image by adding:
+   - `/sbin/odyn`
+   - `/etc/enclaver/enclaver.yaml`
+3. runs `nitro-cli build-enclave` in a Nitro CLI container to produce `application.eif`
+4. appends `application.eif` and `enclaver.yaml` to the Sleeve base image
 
----
+Result:
 
-## Component Overview
-
-### High-Level Component Diagram
-
-```mermaid
-graph TB
-    subgraph "User Space"
-        APP["User Application<br/>(Docker Image)"]
-        YAML["enclaver.yaml<br/>(Configuration)"]
-    end
-    
-    subgraph "Build-Time Components"
-        ENCLAVER_CLI["enclaver CLI<br/>(build command)"]
-        ODYN_IMAGE["Odyn Image<br/>(supervisor binary)"]
-        NITRO_CLI_BUILD["nitro-cli<br/>(build-enclave)"]
-        SLEEVE_BASE["Sleeve Base Image"]
-    end
-    
-    subgraph "Docker Image (Release)"
-        SLEEVE["Sleeve Program<br/>(enclaver-run)"]
-        NITRO_CLI_RUN["nitro-cli<br/>(run-enclave)"]
-        EIF["application.eif<br/>(Enclave Image File)"]
-        YAML_COPY["enclaver.yaml"]
-    end
-    
-    subgraph "Enclave (Inside EIF)"
-        ODYN["Odyn Supervisor<br/>(/sbin/odyn)"]
-        APP_INSIDE["User Application"]
-    end
-    
-    APP --> ENCLAVER_CLI
-    YAML --> ENCLAVER_CLI
-    ODYN_IMAGE --> ENCLAVER_CLI
-    ENCLAVER_CLI --> NITRO_CLI_BUILD
-    NITRO_CLI_BUILD --> EIF
-    SLEEVE_BASE --> SLEEVE
-    EIF --> SLEEVE
-    YAML --> SLEEVE
-    SLEEVE --> NITRO_CLI_RUN
-    NITRO_CLI_RUN --> ODYN
-    ODYN --> APP_INSIDE
+```text
+release image
+|- /usr/local/bin/enclaver-run
+|- /bin/nitro-cli
+|- /enclave/application.eif
+`- /enclave/enclaver.yaml
 ```
 
-### Component Descriptions
+## Runtime flow
 
-| Component | Location | Description |
-|-----------|----------|-------------|
-| **User Application** | User's Docker image | Your backend service/application to be run inside the enclave |
-| **enclaver.yaml** | User's project | Configuration file defining ingress, egress, API, and Nova KMS integration settings |
-| **Odyn Supervisor** | Inside EIF | Enclave supervisor that manages the application lifecycle, networking, and services |
-| **EIF (application.eif)** | Docker image | AWS Nitro Enclave Image File containing the enclave workload |
-| **Sleeve (enclaver-run)** | Docker image | Host-side orchestrator that launches and manages the enclave |
-| **nitro-cli** | Docker image / Build | AWS CLI tool for building and running Nitro Enclaves |
-| **Docker Image** | Container registry | Final packaged image containing all runtime components |
+Host/container side:
 
----
+1. `enclaver run` starts the Sleeve image as a privileged Docker container and mounts `/dev/nitro_enclaves`
+2. `enclaver-run` loads `/enclave/enclaver.yaml`
+3. it starts the host-side egress proxy if `egress` is present
+4. it starts the host-side clock-sync time server when clock sync is effectively enabled
+5. it launches the enclave with `nitro-cli run-enclave`
+6. after the enclave is up, it starts host-side ingress proxies and streams logs/status
 
-## Build-Time Architecture
+Enclave side:
 
-### Build Pipeline Flow
+1. `/sbin/odyn` starts as PID 1
+2. it brings up loopback and seeds RNG from NSM
+3. it starts the enclave-side egress proxy if enabled
+4. it starts the clock-sync client service; clock sync is default-on unless explicitly disabled
+5. it starts Helios in the background when configured
+6. if registry-backed KMS is enabled, it waits for the Helios auth-chain RPC on port `18545`
+7. it starts the Internal API and Aux API
+8. it starts ingress listeners
+9. it launches the user application
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant CLI as enclaver CLI
-    participant Docker as Docker Engine
-    participant NitroCLI as nitro-cli Container
-    
-    User->>CLI: enclaver build -f enclaver.yaml
-    CLI->>CLI: Load manifest (enclaver.yaml)
-    CLI->>Docker: Pull user's app image
-    CLI->>Docker: Amend app image<br/>(add odyn + manifest)
-    Note over Docker: Creates intermediate image with:<br/>- /sbin/odyn (supervisor)<br/>- /etc/enclaver/enclaver.yaml
-    CLI->>NitroCLI: Run nitro-cli build-enclave
-    NitroCLI->>NitroCLI: Convert amended image to EIF
-    NitroCLI-->>CLI: Return application.eif
-    CLI->>Docker: Package EIF into sleeve base
-    Note over Docker: Final release image contains:<br/>- /enclave/application.eif<br/>- /enclave/enclaver.yaml<br/>- /usr/local/bin/enclaver-run<br/>- /bin/nitro-cli
-    CLI-->>User: Tagged release image ready
-```
-
-### Layer Structure of Release Image
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Release Docker Image                     │
-├─────────────────────────────────────────────────────────────┤
-│  [Layer 3] /enclave/application.eif (EIF file)              │
-├─────────────────────────────────────────────────────────────┤
-│  [Layer 2] /enclave/enclaver.yaml (manifest)                │
-├─────────────────────────────────────────────────────────────┤
-│  [Layer 1] Sleeve Base Image                                │
-│    ├── /usr/local/bin/enclaver-run (entry point)            │
-│    ├── /bin/nitro-cli (AWS Nitro CLI)                       │
-│    └── Runtime libraries and dependencies                   │
-└─────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Runtime Architecture
-
-### Runtime Execution Flow
-
-```mermaid
-sequenceDiagram
-    participant Host
-    participant Container as Docker Container
-    participant Sleeve as enclaver-run (Sleeve)
-    participant NitroCLI as nitro-cli
-    participant Enclave as Enclave VM
-    participant Odyn as Odyn Supervisor
-    participant App as User Application
-    
-    Host->>Container: docker run <release-image>
-    Container->>Sleeve: Start enclaver-run
-    Sleeve->>Sleeve: Load /enclave/enclaver.yaml
-    Sleeve->>Sleeve: Start host-side egress proxy
-    Sleeve->>NitroCLI: nitro-cli run-enclave<br/>--eif /enclave/application.eif
-    NitroCLI->>Enclave: Launch enclave VM
-    Enclave->>Odyn: Start /sbin/odyn
-    
-    Note over Odyn: Bootstrap Phase
-    Odyn->>Odyn: Bring up loopback interface
-    Odyn->>Odyn: Seed RNG from NSM
-    Odyn->>Odyn: Start egress proxy (if configured)
-    Odyn->>Odyn: Initialize Nova KMS integration (if configured)
-    Odyn->>Odyn: Start API server (if configured)
-    Odyn->>Odyn: Start ingress proxies
-    Odyn->>App: Launch user application
-    
-    Note over Sleeve,Odyn: Runtime Communication (vsock)
-    Odyn-->>Sleeve: App logs via vsock (port 17001)
-    Odyn-->>Sleeve: Status updates via vsock (port 17000)
-    Sleeve->>Sleeve: Start host-side ingress proxies
-    
-    Note over Host,App: Application Running
-    App-->>Odyn: Exit status
-    Odyn-->>Sleeve: Final exit status
-    Sleeve->>NitroCLI: nitro-cli terminate-enclave
-    Sleeve-->>Host: Container exits
-```
-
-### Component Responsibilities at Runtime
-
-#### Sleeve (enclaver-run) - Host Side
-- **Location**: Runs inside the Docker container, outside the enclave
-- **Responsibilities**:
-  - Read configuration from `/enclave/enclaver.yaml`
-  - Start host-side egress proxy (forwards enclave traffic to external networks)
-  - Launch the enclave using `nitro-cli run-enclave`
-  - Start host-side ingress proxies (listen on TCP ports, forward to enclave via vsock)
-  - Monitor enclave status and logs via vsock connections
-  - Handle enclave lifecycle (start, monitor, terminate)
-
-#### Odyn Supervisor - Enclave Side
-- **Location**: Runs inside the enclave (as PID 1)
-- **Responsibilities**:
-  - Bootstrap enclave platform (loopback interface, RNG seeding from NSM)
-  - Parse and apply configuration from embedded `enclaver.yaml`
-  - Start enclave-side ingress proxies (accept vsock connections, forward to app)
-  - Start enclave-side egress proxy (intercept app's outbound traffic)
-  - Initialize Nova KMS integration for `/v1/kms/*` and app-wallet routes
-  - Start internal API server (attestation, encryption, Ethereum endpoints)
-  - Start Helios RPC service (trustless Ethereum/OP Stack light client)
-  - Launch and supervise the user application
-  - Capture app stdout/stderr and expose via vsock
-  - Report application status to host via vsock
-
----
-
-## What's Inside vs Outside the EIF
-
-### Inside the EIF (Enclave)
-
-```
-┌────────────────────────────────────────────────────────┐
-│               Enclave (application.eif)                │
-├────────────────────────────────────────────────────────┤
-│                                                        │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │           Odyn Supervisor (/sbin/odyn)           │  │
-│  │                                                  │  │
-│  │  ┌────────────────────────────────────────────┐  │  │
-│  │  │ Services:                                  │  │  │
-│  │  │  • Ingress Proxy (vsock → app TCP)         │  │  │
-│  │  │  • Egress Proxy (app HTTP → vsock)         │  │  │
-│  │  │  • Nova KMS Integration (`/v1/kms/*`)      │  │  │
-│  │  │  • API Server (attestation, encryption)    │  │  │
-│  │  │  • Helios RPC (trustless Ethereum/OP Stack light client)  │  │  │
-│  │  │  • Console (log capture & streaming)       │  │  │
-│  │  │  • Launcher (app process management)       │  │  │
-│  │  └────────────────────────────────────────────┘  │  │
-│  └──────────────────────────────────────────────────┘  │
-│                          │                             │
-│                          ▼                             │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │             User Application                     │  │
-│  │       (from original Docker image)               │  │
-│  └──────────────────────────────────────────────────┘  │
-│                                                        │
-│  Configuration: /etc/enclaver/enclaver.yaml            │
-│                                                        │
-└────────────────────────────────────────────────────────┘
-```
-
-**Components Inside EIF:**
-- Odyn supervisor binary (`/sbin/odyn`)
-- User application (original Docker image contents)
-- Configuration file (`/etc/enclaver/enclaver.yaml`)
-- All application dependencies and runtime
-
-### Outside the EIF (Host/Container)
-
-```
-┌────────────────────────────────────────────────────────┐
-│              Docker Container (Host Side)              │
-├────────────────────────────────────────────────────────┤
-│                                                        │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │         Sleeve (enclaver-run)                    │  │
-│  │                                                  │  │
-│  │  ┌────────────────────────────────────────────┐  │  │
-│  │  │ Host-Side Proxies:                         │  │  │
-│  │  │  • Ingress HostProxy (TCP → vsock)         │  │  │
-│  │  │  • Egress HostHttpProxy (vsock → network)  │  │  │
-│  │  └────────────────────────────────────────────┘  │  │
-│  │                                                  │  │
-│  │  ┌────────────────────────────────────────────┐  │  │
-│  │  │ Enclave Management:                        │  │  │
-│  │  │  • Log streaming (vsock port 17001)        │  │  │
-│  │  │  • Status monitoring (vsock port 17000)    │  │  │
-│  │  │  • Debug console (optional)                │  │  │
-│  │  └────────────────────────────────────────────┘  │  │
-│  └──────────────────────────────────────────────────┘  │
-│                                                        │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │              nitro-cli                           │  │
-│  │  • run-enclave (start enclave from EIF)          │  │
-│  │  • describe-enclaves (query status)              │  │
-│  │  • terminate-enclave (stop enclave)              │  │
-│  └──────────────────────────────────────────────────┘  │
-│                                                        │
-│  Files:                                                │
-│    /enclave/application.eif                            │
-│    /enclave/enclaver.yaml                              │
-│                                                        │
-│  Device:                                               │
-│    /dev/nitro_enclaves (mounted from host)             │
-│                                                        │
-└────────────────────────────────────────────────────────┘
-```
-
-**Components Outside EIF:**
-- Sleeve program (`enclaver-run`)
-- nitro-cli binary
-- EIF file (`application.eif`)
-- Configuration file (`enclaver.yaml`)
-- Host-side proxy processes
-- Device access (`/dev/nitro_enclaves`)
-
-### Summary Table
+## Inside vs outside the EIF
 
 | Component | Inside EIF | Outside EIF |
 |-----------|:----------:|:-----------:|
-| User Application | ✓ | |
-| Odyn Supervisor | ✓ | |
-| enclaver.yaml (copy) | ✓ | ✓ |
-| Sleeve (enclaver-run) | | ✓ |
-| nitro-cli | | ✓ |
-| application.eif | | ✓ |
-| Helios RPC Service | ✓ | |
-| Host-side Proxies | | ✓ |
-| Enclave-side Proxies | ✓ | |
+| User application | yes | no |
+| Odyn supervisor | yes | no |
+| Embedded `/etc/enclaver/enclaver.yaml` | yes | no |
+| `enclaver-run` | no | yes |
+| `nitro-cli` | no | yes |
+| `/enclave/application.eif` | no | yes |
+| `/enclave/enclaver.yaml` | no | yes |
+| Host ingress proxy | no | yes |
+| Host egress proxy | no | yes |
+| Host clock-sync time server | no | yes |
 
----
+## Odyn service model
 
-## Module Relationships
+Inside the enclave, Odyn runs two kinds of things:
 
-### Ingress Traffic Flow
+Standalone runtime services:
 
-```mermaid
-graph LR
-    subgraph "External"
-        CLIENT["External Client"]
-    end
-    
-    subgraph "Docker Container (Host)"
-        HOST_INGRESS["HostProxy<br/>(TCP Listener)"]
-    end
-    
-    subgraph "Enclave"
-        ENCLAVE_INGRESS["EnclaveProxy<br/>(vsock → TCP)"]
-        APP["User Application"]
-    end
-    
-    CLIENT -->|"TCP/HTTPS"| HOST_INGRESS
-    HOST_INGRESS -->|"vsock"| ENCLAVE_INGRESS
-    ENCLAVE_INGRESS -->|"TCP"| APP
+- ingress proxy
+- egress proxy
+- clock sync
+- console/log streaming
+- optional Helios RPC
+
+Internal API capabilities exposed on `/v1/*`:
+
+- attestation
+- Ethereum signing
+- random bytes
+- P-384 encryption/decryption
+- optional S3 storage
+- optional Nova KMS
+- optional app-wallet routes
+
+`kms_integration`, `storage`, and encryption are not separate peer daemons. They are capabilities behind the Internal API.
+
+## Traffic paths
+
+Ingress:
+
+```text
+host client
+-> docker published port
+-> Sleeve host proxy
+-> vsock
+-> Odyn enclave proxy
+-> 127.0.0.1:<listen_port> inside enclave
 ```
 
-### Egress Traffic Flow
+Egress:
 
-```mermaid
-graph LR
-    subgraph "Enclave"
-        APP["User Application"]
-        ENCLAVE_EGRESS["EnclaveHttpProxy<br/>(HTTP Proxy)"]
-    end
-    
-    subgraph "Docker Container (Host)"
-        HOST_EGRESS["HostHttpProxy<br/>(vsock → network)"]
-    end
-    
-    subgraph "External"
-        EXTERNAL["External Services<br/>(APIs, KMS, etc.)"]
-    end
-    
-    APP -->|"HTTP/HTTPS<br/>(via http_proxy)"| ENCLAVE_EGRESS
-    ENCLAVE_EGRESS -->|"vsock"| HOST_EGRESS
-    HOST_EGRESS -->|"TCP"| EXTERNAL
+```text
+application
+-> local HTTP proxy inside enclave
+-> vsock
+-> host HTTP proxy
+-> remote network
 ```
 
-### Nova KMS Integration Flow
+Clock sync:
 
-```mermaid
-graph LR
-    subgraph "Enclave"
-        APP["User Application"]
-        API["Odyn API<br/>(/v1/kms/*)"]
-        NOVA_KMS["Nova KMS Integration"]
-        HELIOS["Helios RPC<br/>(Registry Discovery)"]
-    end
-    
-    subgraph "Network Path"
-        EGRESS["Egress Proxies"]
-    end
-    
-    subgraph "External"
-        REGISTRY["Nova App Registry RPC"]
-        KMS["Nova KMS Cluster"]
-    end
-    
-    APP -->|"HTTP JSON"| API
-    API --> NOVA_KMS
-    NOVA_KMS --> HELIOS
-    HELIOS -->|"JSON-RPC"| EGRESS
-    EGRESS --> REGISTRY
-    NOVA_KMS -->|"KMS operations"| EGRESS
-    EGRESS --> KMS
-    KMS --> EGRESS
-    EGRESS --> NOVA_KMS
-    NOVA_KMS --> API
-    API --> APP
+```text
+Odyn clock-sync client
+-> vsock port 17003
+-> host time server in enclaver-run
 ```
 
----
-
-## Data Flow Diagrams
-
-### Complete Runtime Architecture
-
-```mermaid
-graph TB
-    subgraph "Host Machine"
-        subgraph "Docker Container"
-            SLEEVE["Sleeve<br/>(enclaver-run)"]
-            NITRO_CLI["nitro-cli"]
-            
-            subgraph "Host-Side Proxies"
-                HOST_INGRESS["HostProxy<br/>(Ingress)"]
-                HOST_EGRESS["HostHttpProxy<br/>(Egress)"]
-            end
-        end
-        
-        DEV["(/dev/nitro_enclaves)"]
-    end
-    
-    subgraph "Enclave VM"
-        ODYN["Odyn Supervisor"]
-        
-        subgraph "Odyn Services"
-            ENCLAVE_INGRESS["Ingress Proxy"]
-            ENCLAVE_EGRESS["Egress Proxy"]
-            NOVA_KMS["Nova KMS Integration"]
-            API["API Server"]
-            HELIOS["Helios RPC"]
-            CONSOLE["Console<br/>(Log Capture)"]
-            LAUNCHER["Launcher"]
-        end
-        
-        APP["User Application"]
-    end
-    
-    EXTERNAL_CLIENT["External Clients"]
-    EXTERNAL_SERVICES["External Services"]
-    
-    %% Connections
-    DEV -.-> NITRO_CLI
-    SLEEVE --> NITRO_CLI
-    NITRO_CLI --> ODYN
-    
-    ODYN --> ENCLAVE_INGRESS
-    ODYN --> ENCLAVE_EGRESS
-    ODYN --> NOVA_KMS
-    ODYN --> API
-    ODYN --> HELIOS
-    ODYN --> CONSOLE
-    ODYN --> LAUNCHER
-    
-    LAUNCHER --> APP
-    
-    EXTERNAL_CLIENT --> HOST_INGRESS
-    HOST_INGRESS -->|"vsock"| ENCLAVE_INGRESS
-    ENCLAVE_INGRESS --> APP
-    
-    APP --> ENCLAVE_EGRESS
-    ENCLAVE_EGRESS -->|"vsock"| HOST_EGRESS
-    HOST_EGRESS --> EXTERNAL_SERVICES
-    
-    APP --> CONSOLE
-    CONSOLE -->|"vsock<br/>port 17001"| SLEEVE
-    ODYN -->|"vsock<br/>port 17000"| SLEEVE
-```
-
-### VSOCK Communication Ports
+## Important VSOCK ports
 
 | Port | Direction | Purpose |
 |------|-----------|---------|
-| 17000 | Enclave → Host | Status updates (JSON stream) |
-| 17001 | Enclave → Host | Application logs (stdout/stderr) |
-| 17002 | Enclave → Host | HTTP egress proxy traffic |
-| Dynamic | Host → Enclave | Ingress connections (per listener) |
+| `17000` | enclave -> host | app status stream |
+| `17001` | enclave -> host | app log stream |
+| `17002` | enclave -> host | egress proxy traffic |
+| `17003` | enclave -> host | clock-sync requests |
 
----
+Ingress uses the configured `ingress[].listen_port` values rather than a single fixed VSOCK port.
 
-## Summary
+## Related documents
 
-The Enclaver architecture provides a complete isolation solution:
-
-1. **User Application**: Your backend service that needs to run in a trusted execution environment
-
-2. **Odyn Supervisor**: The enclave-side component that:
-   - Bootstraps the enclave environment
-   - Provides networking proxies (ingress/egress)
-   - Manages Nova KMS integration and app-wallet operations
-   - Supervises the application lifecycle
-
-3. **EIF File**: The encrypted enclave image containing:
-   - Odyn supervisor
-   - User application
-   - Configuration
-
-4. **Sleeve Program**: The host-side orchestrator that:
-   - Launches the enclave via nitro-cli
-   - Provides host-side proxies
-   - Streams logs and status
-
-5. **nitro-cli**: AWS tool for enclave lifecycle management
-
-6. **Docker Image**: The complete package containing:
-   - Sleeve program
-   - nitro-cli
-   - EIF file
-   - Configuration
-
-This architecture ensures that sensitive workloads run in an isolated, attested environment while maintaining connectivity with external services through carefully controlled proxy channels.
+- `docs/odyn.md`
+- `docs/port_handling.md`
+- `docs/internal_api.md`
+- `docs/helios_rpc.md`
+- `docs/nitro_enclave_clock_drift.md`

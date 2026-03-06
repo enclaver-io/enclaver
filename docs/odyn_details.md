@@ -1,420 +1,180 @@
-# Odyn — Enclave Supervisor (detailed reference)
+# Odyn Detailed Reference
 
-This document provides a full, English-language reference for `odyn`, the enclave supervisor binary implemented under `enclaver/src/bin/odyn/`.
-It covers overall responsibilities and architecture, a detailed per-module breakdown (functions, data structures, external dependencies, lifecycle and error modes), an example manifest, host-side access examples (VSOCK), common pitfalls, extension points, and a mermaid time-sequence diagram showing startup, runtime, and shutdown interactions.
+This document focuses on the implementation behavior of `enclaver/src/bin/odyn/*`.
 
----
+For the user-facing overview, see `docs/odyn.md`.
 
-## 1. Short summary
+## What Odyn is
 
-Odyn is the supervisor that runs inside an enclave and manages the enclave application (the "entrypoint"). Its main responsibilities are:
+Odyn runs as PID 1 inside the enclave and is responsible for:
 
-- Prepare enclave platform primitives (bring up loopback, seed RNG from NSM).
-- Provide local infrastructure services that the entrypoint expects (ingress listeners, optional egress proxy, optional Nova KMS integration through the internal API server).
-- Capture and expose application logs and runtime status over VSOCK to the host.
-- Launch and supervise the entrypoint process, ensure proper reaping of children to avoid zombies, and translate exit status into an observable final state.
+- enclave bootstrap
+- starting local platform services
+- launching and supervising the user process
+- exposing status and logs over VSOCK
 
-Design goals: reproducible startup order, clear dependencies between services (egress before API/S3 initialization), small surface area for host control via vsock/API, and a policy-driven egress allow list for safe outbound connectivity.
+## Actual startup order
 
----
+There are two layers of startup logic:
 
-## 2. Quick example manifest
+### `run()`
 
-A minimal manifest to show common sections used by `odyn`:
+Before the main launch sequence, `run()` starts the VSOCK-facing status and log listeners as early as possible so startup failures can still be reported to the host:
 
-```yaml
-ingress:
-  - listen_port: 8080
+- status stream on `17000`
+- log stream on `17001` unless `--no-console`
 
-egress:
-  allow:
-    - "169.254.169.254"            # IMDS (for AWS SDK region/credentials discovery)
-    - "s3.us-east-1.amazonaws.com"
-  proxy_port: 3128
+### `launch()`
 
-kms_integration:
-  enabled: true
-  use_app_wallet: true
-  kms_app_id: 1001
-  nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64cc8"
+The service startup order in `main.rs` is:
 
-api:
-  listen_port: 8000
+1. load manifest via `Configuration::load()`
+2. initialize NSM handle
+3. bootstrap loopback and RNG unless `--no-bootstrap`
+4. start egress service
+5. start clock-sync service
+6. start Helios background services
+7. if registry-backed KMS is enabled, wait for Helios readiness on port `18545`
+8. start Internal API and Aux API together
+9. start ingress listeners
+10. launch the user entrypoint
 
-aux_api:
-  listen_port: 8001  # Optional: defaults to api_port + 1 if not specified
+Shutdown order is the reverse:
 
-sources:
-  odyn: "public.ecr.aws/d4t4u8d2/sparsity-ai/odyn:latest"
-  sleeve: "public.ecr.aws/d4t4u8d2/sparsity-ai/sleeve:latest"
-```
+1. Aux API
+2. Primary API
+3. clock sync
+4. Helios
+5. ingress
+6. egress
 
-Notes:
-- If you enable `kms_integration` and/or S3, ensure the egress allow list includes IMDS (`169.254.169.254`) and required upstream endpoints.
+## Important implementation details
 
----
+### Egress
 
-## 3. Host-side: accessing logs & status (VSOCK)
+- egress starts before API/S3/KMS initialization because those integrations may need outbound access immediately
+- Odyn sets all of:
+  - `http_proxy`
+  - `https_proxy`
+  - `HTTP_PROXY`
+  - `HTTPS_PROXY`
+  - `no_proxy`
+  - `NO_PROXY`
+- `NO_PROXY` and `no_proxy` are currently `localhost,127.0.0.1`
 
-`odyn` exposes two common VSOCK endpoints (constants defined in the project):
+### Clock sync
 
-- `APP_LOG_PORT` — a stream of the entrypoint's stdout/stderr (ring-buffered).
-- `STATUS_PORT` — a JSON status stream reporting lifecycle events (running, exited, fatal) and metadata.
+- clock sync is default-on when omitted from the manifest
+- it starts before API/app launch, but it runs asynchronously
+- it performs an initial sync attempt, then periodic sync
+- it talks to the host over VSOCK port `17003`
+- both sides use timeouts to avoid hanging forever on a stalled request
 
-Examples (host):
+### Helios
 
-- vsockcat (if available):
+- Helios starts in the background for each configured chain
+- in the normal case, the app is not blocked on full Helios sync
+- when registry-backed KMS is enabled, Odyn waits specifically for the Helios RPC on local port `18545` before continuing
 
-```bash
-# stream app logs
-vsockcat <enclave-cid> $APP_LOG_PORT
+### Internal API and Aux API
 
-# stream status JSON
-vsockcat <enclave-cid> $STATUS_PORT
-```
+- Primary API starts only when `api.listen_port` is configured
+- Aux API currently starts whenever Primary API starts
+- if `aux_api.listen_port` is omitted, Aux API uses `api.listen_port + 1`
+- Aux API does not have an independent enable or disable flag
+- Aux API attestation sanitization removes only `public_key`
+- Aux API preserves `nonce` and `user_data`
+- `OPTIONS /v1/attestation` on Aux API returns CORS preflight headers
 
-- socat (if built with vsock support):
+### KMS and app-wallet
 
-```bash
-socat - VSOCK:cid=3,port=${STATUS_PORT}
-```
+- `/v1/kms/*` routes require registry discovery config, not just `kms_integration.enabled=true`
+- app-wallet routes require `use_app_wallet=true`
+- current app-wallet APIs run in enclave-local mode and report `app_id: 0`
+- transient registry/authz failures are surfaced as `503 Service Unavailable` with `Retry-After: 10`
 
-- Python AF_VSOCK (minimal client):
+### S3
 
-```python
-import socket
-sock = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
-sock.connect((2, PORT))  # host CID often 2
-try:
-    while True:
-        data = sock.recv(4096)
-        if not data:
-            break
-        print(data.decode(), end='')
-finally:
-    sock.close()
-```
+- S3 startup requires egress access to IMDS and S3
+- `storage.s3.encryption.mode=kms` requires `kms_integration.enabled=true`
+- keys are namespace-prefixed and reject path traversal (`..`) and absolute paths
 
----
+## Module notes
 
-## 4. Component details (per module)
+### `config.rs`
 
-The `enclaver/src/bin/odyn` binary is organized into the following modules. Each entry below describes main responsibilities, primary data structures, external dependencies, key behaviors and lifecycle, common errors/boundary conditions, and suggested extension points.
+Main helpers:
 
-### 4.1 `main.rs`
+- `egress_proxy_uri()`
+- `api_port()`
+- `aux_api_port()`
+- `s3_config()`
+- `kms_integration_config()`
+- `helios_configs()`
+- `clock_sync_config()`
 
-- Responsibilities
-  - Entry point: parse CLI args, load configuration, initialize logging/tracing, and orchestrate service startup/shutdown.
-  - Establish deterministic startup order so dependent services (e.g., API integrations and S3) have required preconditions (egress) available.
-  - Provide final exit plumbing that updates `AppStatus` and returns an appropriate process exit code.
+`clock_sync_config()` applies the manifest's effective default-on clock-sync behavior.
 
-- Key data structures
-  - `CliArgs` (clap) — flags: `--config-dir`, `--no-bootstrap`, `--no-console`, `--entrypoint`, `--verbose`, etc.
-  - Runtime handles/registrations for started services (EgressService, ApiService, IngressService, Console/AppLog, Entrypoint handle).
+### `console.rs`
 
-- External deps
-  - `tokio` runtime, `clap` for CLI, `tracing`/`log` for logging, `anyhow`/`thiserror` for errors, and the other internal modules.
+- captures stdout and stderr into an in-memory ring buffer
+- exposes logs and status over VSOCK
+- heavy log volume drops oldest buffered bytes
 
-- Lifecycle / behaviors
-  - Load manifest via `Configuration::load(config_dir)`.
-  - Optionally run `enclave::bootstrap()` unless `--no-bootstrap`.
-  - Start services in order: Egress (if enabled) → API (includes optional Nova KMS integration and S3 setup) → Console/AppLog/Status → Ingress → Launch the entrypoint. Monitor the sentinel and on exit stop services in reverse order.
+### `launcher.rs`
 
-- Common errors
-  - Failures in manifest loading or inability to reach NSM are treated as fatal startup errors.
+- launches the user entrypoint with UID/GID 0
+- reaps children through blocking `waitpid` logic wrapped in `spawn_blocking`
 
-- Extensions
-  - Add health endpoints, metrics initialization (Prometheus), or pluggable lifecycle hooks.
+### `api.rs`
 
----
+The service startup code:
 
-### 4.2 `config.rs`
+- constructs `NovaKmsProxy` when KMS integration is enabled
+- constructs `S3Proxy` when S3 is enabled
+- loads AWS config through IMDS via the local egress proxy
+- attaches Nova KMS to S3 when `storage.s3.encryption.mode=kms`
 
-- Responsibilities
-  - Read the manifest from `--config-dir`, validate semantics, and build a `Configuration` object for runtime use.
-  - Collect ingress listener ports from manifest entries.
+### `clock_sync.rs`
 
-- Key data structures
-  - `Configuration { config_dir: PathBuf, manifest: Manifest, listener_ports: Vec<u16> }`.
+The client side:
 
-- External deps
-  - http types and the project's manifest parsing code.
+- requests host receive/transmit timestamps
+- estimates RTT and offset
+- calls `clock_settime(CLOCK_REALTIME, ...)`
 
-- Lifecycle
-  - `Configuration::load()` validates each manifest section and exposes helper getters (`api_port()`, `egress_proxy_uri()`, `aux_api_port()`, etc.).
+This is operational synchronization, not a trusted time source.
 
-- Common errors
-  - Malformed URIs in egress endpoints, or an empty `egress.allow` when integrations need outbound access.
+## VSOCK ports used by Odyn
 
-- Extensions
-  - Support alternate config sources (environment variables, remote config service) or richer validation rules.
+| Port | Purpose |
+|------|---------|
+| `17000` | status stream |
+| `17001` | application log stream |
+| `17003` | clock-sync requests |
 
----
+Ingress uses configured listen ports rather than a single fixed VSOCK port.
 
-### 4.3 `api.rs`
+Host-side egress uses port `17002`, but that listener is owned by `enclaver-run`, not Odyn.
 
-- Responsibilities
-  - Start a small internal HTTP server used for attestation endpoints, encryption operations, health checks, and light management.
-  - Provide handlers that optionally use the NSM to produce attestation material.
-  - Provide ECDH-based encryption/decryption using P-384 key pairs for secure client-enclave communication.
-  - Optionally wire `NovaKmsProxy` (`kms_integration`) and `S3Proxy` (`storage.s3`) into API routes.
-  - Enforce KMS dependency for `storage.s3.encryption.mode=kms` and surface startup-time configuration errors early.
+## Common failure modes
 
-- Key data structures
-  - `ApiService { task: Option<JoinHandle<()>> }` and the `ApiHandler` implementing routes.
+- missing or invalid manifest: fatal startup failure
+- loopback/RNG bootstrap failure: fatal startup failure
+- S3 enabled without reachable IMDS: API startup failure
+- registry-backed KMS without Helios `18545`: startup failure
+- ingress bind failure: startup failure
+- child process spawn failure: fatal status reported to host
 
-- External deps
-  - The project's http server util, the NSM attestation helper, `EncryptionKey` for P-384 ECDH, and route/handler types.
-  - `enclaver::integrations::nova_kms::NovaKmsProxy` for `/v1/kms/*` and `/v1/app-wallet/*`.
-  - `enclaver::integrations::s3::S3Proxy` and `aws_sdk_s3` for `/v1/s3/*`.
+## Related files
 
-- Lifecycle
-  - `start()` binds the API listen port and spawns the server task.
-  - If `kms_integration` is configured, `start()` constructs `NovaKmsProxy`.
-  - Manifest validation enforces: if registry mode is configured (`kms_app_id` + `nova_app_registry`),
-    then `helios_rpc.enabled=true` and `helios_rpc.chains` must include
-    `local_rpc_port=18545` for registry discovery.
-  - `/v1/kms/*` keeps registry-backed authz; app-wallet routes run in enclave-local mode and are initialized from Nova KMS KV state.
-  - If `storage.s3` is configured, `start()` constructs `S3Proxy` and loads AWS config through IMDS via egress proxy.
-  - If `storage.s3.encryption.mode=kms`, `start()` requires `kms_integration.enabled=true`; otherwise startup fails.
-  - `stop()` aborts the API task.
-
-- Common errors
-  - Bind failures or missing attestation artifacts.
-  - Missing egress proxy / IMDS access when S3 is configured.
-  - `storage.s3.encryption.mode=kms` without KMS integration enabled.
-
-- Extensions
-  - Add auth middleware (JWT), role-based access, or metrics.
-
----
-
-### 4.4 `aux_api.rs`
-
-- Responsibilities
-  - Start an auxiliary HTTP API that proxies specific endpoints to the internal API service.
-  - Provide controlled external access to attestation and Ethereum address endpoints.
-  - Sanitize incoming requests to prevent external callers from overriding internal defaults.
-
-- Key data structures
-  - `AuxApiService { task: Option<JoinHandle<()>> }` — service wrapper managing the aux API server task.
-  - `AuxApiHandler` (from `enclaver::aux_api`) — implements the proxy logic and request sanitization.
-
-- External deps
-  - `enclaver::aux_api::AuxApiHandler` for HTTP handling and proxying.
-  - `enclaver::http_util::HttpServer` for server infrastructure.
-  - hyper, http-body-util for HTTP client and proxying.
-
-- Lifecycle / behaviors
-  - `start()` requires `api` to be configured. If `aux_api.listen_port` is specified, it uses that port; otherwise it defaults to `api_port + 1`.
-  - Binds the aux API listen port and spawns a server task that handles incoming requests.
-  - Routes supported:
-    - `GET /v1/eth/address` — proxies to internal API to retrieve the enclave's Ethereum address.
-    - `POST /v1/attestation` — proxies to internal API with sanitized request body (removes `public_key` and `user_data` fields to prevent external override of defaults).
-    - `GET /v1/encryption/public_key` — proxies to internal API to retrieve the enclave's P-384 encryption public key (in DER and PEM formats).
-  - `stop()` aborts the server task and awaits completion.
-
-- Common errors
-  - Bind failures if the port is already in use.
-  - Internal API unavailable (returns 503 Service Unavailable with error JSON).
-  - Invalid JSON in attestation requests (returns 400 Bad Request).
-
-- Extensions
-  - Add authentication/authorization middleware.
-  - Implement rate limiting per client.
-  - Add additional proxy endpoints as needed.
-  - Request/response logging and metrics.
-
----
-
-### 4.5 `console.rs`
-
-- Responsibilities
-  - Capture the entrypoint's stdout/stderr into an in-memory ring buffer (ByteLog) and serve that buffer over VSOCK.
-  - Provide AppStatus: a JSON status stream reporting runtime state and exit reasons.
-
-- Key data structures
-  - `ByteLog` (wraps a circbuf – ring buffer), `LogServicer`, `LogReader`, `AppStatus` (shared state with exit code/reason), and a `WatchSet` for notifying streaming clients.
-
-- External deps
-  - `tokio-vsock` for VSOCK, `circbuf` for ring buffer, `nix` for dup2 and FD ops, and tokio sync primitives.
-
-- Lifecycle / behaviors
-  - `with_stdio_redirect()` is used early to create a pipe and dup2 stdout/stderr to its write end. A reader appends to `ByteLog`.
-  - `AppLog::start_serving(port)` and `AppStatus::start_serving(port)` bind VSOCK listeners and stream buffered + live updates to connecting clients. The ring buffer drops oldest bytes on overflow.
-
-- Common errors
-  - High-volume logs drop older bytes. Doing dup2 late or twice can cause missing logs or duplication.
-
-- Extensions
-  - Persist buffer spillover to disk, ship logs to a remote collector, or expose structured logs.
-
----
-
-### 4.6 `ingress.rs`
-
-- Responsibilities
-  - Bind TCP listeners configured in the manifest and spawn `EnclaveProxy` workers to accept and proxy inbound connections.
-
-- Key data structures
-  - `IngressService { proxies: Vec<JoinHandle<()>>, shutdown: watch::Sender<()> }` that manages per-listener serve tasks.
-
-- External deps
-  - The `enclaver::proxy::ingress::EnclaveProxy` implementation and tokio networking.
-
-- Lifecycle
-  - On `start()`, iterate listener ports, bind TCP sockets and spawn accept/serve loops that hand accepted sockets to `EnclaveProxy` workers. `stop()` signals shutdown and awaits worker completion.
-
-- Common errors
-  - Port bind failures (in use or permission).
-
-- Extensions
-  - HTTP-aware reverse-proxying, rate limits, or protocol routing.
-
----
-
-### 4.7 `egress.rs`
-
-- Responsibilities
-  - Provide a local HTTP egress proxy (if enabled) enforcing an allow list and optionally mapping endpoints to other upstreams.
-  - Set process-level proxy environment variables (`http_proxy`, `https_proxy`, `no_proxy`) so SDKs and libraries route through the local proxy.
-
-- Key data structures
-  - `EgressService { proxy: Option<JoinHandle<()>> }`, and `EgressPolicy` (representing allow lists and host-match rules).
-
-- External deps
-  - `enclaver::proxy::egress_http::EnclaveHttpProxy` and `enclaver::policy::EgressPolicy`.
-
-- Lifecycle
-  - `start()` constructs the policy from the manifest, binds the proxy port, sets global env vars, and spawns the proxy serve loop. `stop()` aborts the proxy and may clear env vars.
-
-- Common errors
-  - Environment vars are global and can race; forgetting to include IMDS/AWS endpoints in allow list breaks S3 and AWS SDK flows.
-
-- Extensions
-  - Richer rule syntax (CIDR), request/response logs, authentication to upstreams, or caching.
-
----
-
-### 4.8 `launcher.rs`
-
-- Responsibilities
-  - Launch the configured entrypoint process with the required uid/gid and supervise its lifetime.
-  - Reap the sentinel and all descendants using POSIX `waitpid` loops to avoid zombie processes.
-  - Provide blocking `run_child()` and an async-friendly `start_child()` wrapper that runs the blocking logic in a `spawn_blocking` thread.
-
-- Key data structures
-  - `Credentials { uid: u32, gid: u32 }` and `ExitStatus { Exited(i32) | Signaled(Signal) }`.
-
-- External deps
-  - `nix` (waitpid, signals), `std::process::Command`, and `tokio::task::spawn_blocking`.
-
-- Lifecycle
-  - `run_child()` spawns child with requested credentials and process group, then calls `reap(sentinel_pid)` to block until sentinel exit; `start_child()` uses `spawn_blocking`.
-
-- Common errors
-  - Spawn failures (permissions, missing binary), `waitpid` errors. Must run off the reactor to avoid blocking async runtime.
-
-- Extensions
-  - Integrate sandboxing (cgroups), signal forwarding policy, or enhanced resource accounting.
-
----
-
-### 4.9 `enclave.rs`
-
-- Responsibilities
-  - Low-level bootstrap: bring up the loopback (`lo`) interface and seed the kernel RNG from the Nitro Secure Module (NSM).
-
-- Key data structures
-  - Lightweight: exposes functions like `bootstrap(nsm: &Nsm)`, `lo_up()`, `seed_rng(nsm: &Nsm)`.
-
-- External deps
-  - `rtnetlink` for interface control and `enclaver::nsm::Nsm` for entropy.
-
-- Lifecycle
-  - Called early in startup to ensure the loopback interface is up and that `/dev/random` has sufficient entropy.
-
-- Common errors
-  - Assumptions about interface indices, NSM unavailability or insufficient entropy.
-
-- Extensions
-  - Discover `lo` by name instead of index, retry strategies, and platform-specific fallbacks.
-
----
-
-## 5. Startup lifecycle (condensed)
-
-1. `main.rs` parses CLI and loads configuration.
-2. Optionally `enclave::bootstrap()` (loopback up, seed RNG).
-3. Start `EgressService` (if enabled) — sets global proxy env vars.
-4. Start `ApiService` (if configured) — this includes optional Nova KMS integration and S3 wiring.
-5. Start `AuxApiService` (if configured) — requires API service to be running.
-6. Start `AppStatus` / `AppLog` (make vsock listeners available early).
-7. Start `IngressService` (bind listeners and spawn proxies).
-8. Launch entrypoint with `launcher::start_child()` and monitor sentinel.
-9. On entrypoint exit, update status, stop services in reverse order, and exit with sentinel's `ExitStatus`.
-
----
-
-## 6. Common pitfalls & notes
-
-- Global env vars (`http_proxy`, `https_proxy`, `no_proxy`) are process-global and can race if changed at runtime. Start egress early and set them once.
-- The `ByteLog` ring buffer is a fixed size; heavy logging drops old content.
-- Nova KMS and S3 integrations require correct outbound egress policy; include IMDS and required upstream domains/IPs.
-- Running dup2 for stdout/stderr is process-global; do this deterministically at startup.
-
----
-
-## 7. Troubleshooting checklist
-
-- No logs on host: confirm `APP_LOG_PORT` bound and that dup2/stdout redirection occurred.
-- KMS errors: verify `kms_integration` fields, Helios registry chain config, and egress allow rules.
-- Ingress failures: verify port availability and permissions.
-- Cross-compilation/build issues: use the repository scripts and `cross` as required by the build scripts.
-
----
-
-## 8. Time sequence diagram (mermaid)
-
-Paste this into a mermaid-capable renderer (GitHub/GitLab markdown with mermaid enabled, or other mermaid viewers):
-
-```mermaid
-sequenceDiagram
-  participant Host
-  participant Odyn as odyn (enclave)
-  participant Entrypoint
-
-  Host->>Odyn: start enclave / provide config
-  Odyn->>Odyn: load Configuration (manifest)
-  alt bootstrap enabled
-    Odyn->>Odyn: enclave::bootstrap (lo up, seed RNG)
-  end
-  Odyn->>Odyn: start EgressService (if configured)
-  Odyn->>Odyn: start ApiService (if configured)
-  Odyn->>Odyn: start AuxApiService (if configured)
-  Odyn->>Host: open APP_LOG_PORT / STATUS_PORT (vsock)
-  Odyn->>Odyn: start IngressService (bind listeners)
-  Odyn->>Entrypoint: launcher::start_child(entrypoint)
-  Entrypoint-->>Odyn: stdout/stderr (captured into ByteLog)
-  Odyn->>Host: stream logs & status via vsock
-  note right of Odyn: services run (egress, api, aux_api, ingress)
-  Entrypoint-->>Odyn: exit (code)
-  Odyn->>Odyn: update AppStatus (exited)
-  Odyn->>Odyn: stop services (reverse order)
-  Odyn-->>Host: final status (exited)
-```
-
----
-
-## 9. Where code lives
-
-- `enclaver/src/bin/odyn/main.rs` — CLI and global lifecycle.
-- `enclaver/src/bin/odyn/config.rs` — manifest loading & validation.
-- `enclaver/src/bin/odyn/console.rs` — ByteLog, AppLog, AppStatus & VSOCK bindings.
-- `enclaver/src/bin/odyn/egress.rs` — egress proxy wiring.
-- `enclaver/src/bin/odyn/ingress.rs` — listener binds and EnclaveProxy workers.
-- `enclaver/src/bin/odyn/launcher.rs` — spawn/reap entrypoint.
-- `enclaver/src/bin/odyn/enclave.rs` — bootstrap helpers (loopback, RNG seed).
-- `enclaver/src/bin/odyn/api.rs` — internal API server.
-- `enclaver/src/bin/odyn/aux_api.rs` — auxiliary API service (proxies to internal API).
-- `enclaver/src/aux_api.rs` — aux API handler implementation (routes and sanitization logic).
+- `enclaver/src/bin/odyn/main.rs`
+- `enclaver/src/bin/odyn/config.rs`
+- `enclaver/src/bin/odyn/clock_sync.rs`
+- `enclaver/src/bin/odyn/helios_rpc.rs`
+- `enclaver/src/bin/odyn/api.rs`
+- `enclaver/src/bin/odyn/aux_api.rs`
+- `enclaver/src/bin/odyn/egress.rs`
+- `enclaver/src/bin/odyn/ingress.rs`
+- `enclaver/src/bin/odyn/console.rs`
+- `enclaver/src/bin/odyn/launcher.rs`

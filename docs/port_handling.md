@@ -55,7 +55,8 @@ Application services are typically localhost listeners inside enclave:
 
 - App service: usually your app port (example `8080`)
 - Internal API: `api.listen_port` (example `18000`)
-- Aux API: `aux_api.listen_port` (default `api_port + 1`, often `18001`)
+- Aux API: `aux_api.listen_port` if set, otherwise `api.listen_port + 1`
+  - Current implementation detail: if `api` is enabled, Aux API also starts by default on that derived port when it fits in `u16`
 - Helios RPC: `helios_rpc.chains[].local_rpc_port` (per-chain port, often `18545` for Nova registry discovery)
 
 These are not externally reachable by default. They become reachable only if:

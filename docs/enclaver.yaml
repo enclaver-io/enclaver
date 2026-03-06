@@ -118,8 +118,10 @@ api:
   listen_port: 18000         # [ODYN] Required. TCP port (u16) for internal API server.
                              # ODYN: binds ApiService providing /v1/attestation, /v1/eth/*, etc.
 
-# Optional: auxiliary API for restricted external access (e.g., sidecars)
-# If not specified, defaults to api.listen_port + 1 when api is configured.
+# Optional: auxiliary API port override for restricted external access (e.g., sidecars)
+# Current implementation detail: if `api` is configured, Aux API also starts by default.
+# If not specified, it defaults to api.listen_port + 1 when that value fits in `u16`.
+# There is no separate Aux API enabled/disabled flag today.
 aux_api:
   listen_port: 18001         # [ODYN] Optional. TCP port (u16) for auxiliary API server.
                              # ODYN: binds AuxApiService with sanitized attestation endpoint.
@@ -159,6 +161,21 @@ storage:
       key_version: "v1"      # [ODYN] Version label included in metadata/derivation path.
       accept_plaintext: true # [ODYN] Allow reading plaintext objects when present.
                              # Note: mode=kms requires kms_integration.enabled=true.
+
+# Optional: automatic clock synchronization between host and enclave
+# Nitro Enclaves do not automatically synchronize their system clock with the host.
+# Over time, the enclave clock drifts (~7 seconds per week). This can cause failures
+# in JWT validation, TLS certificate checks, and cryptographic protocols.
+# Enclaver enables clock sync by default, even if this block is omitted.
+# Use this block only to disable clock sync or adjust the sync interval.
+# Omit the block entirely to keep defaults, or write `clock_sync: {}` to keep
+# defaults while documenting the setting explicitly.
+clock_sync:
+  # enabled: false           # [ODYN + SLEEVE] Optional. Set to false to disable automatic clock synchronization.
+  interval_secs: 300         # [ODYN] Optional. Sync interval in seconds (default: 300).
+                             # ODYN: connects to host time server via vsock, estimates RTT/offset,
+                             # and sets system clock.
+                             # SLEEVE: starts a vsock time server on the host side.
 
 # ============================================================================
 # Summary: Parameter -> Module Mapping
@@ -204,5 +221,7 @@ storage:
 # | storage.s3.encryption.aad_mode | ODYN | AAD binding mode for ciphertext metadata     |
 # | storage.s3.encryption.key_version | ODYN | Encryption key version label              |
 # | storage.s3.encryption.accept_plaintext | ODYN | Allow plaintext reads when present      |
+# | clock_sync.enabled     | ODYN+SLEEVE | Disable clock sync when set to false (default: enabled) |
+# | clock_sync.interval_secs | ODYN      | Override clock sync interval in seconds (default 300) |
 #
 # ============================================================================

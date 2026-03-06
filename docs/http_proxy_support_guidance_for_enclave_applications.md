@@ -5,7 +5,10 @@
 - Applications run **inside an enclave** (e.g., SGX / TDX / Nitro Enclaves)
 - No direct outbound network access is available
 - All external HTTP/HTTPS traffic **must go through a proxy**
-- Proxy configuration is provided via environment variables:
+- In Enclaver, Odyn sets both lowercase and uppercase proxy environment variables:
+  - `http_proxy`
+  - `https_proxy`
+  - `no_proxy`
   - `HTTP_PROXY`
   - `HTTPS_PROXY`
   - `NO_PROXY`
@@ -179,7 +182,7 @@ Transport: &http.Transport{
 curl https://ifconfig.me
 ```
 
-Or a controlled internal endpoint reachable only via the proxy.
+Or an internal endpoint that is reachable only through the proxy and allowed by your egress policy.
 
 ---
 
@@ -190,4 +193,3 @@ Or a controlled internal endpoint reachable only via the proxy.
 > traffic through a proxy.
 >
 > Clients that silently ignore proxy environment variables **MUST NOT be used**.
-

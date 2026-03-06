@@ -60,6 +60,9 @@ When using `enclaver run`, the resource allocation is determined by:
 2. **Manifest defaults** (the `defaults` section in `enclaver.yaml`).
 3. **Hardcoded defaults** (CPU: 2, Memory: 4096 MiB).
 
+If neither `-f` nor `image` is provided, `enclaver run` falls back to `enclaver.yaml` in the current directory.
+Providing both `-f` and `image` is an error.
+
 #### Examples
 
 **Run using manifest lookup:**

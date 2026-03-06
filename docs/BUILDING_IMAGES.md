@@ -1,164 +1,156 @@
-## Building the base images (nitro-cli/sleeve, odyn, sleeve)
+# Building Enclaver Images
 
-This document shows the exact local steps used by the repository to build the development base images used by Enclaver: the `odyn` supervisor image and the `sleeve` dev image. It also explains how the release Dockerfiles are intended to be used in a multi-stage pipeline.
+This document covers the image-building paths that exist in the repository today:
 
-Prerequisites
-- Docker with BuildKit / buildx enabled (or an alternative builder that supports multi-arch and build stages).
-- `cross` installed (the helper script uses cross to build Rust artifacts for musl targets).
-- A C compiler/linker on the host (required to install `cross`).
+- local developer images via `scripts/build-docker-images.sh`
+- release-style images via `dockerfiles/*-release.dockerfile`
+- optional Nitro CLI image rebuilds
+
+## Prerequisites
+
+- Docker with `buildx`
+- Rust toolchain
+- `cross` for musl cross-compilation
+
+Typical setup:
 
 ```bash
-# Install Rust toolchain
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source $HOME/.cargo/env
-
-# Install build-essential (provides C compiler needed by cargo install)
-sudo apt-get update
-sudo apt-get install -y build-essential
-
-# Install cross for cross-compilation
 cargo install cross
-
-# Install Docker (if not already installed)
-./scripts/install-docker.sh
+docker buildx create --use
 ```
 
-Quick (one-command) local build
+If `cargo install cross` fails because `cc` is missing, install a C toolchain first.
 
-Run this from the repository root to build debug images (default):
+## One-command local builds
+
+From the repository root:
 
 ```bash
 ./scripts/build-docker-images.sh
 ```
 
-Or build optimized release images:
+This default mode:
+
+- detects the host architecture
+- builds `odyn` and `enclaver-run` for the matching musl target
+- uses `dockerfiles/odyn-dev.dockerfile`
+- uses `dockerfiles/sleeve-dev.dockerfile`
+- produces:
+  - `odyn-dev:latest`
+  - `sleeve-dev:latest`
+
+Release-style local tags:
 
 ```bash
 ./scripts/build-docker-images.sh --release
 ```
 
-For help and available options:
+This produces:
 
-```bash
-./scripts/build-docker-images.sh --help
-```
+- `odyn:latest`
+- `sleeve:latest`
 
-What the script does
-- Requires `cross` to be installed and Docker to be running.
-- Compiles `odyn` and `enclaver-run` for your machine architecture using musl targets.
-  - Debug mode (default): faster compilation, larger binaries with debug symbols.
-  - Release mode (`--release`): optimized binaries, slower compilation.
-- Creates a temporary docker build context containing the compiled binaries.
-- Builds the dev images using these Dockerfiles:
-  - `dockerfiles/odyn-dev.dockerfile`
-  - `dockerfiles/sleeve-dev.dockerfile`
+## What the helper script actually does
 
-After running the helper, you will have these images locally:
+`scripts/build-docker-images.sh`:
 
-- `odyn-dev:latest` — development odyn image that contains the compiled `odyn` binary at `/usr/local/bin/odyn`.
-- `sleeve:latest` — development sleeve image that contains `enclaver-run` as the container entrypoint and uses the upstream `nitro-cli` image as the source for runtime libs and `/usr/bin/nitro-cli`.
+1. maps host architecture to:
+   - `x86_64` -> `x86_64-unknown-linux-musl`
+   - `aarch64` -> `aarch64-unknown-linux-musl`
+2. runs:
+   ```bash
+   cross build --target <target> --features run_enclave,odyn [--release]
+   ```
+3. copies `odyn` and `enclaver-run` into a temporary Docker build context
+4. builds Odyn and Sleeve images from the selected Dockerfiles
 
-Manual steps (if you want to run each step yourself)
+## Manual developer-image build
 
-1) Build the Rust binaries with `cross` (example for x86_64, debug mode):
+Example for `x86_64` debug builds:
 
 ```bash
 cd enclaver
 cross build --target x86_64-unknown-linux-musl --features run_enclave,odyn
+
+tmpdir="$(mktemp -d)"
+cp target/x86_64-unknown-linux-musl/debug/odyn "$tmpdir/"
+docker buildx build -f ../dockerfiles/odyn-dev.dockerfile -t odyn-dev:latest "$tmpdir"
+
+cp target/x86_64-unknown-linux-musl/debug/enclaver-run "$tmpdir/"
+docker buildx build -f ../dockerfiles/sleeve-dev.dockerfile -t sleeve-dev:latest "$tmpdir"
+
+rm -rf "$tmpdir"
 ```
 
-For release mode:
+For release binaries, switch `debug` to `release` and add `--release` to `cross build`.
 
-```bash
-cross build --target x86_64-unknown-linux-musl --features run_enclave,odyn --release
+## Release Dockerfiles
+
+The release Dockerfiles are designed around the layout used by `.github/workflows/release.yaml`.
+
+Expected artifact layout before building images:
+
+```text
+./amd64/odyn
+./amd64/enclaver-run
+./arm64/odyn
+./arm64/enclaver-run
 ```
 
-2) Build `odyn-dev` (create a small context and build):
-
-Debug binaries:
+Local release-image build example:
 
 ```bash
-docker_build_dir=$(mktemp -d)
-cp ./target/x86_64-unknown-linux-musl/debug/odyn "${docker_build_dir}/"
 docker buildx build \
-  -f dockerfiles/odyn-dev.dockerfile \
-  -t odyn-dev:latest \
-  "${docker_build_dir}"
-rm -rf "${docker_build_dir}"
-```
+  --file dockerfiles/odyn-release.dockerfile \
+  --build-context artifacts=. \
+  --platform linux/amd64,linux/arm64 \
+  -t odyn:local .
 
-Release binaries:
-
-```bash
-docker_build_dir=$(mktemp -d)
-cp ./target/x86_64-unknown-linux-musl/release/odyn "${docker_build_dir}/"
 docker buildx build \
-  -f dockerfiles/odyn-dev.dockerfile \
-  -t odyn-dev:latest \
-  "${docker_build_dir}"
-rm -rf "${docker_build_dir}"
+  --file dockerfiles/sleeve-release.dockerfile \
+  --build-context artifacts=. \
+  --platform linux/amd64,linux/arm64 \
+  -t sleeve:local .
 ```
 
-3) Build `sleeve` (dev):
+How those Dockerfiles work:
 
-Debug binaries:
+- `odyn-release.dockerfile` copies `${TARGETARCH}/odyn` from the `artifacts` build context
+- `sleeve-release.dockerfile` copies `${TARGETARCH}/enclaver-run` from the `artifacts` build context
+- `sleeve-release.dockerfile` also copies `nitro-cli` and required runtime libraries from the default Nitro CLI image
+
+## Nitro CLI image
+
+This repository includes `dockerfiles/nitro-cli.dockerfile` and `scripts/build-and-publish-nitro-cli.sh`.
+
+Build it locally:
 
 ```bash
-docker_build_dir=$(mktemp -d)
-cp ./target/x86_64-unknown-linux-musl/debug/enclaver-run "${docker_build_dir}/"
-docker buildx build \
-  -f dockerfiles/sleeve-dev.dockerfile \
-  -t sleeve:latest \
-  "${docker_build_dir}"
-rm -rf "${docker_build_dir}"
+docker buildx build -f dockerfiles/nitro-cli.dockerfile -t nitro-cli:latest .
 ```
 
-Release binaries:
+Or use the helper script:
 
 ```bash
-docker_build_dir=$(mktemp -d)
-cp ./target/x86_64-unknown-linux-musl/release/enclaver-run "${docker_build_dir}/"
-docker buildx build \
-  -f dockerfiles/sleeve-dev.dockerfile \
-  -t sleeve:latest \
-  "${docker_build_dir}"
-rm -rf "${docker_build_dir}"
+./scripts/build-and-publish-nitro-cli.sh --tag latest
 ```
 
-Notes about release Dockerfiles
-- The release Dockerfiles are written for multi-stage CI builds where an `artifacts` stage provides `${TARGETARCH}/odyn` and `${TARGETARCH}/enclaver-run`.
-  - `dockerfiles/sleeve-release.dockerfile` uses `FROM public.ecr.aws/.../nitro-cli:latest AS nitro_cli` to copy necessary runtime libraries and `/usr/bin/nitro-cli` into the final image stage. It then expects an `artifacts` stage with `${TARGETARCH}/enclaver-run`.
-  - `dockerfiles/odyn-release.dockerfile` similarly expects `${TARGETARCH}/odyn` from the `artifacts` stage.
+Enclaver does not automatically switch to that rebuilt image. If you want to consume it by default, update the Nitro CLI source used by your build flow.
 
-If you want to produce release images locally, you need to create a multi-stage build that defines the `artifacts` stage (for example, using a small Dockerfile or `docker buildx build` with an appropriate context and stages).
+## Troubleshooting
 
-About nitro-cli
-- The `nitro-cli` image is NOT included in this repository. The runtime Dockerfiles rely on the public image:
+- Missing `cross`: `cargo install cross`
+- Missing `buildx`: `docker buildx create --use`
+- Missing `protoc` during cross builds: provide `PROTOC` or use a build image that includes it
+- On macOS, remember these images target Linux musl; build and runtime validation should happen on Linux
 
-```
-public.ecr.aws/s2t1d4c6/enclaver-io/nitro-cli:latest
-```
+## Related files
 
-If you need to rebuild nitro-cli from source, obtain the upstream sources and build/publish that image separately.
-
-Tips & troubleshooting
-- **Missing `cross`**: Install it with `cargo install cross`. If that fails with "linker `cc` not found", install `build-essential` first: `sudo apt-get install -y build-essential`.
-
-- **Missing `protoc`** (prost-build errors): The `cross` build images usually include `protoc`, but if you encounter errors about missing protobuf compiler:
-  - Place a prebuilt `protoc` binary under `enclaver/build/protoc/protoc` and set `PROTOC=/project/enclaver/build/protoc/protoc` before running `cross`.
-  - Or use a custom cross image that has `protoc` pre-installed.
-
-- **Docker buildx failures**: Ensure BuildKit is enabled. On Docker Desktop, enable experimental features or create a buildx builder:
-
-```bash
-docker buildx create --use
-```
-
-- **Build mode selection**:
-  - Use `--debug` (or omit flag) for faster compilation with debug symbols (useful during development).
-  - Use `--release` for optimized, smaller binaries (slower to compile, recommended for production-like testing).
-
-- On macOS with Apple Silicon, ensure you build for the correct `--platform` or run the helper script from an x86_64 runner if you need x86 images.
-
-Questions or next steps
-- I can add CI-ready multi-arch Docker build examples or a release `Makefile` if you'd like.
+- `scripts/build-docker-images.sh`
+- `scripts/build-and-publish-nitro-cli.sh`
+- `dockerfiles/odyn-dev.dockerfile`
+- `dockerfiles/odyn-release.dockerfile`
+- `dockerfiles/sleeve-dev.dockerfile`
+- `dockerfiles/sleeve-release.dockerfile`
+- `dockerfiles/nitro-cli.dockerfile`
+- `.github/workflows/release.yaml`
