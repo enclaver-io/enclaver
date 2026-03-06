@@ -402,7 +402,10 @@ impl Enclave {
 #[cfg(feature = "vsock")]
 async fn handle_time_request(stream: tokio_vsock::VsockStream) -> Result<()> {
     let (reader, mut writer) = tokio::io::split(stream);
-    let mut reader = FramedRead::new(reader, LinesCodec::new_with_max_length(CLOCK_SYNC_MAX_REQUEST_LEN));
+    let mut reader = FramedRead::new(
+        reader,
+        LinesCodec::new_with_max_length(CLOCK_SYNC_MAX_REQUEST_LEN),
+    );
     let line = tokio::time::timeout(CLOCK_SYNC_REQUEST_TIMEOUT, reader.next())
         .await
         .map_err(|_| anyhow!("clock sync request timed out"))?
@@ -417,10 +420,7 @@ async fn handle_time_request(stream: tokio_vsock::VsockStream) -> Result<()> {
     let server_transmit = current_unix_timestamp()?;
     let mut resp_line = format!(
         "{{\"server_receive_secs\":{},\"server_receive_nanos\":{},\"server_transmit_secs\":{},\"server_transmit_nanos\":{}}}",
-        server_receive.0,
-        server_receive.1,
-        server_transmit.0,
-        server_transmit.1,
+        server_receive.0, server_receive.1, server_transmit.0, server_transmit.1,
     );
     resp_line.push('\n');
     writer.write_all(resp_line.as_bytes()).await?;
