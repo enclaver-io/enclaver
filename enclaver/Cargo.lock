@@ -3223,7 +3223,7 @@ dependencies = [
  "ethabi",
  "form_urlencoded",
  "fuse_mt",
- "fuser 0.17.0",
+ "fuser",
  "futures",
  "futures-util",
  "helios",
@@ -3649,7 +3649,7 @@ version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a9f59af312f6f40a721dafd2662f4bb33eacc90d3a2e1dfebc4536aa732a79be"
 dependencies = [
- "fuser 0.16.0",
+ "fuser",
  "libc",
  "log",
  "threadpool",
@@ -3666,26 +3666,6 @@ dependencies = [
  "memchr",
  "nix 0.29.0",
  "page_size",
- "smallvec",
- "zerocopy",
-]
-
-[[package]]
-name = "fuser"
-version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80a5eca878900c2e39e9e52fd797954b7fc39eeefc8558257114bfea6a698fcf"
-dependencies = [
- "bitflags 2.9.4",
- "libc",
- "log",
- "memchr",
- "nix 0.30.1",
- "num_enum",
- "page_size",
- "parking_lot 0.12.4",
- "pkg-config",
- "ref-cast",
  "smallvec",
  "zerocopy",
 ]
@@ -5881,15 +5861,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "memoffset"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
-dependencies = [
- "autocfg",
-]
-
-[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6171,19 +6142,6 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
-]
-
-[[package]]
-name = "nix"
-version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
-dependencies = [
- "bitflags 2.9.4",
- "cfg-if",
- "cfg_aliases",
- "libc",
- "memoffset 0.9.1",
 ]
 
 [[package]]

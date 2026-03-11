@@ -131,3 +131,5 @@ Existing symlinks are surfaced in metadata and directory listings, but explicit
 - optional mounts are skipped if the matching runtime bind is absent
 - required mounts fail startup if the runtime bind or host proxy is unavailable
 - read-only mounts are enforced in both the host proxy and the enclave mount
+- host-side prerequisites are `mkfs.ext4`, `mount`, and `umount`
+- Linux validation on a Nitro-capable host can be exercised with `scripts/hostfs-smoke-test.sh`

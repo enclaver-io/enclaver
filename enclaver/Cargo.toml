@@ -83,7 +83,7 @@ hkdf = "0.12"
 reqwest = { version = "0.12.23", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
 ethabi = "18.0.0"
 zeroize = "1.8"
-fuser = { version = "0.17.0", default-features = false, optional = true }
+fuser = { version = "0.16.0", default-features = false, optional = true }
 fuse_mt = { version = "0.6.3", default-features = false, optional = true }
 
 # Helios light client for trustless Ethereum RPC (optional, only for odyn)

@@ -31,13 +31,14 @@ The service startup order in `main.rs` is:
 1. load manifest via `Configuration::load()`
 2. initialize NSM handle
 3. bootstrap loopback and RNG unless `--no-bootstrap`
-4. start egress service
-5. start clock-sync service
-6. start Helios background services
-7. if registry-backed KMS is enabled, wait for Helios readiness on port `18545`
-8. start Internal API and Aux API together
-9. start ingress listeners
-10. launch the user entrypoint
+4. start host-backed mount service for `storage.mounts[]`
+5. start egress service
+6. start clock-sync service
+7. start Helios background services
+8. if registry-backed KMS is enabled, wait for Helios readiness on port `18545`
+9. start Internal API and Aux API together
+10. start ingress listeners
+11. launch the user entrypoint
 
 Shutdown order is the reverse:
 
@@ -61,6 +62,15 @@ Shutdown order is the reverse:
   - `no_proxy`
   - `NO_PROXY`
 - `NO_PROXY` and `no_proxy` are currently `localhost,127.0.0.1`
+
+### Host-backed mounts
+
+- Odyn mounts host-backed directories before egress, API startup, and app launch
+- each mount uses a deterministic hostfs vsock port derived from its manifest order
+- required mounts fail startup if the host proxy is unavailable or the FUSE mount cannot be created
+- optional mounts log a warning and are skipped
+- mount paths are created automatically if missing
+- file data, directory metadata, and capacity come from the hostfs proxy rather than enclave-local storage
 
 ### Clock sync
 
@@ -152,6 +162,7 @@ This is operational synchronization, not a trusted time source.
 | `17000` | status stream |
 | `17001` | application log stream |
 | `17003` | clock-sync requests |
+| `17100-17199` | host-backed mount traffic |
 
 Ingress uses configured listen ports rather than a single fixed VSOCK port.
 
@@ -163,6 +174,7 @@ Host-side egress uses port `17002`, but that listener is owned by `enclaver-run`
 - loopback/RNG bootstrap failure: fatal startup failure
 - S3 enabled without reachable IMDS: API startup failure
 - registry-backed KMS without Helios `18545`: startup failure
+- required host-backed mount unavailable: startup failure
 - ingress bind failure: startup failure
 - child process spawn failure: fatal status reported to host
 
@@ -171,6 +183,7 @@ Host-side egress uses port `17002`, but that listener is owned by `enclaver-run`
 - `enclaver/src/bin/odyn/main.rs`
 - `enclaver/src/bin/odyn/config.rs`
 - `enclaver/src/bin/odyn/clock_sync.rs`
+- `enclaver/src/bin/odyn/fs_mount.rs`
 - `enclaver/src/bin/odyn/helios_rpc.rs`
 - `enclaver/src/bin/odyn/api.rs`
 - `enclaver/src/bin/odyn/aux_api.rs`

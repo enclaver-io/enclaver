@@ -42,6 +42,7 @@ See [docs/http_proxy_support_guidance_for_enclave_applications.md](docs/http_pro
 
 ### Usage
 - [Enclaver CLI Reference](docs/enclaver-cli.md) — CLI commands, flags, and runtime override behavior
+- [Host-Backed Persistent Mounts](docs/host_backed_mounts_design.md) — Persistent enclave directories backed by per-mount loopback images on the parent instance
 - [Helios RPC Integration](docs/helios_rpc.md) — Trustless Ethereum / OP Stack light-client RPC inside the enclave
 - [Port Handling](docs/port_handling.md) — End-to-end port flow across build, sleeve, odyn, and ingress
 

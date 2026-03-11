@@ -41,6 +41,7 @@ The codebase has three execution domains:
   - manifest schema
   - validation rules
   - effective defaults such as default-on `clock_sync`
+  - `storage.mounts[]` validation for host-backed persistent directories
 
 ### Host/runtime path
 
@@ -49,15 +50,31 @@ The codebase has three execution domains:
   - mounts `/dev/nitro_enclaves`
   - sets `privileged: true`
   - wires `-p/--publish` host port mappings
+  - prepares loopback-backed persistent mount images and bind-mounts them into Sleeve
+
+- `enclaver/src/hostfs.rs`
+  - resolves `--mount` runtime bindings against `storage.mounts[]`
+  - creates or reuses fixed-size loopback images
+  - mounts them on the parent instance and exposes bind mounts to Sleeve
 
 - `enclaver/src/run.rs`
   - runtime orchestrator inside the Sleeve container
   - starts host-side egress proxy
+  - starts host-side hostfs proxies
   - starts host-side clock-sync server
   - launches the enclave with `nitro-cli`
   - attaches debug console if requested
   - streams status/logs
   - starts host-side ingress proxies
+
+- `enclaver/src/fs_protocol.rs`
+  - request/response protocol for host-backed filesystem operations over vsock
+
+- `enclaver/src/hostfs_service.rs`
+  - host-side filesystem service with path validation and read-only enforcement
+
+- `enclaver/src/proxy/fs_host.rs`
+  - host-side vsock server that exposes one hostfs service per mount
 
 - `enclaver/src/nitro_cli.rs`
   - host-side `nitro-cli` wrapper for `run-enclave`, `terminate-enclave`, `describe-eif`, and console access
@@ -77,6 +94,10 @@ The codebase has three execution domains:
 - `enclaver/src/bin/odyn/egress.rs`
   - enclave-side HTTP proxy
   - sets uppercase and lowercase proxy env vars
+
+- `enclaver/src/bin/odyn/fs_mount.rs`
+  - enclave-side FUSE mount service for host-backed persistent directories
+  - probes hostfs proxies, ensures `/dev/fuse` exists, and mounts each configured path
 
 - `enclaver/src/bin/odyn/clock_sync.rs`
   - default-on clock sync client
@@ -130,6 +151,9 @@ The codebase has three execution domains:
 - `enclaver/src/proxy/egress_http.rs`
   - host and enclave egress proxy implementations
 
+- `enclaver/src/hostfs_client.rs`
+  - enclave-side hostfs client used by the FUSE filesystem implementation
+
 - `enclaver/src/policy/*`
   - egress allow/deny rules for domain/IP matching
 
@@ -151,9 +175,10 @@ The codebase has three execution domains:
 
 1. load `/enclave/enclaver.yaml`
 2. start host-side egress proxy when `egress` is present
-3. start host-side clock-sync server unless `clock_sync.enabled=false`
-4. call `nitro-cli run-enclave`
-5. after enclave startup:
+3. start host-side hostfs proxies for bound `storage.mounts[]`
+4. start host-side clock-sync server unless `clock_sync.enabled=false`
+5. call `nitro-cli run-enclave`
+6. after enclave startup:
    - attach debug console if requested
    - start log stream
    - start ingress proxies
@@ -164,13 +189,14 @@ The codebase has three execution domains:
 1. open status and log listeners first
 2. load manifest from `/etc/enclaver/enclaver.yaml`
 3. bootstrap loopback and RNG unless `--no-bootstrap`
-4. start egress service
-5. start clock sync
-6. start Helios background tasks
-7. if registry-backed KMS is enabled, wait for Helios readiness on `18545`
-8. start Internal API and Aux API
-9. start ingress
-10. launch user process
+4. start host-backed mount service for `storage.mounts[]`
+5. start egress service
+6. start clock sync
+7. start Helios background tasks
+8. if registry-backed KMS is enabled, wait for Helios readiness on `18545`
+9. start Internal API and Aux API
+10. start ingress
+11. launch user process
 
 Shutdown is the reverse order of service startup.
 
@@ -206,6 +232,7 @@ original app image
 - app log VSOCK port: `17001`
 - egress VSOCK port: `17002`
 - clock-sync VSOCK port: `17003`
+- hostfs VSOCK port range: `17100-17199`
 - default enclave egress proxy port: `10000`
 
 ## Related documents

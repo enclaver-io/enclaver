@@ -30,21 +30,23 @@ Host/container side:
 1. `enclaver run` starts the Sleeve image as a privileged Docker container and mounts `/dev/nitro_enclaves`
 2. `enclaver-run` loads `/enclave/enclaver.yaml`
 3. it starts the host-side egress proxy if `egress` is present
-4. it starts the host-side clock-sync time server when clock sync is effectively enabled
-5. it launches the enclave with `nitro-cli run-enclave`
-6. after the enclave is up, it starts host-side ingress proxies and streams logs/status
+4. it starts host-side hostfs proxies for each bound `storage.mounts[]` entry
+5. it starts the host-side clock-sync time server when clock sync is effectively enabled
+6. it launches the enclave with `nitro-cli run-enclave`
+7. after the enclave is up, it starts host-side ingress proxies and streams logs/status
 
 Enclave side:
 
 1. `/sbin/odyn` starts as PID 1
 2. it brings up loopback and seeds RNG from NSM
-3. it starts the enclave-side egress proxy if enabled
-4. it starts the clock-sync client service; clock sync is default-on unless explicitly disabled
-5. it starts Helios in the background when configured
-6. if registry-backed KMS is enabled, it waits for the Helios auth-chain RPC on port `18545`
-7. it starts the Internal API and Aux API
-8. it starts ingress listeners
-9. it launches the user application
+3. it mounts any configured host-backed persistent directories before the app starts
+4. it starts the enclave-side egress proxy if enabled
+5. it starts the clock-sync client service; clock sync is default-on unless explicitly disabled
+6. it starts Helios in the background when configured
+7. if registry-backed KMS is enabled, it waits for the Helios auth-chain RPC on port `18545`
+8. it starts the Internal API and Aux API
+9. it starts ingress listeners
+10. it launches the user application
 
 ## Inside vs outside the EIF
 
@@ -59,6 +61,7 @@ Enclave side:
 | `/enclave/enclaver.yaml` | no | yes |
 | Host ingress proxy | no | yes |
 | Host egress proxy | no | yes |
+| Host hostfs proxy | no | yes |
 | Host clock-sync time server | no | yes |
 
 ## Odyn service model
@@ -67,6 +70,7 @@ Inside the enclave, Odyn runs two kinds of things:
 
 Standalone runtime services:
 
+- host-backed persistent mounts
 - ingress proxy
 - egress proxy
 - clock sync
@@ -116,6 +120,16 @@ Odyn clock-sync client
 -> host time server in enclaver-run
 ```
 
+Host-backed mount:
+
+```text
+application file API
+-> FUSE mount inside enclave
+-> vsock port 17100-17199
+-> hostfs proxy in enclaver-run
+-> loopback-backed ext4 mount on the parent instance
+```
+
 ## Important VSOCK ports
 
 | Port | Direction | Purpose |
@@ -124,6 +138,7 @@ Odyn clock-sync client
 | `17001` | enclave -> host | app log stream |
 | `17002` | enclave -> host | egress proxy traffic |
 | `17003` | enclave -> host | clock-sync requests |
+| `17100-17199` | enclave -> host | host-backed mount traffic |
 
 Ingress uses the configured `ingress[].listen_port` values rather than a single fixed VSOCK port.
 

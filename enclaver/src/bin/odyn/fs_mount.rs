@@ -7,7 +7,9 @@ use enclaver::constants::{HOSTFS_VSOCK_PORT_BASE, HOSTFS_VSOCK_PORT_LIMIT};
 use enclaver::hostfs_client::{HostFsClient, HostFsClientError};
 use enclaver::manifest::{HostFsMountConfig, HostFsMountMode};
 use enclaver::vsock::VMADDR_CID_HOST;
-use fuse_mt::{CreatedEntry, DirectoryEntry, FileAttr, FilesystemMT, FuseMT, RequestInfo, Statfs};
+use fuse_mt::{
+    CreatedEntry, DirectoryEntry, FileAttr, FileType, FilesystemMT, FuseMT, RequestInfo, Statfs,
+};
 use fuser::{BackgroundSession, MountOption};
 use libc::{EEXIST, EINVAL, EIO, EROFS, O_ACCMODE, O_RDONLY, O_TRUNC, W_OK};
 use log::{info, warn};
@@ -413,11 +415,11 @@ impl FilesystemMT for HostFsFilesystem {
         let mut entries = vec![
             DirectoryEntry {
                 name: ".".into(),
-                kind: fuser::FileType::Directory,
+                kind: FileType::Directory,
             },
             DirectoryEntry {
                 name: "..".into(),
-                kind: fuser::FileType::Directory,
+                kind: FileType::Directory,
             },
         ];
 
@@ -530,33 +532,33 @@ async fn connect_client(
     HostFsClient::connect(stream, mount_name).await
 }
 
-fn entry_type_to_fuser(entry_type: enclaver::fs_protocol::FsEntryType) -> fuser::FileType {
+fn entry_type_to_file_type(entry_type: enclaver::fs_protocol::FsEntryType) -> FileType {
     match entry_type {
-        enclaver::fs_protocol::FsEntryType::File => fuser::FileType::RegularFile,
-        enclaver::fs_protocol::FsEntryType::Directory => fuser::FileType::Directory,
-        enclaver::fs_protocol::FsEntryType::Symlink => fuser::FileType::Symlink,
-        enclaver::fs_protocol::FsEntryType::Other => fuser::FileType::RegularFile,
+        enclaver::fs_protocol::FsEntryType::File => FileType::RegularFile,
+        enclaver::fs_protocol::FsEntryType::Directory => FileType::Directory,
+        enclaver::fs_protocol::FsEntryType::Symlink => FileType::Symlink,
+        enclaver::fs_protocol::FsEntryType::Other => FileType::RegularFile,
     }
 }
 
 fn metadata_to_attr(metadata: &enclaver::fs_protocol::FsMetadata) -> FileAttr {
-    let kind = entry_type_to_fuser(metadata.entry_type.clone());
+    let kind = entry_type_to_file_type(metadata.entry_type.clone());
     let perm = match kind {
-        fuser::FileType::Directory => {
+        FileType::Directory => {
             if metadata.read_only {
                 0o555
             } else {
                 0o755
             }
         }
-        fuser::FileType::RegularFile => {
+        FileType::RegularFile => {
             if metadata.read_only {
                 0o444
             } else {
                 0o644
             }
         }
-        fuser::FileType::Symlink => 0o777,
+        FileType::Symlink => 0o777,
         _ => 0o644,
     };
 
@@ -570,7 +572,7 @@ fn metadata_to_attr(metadata: &enclaver::fs_protocol::FsMetadata) -> FileAttr {
         crtime: now,
         kind,
         perm,
-        nlink: if matches!(kind, fuser::FileType::Directory) {
+        nlink: if matches!(kind, FileType::Directory) {
             2
         } else {
             1

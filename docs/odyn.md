@@ -11,7 +11,7 @@ Odyn is the supervisor process that runs inside the AWS Nitro Enclave. It acts a
 1. **Bootstrapping the enclave environment** — Setting up networking and secure random number generation
 2. **Launching your application** — Starting and supervising your application process
 3. **Providing platform services** — Attestation, signing, encryption, storage, and KMS/app-wallet routes via the Internal API
-4. **Managing runtime plumbing** — Ingress, egress, clock sync, and optional Helios RPC
+4. **Managing runtime plumbing** — Host-backed mounts, ingress, egress, clock sync, and optional Helios RPC
 5. **Streaming logs and status** — Making application logs available to the host
 
 ```text
@@ -54,9 +54,11 @@ sequenceDiagram
     participant Enclave
     participant Odyn
     participant App as Your Application
+    participant HostFs as Host-backed Storage
 
     Enclave->>Odyn: Start (as PID 1)
     Odyn->>Odyn: Bootstrap (loopback, RNG seed)
+    Odyn->>HostFs: Mount host-backed directories (if configured)
     Odyn->>Odyn: Start Egress Proxy (if configured)
     Odyn->>Odyn: Start Clock Sync (default; unless disabled)
     Odyn->>Odyn: Start Helios RPC (if configured)
@@ -285,7 +287,40 @@ storage:
 
 ---
 
-### 7. Console & Log Streaming
+### 7. Host-Backed Persistent Mounts
+
+**Purpose**: Gives your application a normal directory inside the enclave whose contents persist on the parent instance across enclave restarts.
+
+**How it works**:
+- `enclaver run --mount <name>=<host_state_dir>` prepares or reuses a fixed-size loopback image on the host
+- `enclaver-run` exposes that filesystem over a dedicated vsock port
+- Odyn mounts a FUSE filesystem at the configured `mount_path` before your app starts
+- Your application uses ordinary file APIs against that mount path
+
+**Configuration**:
+```yaml
+storage:
+  mounts:
+    - name: appdata
+      type: hostfs
+      mount_path: /mnt/appdata
+      mode: rw
+      required: true
+      create: true
+      loopback_image:
+        size_mb: 10240
+```
+
+Run-time binding:
+```bash
+enclaver run -f enclaver.yaml --mount appdata=/var/lib/my-service/appdata
+```
+
+**For your app**: Read and write `/mnt/appdata` using normal filesystem calls. Required mounts block startup if they cannot be mounted.
+
+---
+
+### 8. Console & Log Streaming
 
 **Purpose**: Captures your application's stdout/stderr and streams it to the host.
 
