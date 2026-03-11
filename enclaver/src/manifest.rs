@@ -137,52 +137,13 @@ impl Storage {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum HostFsMountType {
-    Hostfs,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum HostFsMountMode {
-    Ro,
-    Rw,
-}
-
-fn default_hostfs_mount_mode() -> HostFsMountMode {
-    HostFsMountMode::Rw
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HostFsLoopbackImageConfig {
-    pub size_mb: u64,
-}
-
-impl HostFsLoopbackImageConfig {
-    fn validate(&self, context: &str) -> Result<()> {
-        if self.size_mb == 0 {
-            bail!("{context}.size_mb must be greater than 0");
-        }
-
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostFsMountConfig {
     pub name: String,
-    #[serde(rename = "type")]
-    pub mount_type: HostFsMountType,
     pub mount_path: PathBuf,
-    #[serde(default = "default_hostfs_mount_mode")]
-    pub mode: HostFsMountMode,
     #[serde(default)]
     pub required: bool,
-    #[serde(default)]
-    pub create: bool,
-    pub loopback_image: HostFsLoopbackImageConfig,
+    pub size_mb: u64,
 }
 
 impl HostFsMountConfig {
@@ -227,8 +188,9 @@ impl HostFsMountConfig {
             }
         }
 
-        self.loopback_image
-            .validate(&format!("{context}.loopback_image"))?;
+        if self.size_mb == 0 {
+            bail!("{context}.size_mb must be greater than 0");
+        }
 
         Ok(())
     }
@@ -648,7 +610,7 @@ pub async fn load_manifest<P: AsRef<Path>>(path: P) -> Result<Manifest> {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::manifest::{HostFsMountMode, parse_manifest};
+    use crate::manifest::parse_manifest;
 
     #[test]
     fn test_parse_manifest_with_unknown_fields() {
@@ -684,13 +646,9 @@ sources:
 storage:
   mounts:
     - name: appdata
-      type: hostfs
       mount_path: /mnt/appdata
-      mode: rw
       required: true
-      create: true
-      loopback_image:
-        size_mb: 128
+      size_mb: 128
 "#;
 
         let manifest = parse_manifest(raw_manifest).unwrap();
@@ -700,8 +658,7 @@ storage:
         assert_eq!(mounts.len(), 1);
         assert_eq!(mounts[0].name, "appdata");
         assert_eq!(mounts[0].mount_path, PathBuf::from("/mnt/appdata"));
-        assert!(matches!(mounts[0].mode, HostFsMountMode::Rw));
-        assert_eq!(mounts[0].loopback_image.size_mb, 128);
+        assert_eq!(mounts[0].size_mb, 128);
     }
 
     #[test]
@@ -715,10 +672,8 @@ sources:
 storage:
   mounts:
     - name: appdata
-      type: hostfs
       mount_path: /etc/appdata
-      loopback_image:
-        size_mb: 128
+      size_mb: 128
 "#;
 
         assert!(parse_manifest(raw_manifest).is_err());
@@ -735,15 +690,30 @@ sources:
 storage:
   mounts:
     - name: appdata
-      type: hostfs
       mount_path: /mnt/appdata
-      loopback_image:
-        size_mb: 128
+      size_mb: 128
+    - name: appdata
+      mount_path: /mnt/cache
+      size_mb: 64
+"#;
+
+        assert!(parse_manifest(raw_manifest).is_err());
+    }
+
+    #[test]
+    fn test_parse_manifest_rejects_legacy_hostfs_fields() {
+        let raw_manifest = br#"
+version: v1
+name: "test-hostfs"
+target: "target-image:latest"
+sources:
+  app: "app-image:latest"
+storage:
+  mounts:
     - name: appdata
       type: hostfs
-      mount_path: /mnt/cache
-      loopback_image:
-        size_mb: 64
+      mount_path: /mnt/appdata
+      size_mb: 64
 "#;
 
         assert!(parse_manifest(raw_manifest).is_err());

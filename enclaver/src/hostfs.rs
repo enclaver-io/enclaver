@@ -9,7 +9,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use nix::fcntl::{FlockArg, flock};
 use uuid::Uuid;
 
-use crate::manifest::{HostFsMountMode, Manifest};
+use crate::manifest::Manifest;
 
 const HOSTFS_META_DIR: &str = ".enclaver-hostfs";
 pub const CONTAINER_HOSTFS_ROOT: &str = "/mnt/enclaver-hostfs-data";
@@ -27,8 +27,6 @@ pub struct LoopbackMountRequest {
     pub container_mount_path: PathBuf,
     pub enclave_mount_path: PathBuf,
     pub size_mb: u64,
-    pub read_only: bool,
-    pub create: bool,
     pub required: bool,
 }
 
@@ -43,12 +41,10 @@ pub struct PreparedLoopbackMount {
 
 impl PreparedLoopbackMount {
     pub fn container_bind(&self) -> String {
-        let suffix = if self.request.read_only { ":ro" } else { ":rw" };
         format!(
-            "{}:{}{}",
+            "{}:{}:rw",
             self.host_mount_path.display(),
             self.request.container_mount_path.display(),
-            suffix
         )
     }
 
@@ -156,9 +152,7 @@ pub fn resolve_loopback_mounts(
             host_state_dir: binding.host_path.clone(),
             container_mount_path: PathBuf::from(CONTAINER_HOSTFS_ROOT).join(&mount.name),
             enclave_mount_path: mount.mount_path.clone(),
-            size_mb: mount.loopback_image.size_mb,
-            read_only: matches!(mount.mode, HostFsMountMode::Ro),
-            create: mount.create,
+            size_mb: mount.size_mb,
             required: mount.required,
         });
     }
@@ -193,7 +187,7 @@ fn prepare_loopback_mount(request: LoopbackMountRequest) -> Result<PreparedLoopb
                 request.host_state_dir.display()
             );
         }
-    } else if request.create {
+    } else {
         fs::create_dir_all(&request.host_state_dir).with_context(|| {
             format!(
                 "failed to create host state dir for mount '{}': {}",
@@ -201,12 +195,6 @@ fn prepare_loopback_mount(request: LoopbackMountRequest) -> Result<PreparedLoopb
                 request.host_state_dir.display()
             )
         })?;
-    } else {
-        bail!(
-            "host path for mount '{}' does not exist and create=false: {}",
-            request.name,
-            request.host_state_dir.display()
-        );
     }
 
     let meta_dir = request.host_state_dir.join(HOSTFS_META_DIR);
@@ -299,12 +287,11 @@ fn prepare_loopback_mount(request: LoopbackMountRequest) -> Result<PreparedLoopb
         )
     })?;
 
-    let mount_opts = if request.read_only { "loop,ro" } else { "loop" };
     if let Err(err) = run_command(
         "mount",
         [
             "-o".as_ref(),
-            OsStr::new(mount_opts),
+            OsStr::new("loop"),
             "-t".as_ref(),
             "ext4".as_ref(),
             image_path.as_os_str(),
@@ -359,9 +346,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{
-        HostFsLoopbackImageConfig, HostFsMountConfig, HostFsMountType, Manifest, Sources, Storage,
-    };
+    use crate::manifest::{HostFsMountConfig, Manifest, Sources, Storage};
 
     #[test]
     fn parse_runtime_mount_binding_accepts_name_and_path() {
@@ -397,12 +382,9 @@ mod tests {
                 s3: None,
                 mounts: Some(vec![HostFsMountConfig {
                     name: "appdata".to_string(),
-                    mount_type: HostFsMountType::Hostfs,
                     mount_path: PathBuf::from("/mnt/appdata"),
-                    mode: HostFsMountMode::Rw,
                     required: true,
-                    create: true,
-                    loopback_image: HostFsLoopbackImageConfig { size_mb: 64 },
+                    size_mb: 64,
                 }]),
             }),
             kms_integration: None,

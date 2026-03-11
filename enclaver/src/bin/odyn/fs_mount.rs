@@ -5,13 +5,13 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, Result as AnyhowResult, anyhow};
 use enclaver::constants::{HOSTFS_VSOCK_PORT_BASE, HOSTFS_VSOCK_PORT_LIMIT};
 use enclaver::hostfs_client::{HostFsClient, HostFsClientError};
-use enclaver::manifest::{HostFsMountConfig, HostFsMountMode};
+use enclaver::manifest::HostFsMountConfig;
 use enclaver::vsock::VMADDR_CID_HOST;
 use fuse_mt::{
     CreatedEntry, DirectoryEntry, FileAttr, FileType, FilesystemMT, FuseMT, RequestInfo, Statfs,
 };
 use fuser::{BackgroundSession, MountOption};
-use libc::{EEXIST, EINVAL, EIO, EROFS, O_ACCMODE, O_RDONLY, O_TRUNC, W_OK};
+use libc::{EEXIST, EINVAL, O_ACCMODE, O_RDONLY, O_TRUNC};
 use log::{info, warn};
 use nix::sys::stat::{Mode, SFlag, makedev, mknod};
 use tokio::runtime::Handle;
@@ -40,7 +40,6 @@ struct MountedHostFs {
 struct HostFsFilesystem {
     mount_name: String,
     port: u32,
-    read_only: bool,
     runtime: Handle,
 }
 
@@ -118,13 +117,10 @@ impl MountedHostFs {
             .await
             .with_context(|| format!("failed to connect to hostfs proxy on vsock port {}", port))?;
 
-        let probed_read_only = probe.read_only();
-        if probed_read_only != matches!(mount.mode, HostFsMountMode::Ro) {
+        if probe.read_only() {
             return Err(anyhow!(
-                "hostfs mount '{}' read-only mismatch between manifest ({}) and host proxy ({})",
-                mount.name,
-                matches!(mount.mode, HostFsMountMode::Ro),
-                probed_read_only
+                "hostfs mount '{}' unexpectedly connected to a read-only host proxy",
+                mount.name
             ));
         }
         probe.ping().await.context("hostfs ping failed")?;
@@ -133,7 +129,6 @@ impl MountedHostFs {
         let filesystem = HostFsFilesystem {
             mount_name: mount.name.clone(),
             port,
-            read_only: matches!(mount.mode, HostFsMountMode::Ro),
             runtime: Handle::current(),
         };
 
@@ -144,12 +139,8 @@ impl MountedHostFs {
             MountOption::NoSuid,
             MountOption::NoExec,
             MountOption::DefaultPermissions,
+            MountOption::RW,
         ];
-        if filesystem.read_only {
-            options.push(MountOption::RO);
-        } else {
-            options.push(MountOption::RW);
-        }
 
         let session = fuser::spawn_mount2(
             FuseMT::new(filesystem, HOSTFS_THREADS),
@@ -260,9 +251,6 @@ impl FilesystemMT for HostFsFilesystem {
         _fh: Option<u64>,
         size: u64,
     ) -> fuse_mt::ResultEmpty {
-        if self.read_only {
-            return Err(EROFS);
-        }
         let relative = Self::relative_path(path)?;
         self.with_client_async(move |client| Box::pin(client.set_len(relative, size)))
     }
@@ -274,9 +262,6 @@ impl FilesystemMT for HostFsFilesystem {
         name: &OsStr,
         _mode: u32,
     ) -> fuse_mt::ResultEntry {
-        if self.read_only {
-            return Err(EROFS);
-        }
         let child = Self::child_path(parent, name)?;
         let relative = Self::relative_path(&child)?;
         self.with_client_async(move |client| Box::pin(client.mkdir(relative, false)))?;
@@ -284,18 +269,12 @@ impl FilesystemMT for HostFsFilesystem {
     }
 
     fn unlink(&self, _req: RequestInfo, parent: &Path, name: &OsStr) -> fuse_mt::ResultEmpty {
-        if self.read_only {
-            return Err(EROFS);
-        }
         let child = Self::child_path(parent, name)?;
         let relative = Self::relative_path(&child)?;
         self.with_client_async(move |client| Box::pin(client.remove_file(relative)))
     }
 
     fn rmdir(&self, _req: RequestInfo, parent: &Path, name: &OsStr) -> fuse_mt::ResultEmpty {
-        if self.read_only {
-            return Err(EROFS);
-        }
         let child = Self::child_path(parent, name)?;
         let relative = Self::relative_path(&child)?;
         self.with_client_async(move |client| Box::pin(client.remove_dir(relative)))
@@ -309,9 +288,6 @@ impl FilesystemMT for HostFsFilesystem {
         newparent: &Path,
         newname: &OsStr,
     ) -> fuse_mt::ResultEmpty {
-        if self.read_only {
-            return Err(EROFS);
-        }
         let from = Self::relative_path(&Self::child_path(parent, name)?)?;
         let to = Self::relative_path(&Self::child_path(newparent, newname)?)?;
         self.with_client_async(move |client| Box::pin(client.rename(from, to)))
@@ -320,9 +296,6 @@ impl FilesystemMT for HostFsFilesystem {
     fn open(&self, _req: RequestInfo, path: &Path, flags: u32) -> fuse_mt::ResultOpen {
         let relative = Self::relative_path(path)?;
         let wants_write = (flags as i32 & O_ACCMODE) != O_RDONLY;
-        if wants_write && self.read_only {
-            return Err(EROFS);
-        }
         if wants_write && (flags as i32 & O_TRUNC) != 0 {
             self.with_client_async(move |client| Box::pin(client.set_len(relative, 0)))?;
         }
@@ -358,9 +331,6 @@ impl FilesystemMT for HostFsFilesystem {
         data: Vec<u8>,
         _flags: u32,
     ) -> fuse_mt::ResultWrite {
-        if self.read_only {
-            return Err(EROFS);
-        }
         let relative = Self::relative_path(path)?;
         self.with_client_async(move |client| {
             Box::pin(async move {
@@ -469,10 +439,7 @@ impl FilesystemMT for HostFsFilesystem {
         })
     }
 
-    fn access(&self, _req: RequestInfo, path: &Path, mask: u32) -> fuse_mt::ResultEmpty {
-        if self.read_only && (mask & W_OK as u32) != 0 {
-            return Err(EROFS);
-        }
+    fn access(&self, _req: RequestInfo, path: &Path, _mask: u32) -> fuse_mt::ResultEmpty {
         self.metadata_attr(path).map(|_| ())
     }
 
@@ -484,10 +451,6 @@ impl FilesystemMT for HostFsFilesystem {
         _mode: u32,
         flags: u32,
     ) -> fuse_mt::ResultCreate {
-        if self.read_only {
-            return Err(EROFS);
-        }
-
         let child = Self::child_path(parent, name)?;
         let relative = Self::relative_path(&child)?;
 

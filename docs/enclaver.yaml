@@ -36,7 +36,8 @@ sources:
   #odyn: "repo/odyn:tag"      # [BUILD] Odyn supervisor image (binary is extracted and added to EIF).
   #sleeve: "repo/sleeve:tag"  # [BUILD] Sleeve base image (used as base for release image).
 
-# Optional: sign the EIF at build time (keys are read on the host during build)
+# Optional: sign the EIF at build time (keys are read on the host during build).
+# This only affects `enclaver build`; it is not used by `enclaver run` or by Odyn at runtime.
 signature:
   # Paths are resolved relative to the manifest file location.
   certificate: ./path/to/cert.pem   # [BUILD] Required. Path to X.509 certificate in PEM format
@@ -110,7 +111,7 @@ egress:
 kms_integration:
   enabled: true              # [ODYN] Enable Nova KMS integration for Internal API KMS/app-wallet routes.
   use_app_wallet: true       # [ODYN] Optional. Enable app-wallet APIs backed by KMS KV (default: false).
-  kms_app_id: 1001           # [ODYN] Optional. Required for registry-backed `/v1/kms/*` authz/discovery.
+  kms_app_id: 49             # [ODYN] Optional example only. Replace with your real Nova app ID for registry-backed `/v1/kms/*`.
   nova_app_registry: "0x0f68E6e699f2E972998a1EcC000c7ce103E64cc8" # [ODYN] Optional. Required for registry-backed `/v1/kms/*`.
 
 # Optional: internal API exposed inside the enclave for attestation/encryption/signing
@@ -171,13 +172,9 @@ storage:
   # - `odyn` mounts it inside the enclave before the application starts.
   mounts:
     - name: "appdata"        # [BUILD] Stable runtime mount identifier.
-      type: "hostfs"         # [BUILD] Only "hostfs" is supported.
       mount_path: "/mnt/appdata" # [ODYN] Path mounted inside the enclave before app launch.
-      mode: "rw"             # [BUILD] ro | rw
       required: true         # [BUILD] Fail runtime binding resolution when omitted.
-      create: true           # [BUILD] Create the host state directory if missing.
-      loopback_image:
-        size_mb: 10240       # [BUILD] Loopback image size in MiB.
+      size_mb: 10240         # [BUILD] Loopback image size in MiB. Runtime always creates the host state dir if missing and mounts rw.
 
 # Optional: automatic clock synchronization between host and enclave
 # Nitro Enclaves do not automatically synchronize their system clock with the host.

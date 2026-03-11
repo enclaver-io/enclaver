@@ -104,7 +104,7 @@ Odyn automatically sets the following environment variables for your application
 
 Odyn consists of several configurable modules, each providing specific functionality:
 
-Standalone runtime services include ingress, egress, clock sync, console/log streaming, and optional Helios RPC. Encryption, storage, and KMS/app-wallet features are exposed through the Internal API rather than running as peer daemons.
+Standalone runtime services include host-backed mounts, ingress, egress, clock sync, console/log streaming, and optional Helios RPC. Encryption, storage, and KMS/app-wallet features are exposed through the Internal API rather than running as peer daemons.
 
 ### 1. Ingress Proxy
 
@@ -302,13 +302,9 @@ storage:
 storage:
   mounts:
     - name: appdata
-      type: hostfs
       mount_path: /mnt/appdata
-      mode: rw
       required: true
-      create: true
-      loopback_image:
-        size_mb: 10240
+      size_mb: 10240
 ```
 
 Run-time binding:

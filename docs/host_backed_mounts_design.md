@@ -46,13 +46,9 @@ filesystem operations fail with `ENOSPC`.
 storage:
   mounts:
     - name: appdata
-      type: hostfs
       mount_path: /mnt/appdata
-      mode: rw
       required: true
-      create: true
-      loopback_image:
-        size_mb: 10240
+      size_mb: 10240
 ```
 
 Runtime example:
@@ -130,6 +126,5 @@ Existing symlinks are surfaced in metadata and directory listings, but explicit
 - each mount gets its own loopback image and quota
 - optional mounts are skipped if the matching runtime bind is absent
 - required mounts fail startup if the runtime bind or host proxy is unavailable
-- read-only mounts are enforced in both the host proxy and the enclave mount
 - host-side prerequisites are `mkfs.ext4`, `mount`, and `umount`
 - Linux validation on a Nitro-capable host can be exercised with `scripts/hostfs-smoke-test.sh`

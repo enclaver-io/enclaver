@@ -1,8 +1,9 @@
-<svg width="1240" height="736" viewBox="0 0 1280 760" fill="none" xmlns="http://www.w3.org/2000/svg">
+<svg width="1240" height="796" viewBox="0 0 1280 820" fill="none" xmlns="http://www.w3.org/2000/svg">
   <!--
     Maintainable text-based component diagram.
     Updated to match the current Enclaver runtime model:
     - host-side enclaver-run services
+    - host-backed persistent mounts via hostfs + loopback images
     - enclave-side odyn runtime services
     - Internal API capabilities vs Aux API
     - default-on clock sync
@@ -15,11 +16,17 @@
     <marker id="arrowAmber" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto">
       <path d="M0 0L12 6L0 12V0Z" fill="#D97706"/>
     </marker>
-    <marker id="arrowBlue" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto">
-      <path d="M0 0L12 6L0 12V0Z" fill="#2563EB"/>
+    <marker id="arrowRose" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto">
+      <path d="M0 0L12 6L0 12V0Z" fill="#EC4899"/>
     </marker>
-    <marker id="arrowGray" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto">
-      <path d="M0 0L12 6L0 12V0Z" fill="#6B7280"/>
+    <marker id="arrowCyan" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto">
+      <path d="M0 0L12 6L0 12V0Z" fill="#06B6D4"/>
+    </marker>
+    <marker id="arrowViolet" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto">
+      <path d="M0 0L12 6L0 12V0Z" fill="#7C3AED"/>
+    </marker>
+    <marker id="arrowTeal" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto">
+      <path d="M0 0L12 6L0 12V0Z" fill="#0F766E"/>
     </marker>
     <marker id="arrowOrange" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto">
       <path d="M0 0L12 6L0 12V0Z" fill="#C2410C"/>
@@ -42,26 +49,26 @@
     </style>
   </defs>
 
-  <rect width="1280" height="760" fill="#F8FAFC"/>
+  <rect width="1280" height="820" fill="#F8FAFC"/>
   <g transform="translate(40,0)">
 
   <text x="100" y="70" class="title">Enclaver Runtime Components</text>
-  <text x="100" y="94" class="subtitle">Host-side <tspan class="subtitle-strong">enclaver-run</tspan> + enclave-side <tspan class="subtitle-strong">odyn</tspan>, with Internal API / Aux API, clock sync,</text>
-  <text x="100" y="114" class="subtitle">and optional Helios / Nova KMS integration paths.</text>
+  <text x="100" y="94" class="subtitle">Host-side <tspan class="subtitle-strong">enclaver-run</tspan> + enclave-side <tspan class="subtitle-strong">odyn</tspan>, with host-backed mounts, Internal API / Aux API,</text>
+  <text x="100" y="114" class="subtitle">and Helios / Nova KMS integration paths.</text>
 
-  <rect x="100" y="140" width="860" height="520" rx="28" fill="#F3F4F6" stroke="#D1D5DB" stroke-width="2"/>
+  <rect x="100" y="140" width="860" height="620" rx="28" fill="#F3F4F6" stroke="#D1D5DB" stroke-width="2"/>
   <text x="130" y="176" class="section">Cloud VM / bare-metal machine</text>
 
-  <rect x="130" y="200" width="220" height="390" rx="24" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="2"/>
-  <text x="160" y="228" class="panel-title">Host-side services</text>
+  <rect x="130" y="200" width="220" height="520" rx="24" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="2"/>
+  <text x="160" y="220" class="panel-title">Host-side services</text>
 
-  <rect x="30" y="297" width="100" height="72" rx="18" fill="#F0FDF4" stroke="#84CC16" stroke-width="2"/>
-  <text x="80" y="327" text-anchor="middle" class="box-title">External</text>
-  <text x="80" y="347" text-anchor="middle" class="small">clients</text>
+  <rect x="-10" y="297" width="100" height="72" rx="18" fill="#F0FDF4" stroke="#84CC16" stroke-width="2"/>
+  <text x="40" y="327" text-anchor="middle" class="box-title">External</text>
+  <text x="40" y="347" text-anchor="middle" class="small">clients</text>
 
-  <rect x="30" y="470" width="100" height="72" rx="18" fill="#F0FDF4" stroke="#84CC16" stroke-width="2"/>
-  <text x="80" y="500" text-anchor="middle" class="box-title">Outbound</text>
-  <text x="80" y="520" text-anchor="middle" class="small">services</text>
+  <rect x="-10" y="470" width="100" height="72" rx="18" fill="#F0FDF4" stroke="#84CC16" stroke-width="2"/>
+  <text x="40" y="500" text-anchor="middle" class="box-title">Outbound</text>
+  <text x="40" y="520" text-anchor="middle" class="small">services</text>
 
   <rect x="160" y="230" width="160" height="58" rx="16" fill="#5B8DEF"/>
   <text x="240" y="253" text-anchor="middle" class="box-title-light">enclaver run</text>
@@ -73,66 +80,82 @@
   <rect x="160" y="376" width="160" height="50" rx="16" fill="#E8F6DF" stroke="#84CC16" stroke-width="2"/>
   <text x="240" y="407" text-anchor="middle" class="box-title">Host egress proxy</text>
 
-  <rect x="160" y="444" width="160" height="72" rx="16" fill="#FFF1D6" stroke="#F59E0B" stroke-width="2"/>
-  <text x="240" y="468" text-anchor="middle" class="box-title">Clock sync server</text>
-  <text x="240" y="488" text-anchor="middle" class="small">uses host wall clock</text>
-  <text x="240" y="506" text-anchor="middle" class="mono">vsock 17003</text>
+  <rect x="160" y="440" width="160" height="62" rx="16" fill="#EEF2FF" stroke="#818CF8" stroke-width="2"/>
+  <text x="240" y="465" text-anchor="middle" class="box-title">Hostfs proxy</text>
+  <text x="240" y="485" text-anchor="middle" class="small">vsock-backed file service</text>
 
-  <rect x="160" y="534" width="160" height="50" rx="16" fill="#F3F4F6" stroke="#9CA3AF" stroke-width="2"/>
-  <text x="240" y="565" text-anchor="middle" class="box-title">Logs + status</text>
+  <rect x="160" y="520" width="160" height="54" rx="16" fill="#F8FAFC" stroke="#94A3B8" stroke-width="2"/>
+  <text x="240" y="544" text-anchor="middle" class="box-title">State dir + disk.img</text>
+  <text x="240" y="564" text-anchor="middle" class="small">loopback-backed ext4</text>
 
-  <line x1="370" y1="205" x2="370" y2="610" stroke="#CBD5E1" stroke-width="2" stroke-dasharray="8 8"/>
-  <text x="356" y="435" transform="rotate(-90 356 435)" class="tiny">VSOCK boundary</text>
+  <rect x="160" y="592" width="160" height="72" rx="16" fill="#FFF1D6" stroke="#F59E0B" stroke-width="2"/>
+  <text x="240" y="616" text-anchor="middle" class="box-title">Clock sync server</text>
+  <text x="240" y="636" text-anchor="middle" class="small">uses host wall clock</text>
+  <text x="240" y="654" text-anchor="middle" class="mono">vsock 17003</text>
 
-  <rect x="390" y="180" width="540" height="450" rx="24" fill="#21448B" stroke="#173B78" stroke-width="2"/>
-  <text x="660" y="212" text-anchor="middle" class="label-light">AWS Nitro Enclave (application.eif)</text>
+  <rect x="160" y="682" width="160" height="28" rx="14" fill="#F3F4F6" stroke="#9CA3AF" stroke-width="2"/>
+  <text x="240" y="700" text-anchor="middle" class="box-title">Logs + status</text>
 
-  <rect x="420" y="220" width="280" height="390" rx="22" fill="#E8F0FF" stroke="#93C5FD" stroke-width="2"/>
+  <line x1="378" y1="205" x2="378" y2="730" stroke="#CBD5E1" stroke-width="2" stroke-dasharray="8 8"/>
+  <text x="366" y="468" transform="rotate(-90 366 468)" class="tiny">VSOCK boundary</text>
+
+  <rect x="390" y="180" width="560" height="500" rx="24" fill="#21448B" stroke="#173B78" stroke-width="2"/>
+  <text x="670" y="212" text-anchor="middle" class="label-light">AWS Nitro Enclave (application.eif)</text>
+
+  <rect x="420" y="220" width="280" height="450" rx="22" fill="#E8F0FF" stroke="#93C5FD" stroke-width="2"/>
   <text x="450" y="250" class="panel-title"><tspan class="mono">/sbin/odyn</tspan> (PID 1)</text>
   <text x="450" y="268" class="tiny">runtime services, Internal API, app supervisor</text>
 
   <text x="440" y="298" class="label">Runtime services</text>
-  <rect x="440" y="316" width="110" height="36" rx="12" fill="#FFFFFF" stroke="#8FB4FF" stroke-width="2"/>
-  <text x="495" y="338" text-anchor="middle" class="box-title">Launcher</text>
+  <rect x="470" y="312" width="160" height="28" rx="12" fill="#FFFFFF" stroke="#8FB4FF" stroke-width="2"/>
+  <text x="550" y="330" text-anchor="middle" class="box-title">Launcher</text>
 
-  <rect x="570" y="316" width="110" height="36" rx="12" fill="#FFFFFF" stroke="#8FB4FF" stroke-width="2"/>
-  <text x="625" y="338" text-anchor="middle" class="box-title">Ingress</text>
+  <rect x="470" y="346" width="160" height="28" rx="12" fill="#FFFFFF" stroke="#8FB4FF" stroke-width="2"/>
+  <text x="550" y="364" text-anchor="middle" class="box-title">Ingress</text>
 
-  <rect x="440" y="362" width="110" height="36" rx="12" fill="#FFFFFF" stroke="#8FB4FF" stroke-width="2"/>
-  <text x="495" y="384" text-anchor="middle" class="box-title">Egress</text>
+  <rect x="470" y="380" width="160" height="28" rx="12" fill="#FFFFFF" stroke="#8FB4FF" stroke-width="2"/>
+  <text x="550" y="398" text-anchor="middle" class="box-title">Egress</text>
 
-  <rect x="570" y="362" width="110" height="36" rx="12" fill="#FFFFFF" stroke="#8FB4FF" stroke-width="2"/>
-  <text x="625" y="384" text-anchor="middle" class="box-title">Clock sync</text>
+  <rect x="470" y="414" width="160" height="28" rx="12" fill="#FFFFFF" stroke="#8FB4FF" stroke-width="2"/>
+  <text x="550" y="432" text-anchor="middle" class="box-title">Clock sync</text>
 
-  <rect x="440" y="408" width="110" height="36" rx="12" fill="#FFFFFF" stroke="#8FB4FF" stroke-width="2"/>
-  <text x="495" y="430" text-anchor="middle" class="box-title">Helios RPC</text>
+  <rect x="470" y="448" width="160" height="28" rx="12" fill="#FFFFFF" stroke="#8FB4FF" stroke-width="2"/>
+  <text x="550" y="466" text-anchor="middle" class="box-title">Helios RPC</text>
 
-  <rect x="570" y="408" width="110" height="36" rx="12" fill="#FFFFFF" stroke="#8FB4FF" stroke-width="2"/>
-  <text x="625" y="430" text-anchor="middle" class="box-title">Console</text>
+  <rect x="470" y="482" width="160" height="28" rx="12" fill="#FFFFFF" stroke="#8FB4FF" stroke-width="2"/>
+  <text x="550" y="500" text-anchor="middle" class="box-title">Console</text>
 
-  <rect x="438" y="460" width="244" height="108" rx="18" fill="#FFFFFF" stroke="#60A5FA" stroke-width="2"/>
-  <text x="458" y="484" class="label">Internal API (<tspan class="mono">/v1/*</tspan>)</text>
-  <text x="458" y="502" class="tiny">attestation, signing, random, encryption, storage, kms</text>
-  <rect x="450" y="512" width="100" height="24" rx="10" fill="#EFF6FF" stroke="#93C5FD" stroke-width="1.5"/>
-  <text x="500" y="528" text-anchor="middle" class="tiny">core</text>
-  <rect x="560" y="512" width="110" height="24" rx="10" fill="#EFF6FF" stroke="#93C5FD" stroke-width="1.5"/>
-  <text x="615" y="528" text-anchor="middle" class="tiny">encryption</text>
-  <rect x="450" y="540" width="100" height="24" rx="10" fill="#EFF6FF" stroke="#93C5FD" stroke-width="1.5"/>
-  <text x="500" y="556" text-anchor="middle" class="tiny">storage</text>
-  <rect x="560" y="540" width="110" height="24" rx="10" fill="#EFF6FF" stroke="#93C5FD" stroke-width="1.5"/>
-  <text x="615" y="556" text-anchor="middle" class="tiny">kms + wallet</text>
+  <rect x="438" y="514" width="244" height="28" rx="14" fill="#FFFFFF" stroke="#818CF8" stroke-width="2"/>
+  <text x="560" y="532" text-anchor="middle" class="label">Host-backed mounts (FUSE)</text>
 
-  <rect x="438" y="576" width="244" height="28" rx="14" fill="#ECFEFF" stroke="#22D3EE" stroke-width="2"/>
-  <text x="458" y="595" class="label">Aux API</text>
-  <text x="530" y="595" class="tiny">restricted proxy; starts when API is enabled</text>
+  <rect x="438" y="548" width="244" height="84" rx="18" fill="#FFFFFF" stroke="#60A5FA" stroke-width="2"/>
+  <text x="458" y="568" class="label">Internal API (<tspan class="mono">/v1/*</tspan>)</text>
+  <text x="458" y="582" class="tiny">attestation, signing, random, storage, s3, kms</text>
+  <rect x="450" y="588" width="100" height="16" rx="8" fill="#EFF6FF" stroke="#93C5FD" stroke-width="1.5"/>
+  <text x="500" y="599" text-anchor="middle" class="tiny">core</text>
+  <rect x="560" y="588" width="110" height="16" rx="8" fill="#EFF6FF" stroke="#93C5FD" stroke-width="1.5"/>
+  <text x="615" y="599" text-anchor="middle" class="tiny">encryption</text>
+  <rect x="450" y="608" width="100" height="16" rx="8" fill="#EFF6FF" stroke="#93C5FD" stroke-width="1.5"/>
+  <text x="500" y="619" text-anchor="middle" class="tiny">storage + s3</text>
+  <rect x="560" y="608" width="110" height="16" rx="8" fill="#EFF6FF" stroke="#93C5FD" stroke-width="1.5"/>
+  <text x="615" y="619" text-anchor="middle" class="tiny">kms + wallet</text>
 
-  <rect x="720" y="286" width="185" height="224" rx="22" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="2"/>
-  <text x="812" y="316" text-anchor="middle" class="panel-title">User Application</text>
-  <text x="745" y="345" class="small">- started by launcher</text>
-  <text x="745" y="368" class="small">- binds localhost ports</text>
-  <text x="745" y="391" class="small">- calls <tspan class="mono">/v1/*</tspan></text>
-  <text x="745" y="414" class="small">- can use Helios local RPC</text>
-  <text x="745" y="437" class="small">- stdout/stderr via console</text>
+  <rect x="438" y="638" width="244" height="28" rx="14" fill="#ECFEFF" stroke="#22D3EE" stroke-width="2"/>
+  <text x="458" y="657" class="label">Aux API</text>
+  <text x="530" y="657" class="tiny">restricted proxy; starts when API is enabled</text>
+
+  <rect x="742" y="286" width="185" height="242" rx="22" fill="#FFFFFF" stroke="#D1D5DB" stroke-width="2"/>
+  <text x="834" y="316" text-anchor="middle" class="panel-title">User Application</text>
+  <text x="767" y="345" class="small">- started by launcher</text>
+  <text x="767" y="368" class="small">- binds localhost ports</text>
+  <text x="767" y="391" class="small">- calls <tspan class="mono">/v1/*</tspan></text>
+  <text x="767" y="414" class="small">- can use Helios local RPC</text>
+  <text x="767" y="437" class="small">- stdout/stderr via console</text>
+  <text x="767" y="460" class="small">- reads/writes mounted files</text>
+
+  <rect x="752" y="548" width="165" height="54" rx="16" fill="#F8FAFC" stroke="#818CF8" stroke-width="2"/>
+  <text x="834" y="572" text-anchor="middle" class="box-title">Mounted directory</text>
+  <text x="834" y="591" text-anchor="middle" class="mono">/mnt/appdata</text>
 
   <rect x="990" y="80" width="240" height="92" rx="20" fill="#FFF7ED" stroke="#F59E0B" stroke-width="2"/>
   <text x="1110" y="109" text-anchor="middle" class="box-title">Ethereum / OP Stack</text>
@@ -146,27 +169,31 @@
   <text x="1110" y="325" text-anchor="middle" class="tiny">registry-backed mode may wait for</text>
   <text x="1110" y="341" text-anchor="middle" class="mono">Helios :18545</text>
 
-  <rect x="390" y="636" width="510" height="28" rx="14" fill="#EEF2FF" stroke="#C7D2FE" stroke-width="1.5"/>
-  <text x="645" y="655" text-anchor="middle" class="tiny">shared <tspan class="mono">enclaver.yaml</tspan> drives host proxies, odyn services, and app launch</text>
+  <rect x="390" y="716" width="510" height="28" rx="14" fill="#EEF2FF" stroke="#C7D2FE" stroke-width="1.5"/>
+  <text x="645" y="735" text-anchor="middle" class="tiny">shared <tspan class="mono">enclaver.yaml</tspan> drives host proxies, odyn services, mount wiring, and app launch</text>
 
-  <path d="M130 333H160" stroke="#4D8F25" stroke-width="4" marker-end="url(#arrowGreen)"/>
-  <path d="M320 334H370V300H625V316" stroke="#4D8F25" stroke-width="4" marker-end="url(#arrowGreen)"/>
-  <path d="M680 334H720" stroke="#4D8F25" stroke-width="4" marker-end="url(#arrowGreen)"/>
+  <path d="M90 333H160" stroke="#4D8F25" stroke-width="4" marker-end="url(#arrowGreen)"/>
+  <path d="M320 334H370V360H470" stroke="#4D8F25" stroke-width="4" marker-end="url(#arrowGreen)"/>
+  <path d="M630 360H742" stroke="#4D8F25" stroke-width="4" marker-end="url(#arrowGreen)"/>
 
-  <path d="M720 458H700V380H550" stroke="#4D8F25" stroke-width="4" marker-end="url(#arrowGreen)"/>
-  <path d="M440 380H390V401H320" stroke="#4D8F25" stroke-width="4" marker-end="url(#arrowGreen)"/>
-  <path d="M160 401H145V506H134" stroke="#4D8F25" stroke-width="4" marker-end="url(#arrowGreen)"/>
+  <path d="M742 394H630" stroke="#4D8F25" stroke-width="4" marker-end="url(#arrowGreen)"/>
+  <path d="M470 394H390V401H320" stroke="#4D8F25" stroke-width="4" marker-end="url(#arrowGreen)"/>
+  <path d="M160 401H145V506H94" stroke="#4D8F25" stroke-width="4" marker-end="url(#arrowGreen)"/>
 
-  <path d="M320 480H370V416H625V398" stroke="#D97706" stroke-width="3.5" marker-start="url(#arrowAmber)" marker-end="url(#arrowAmber)"/>
+  <path d="M320 628H370V428H470" stroke="#D97706" stroke-width="3.5" marker-start="url(#arrowAmber)" marker-end="url(#arrowAmber)"/>
 
-  <path d="M682 514H720" stroke="#2563EB" stroke-width="3.5" marker-start="url(#arrowBlue)" marker-end="url(#arrowBlue)"/>
+  <path d="M682 596H730V484H742" stroke="#EC4899" stroke-width="4" marker-start="url(#arrowRose)" marker-end="url(#arrowRose)"/>
 
-  <path d="M555 576V568" stroke="#0891B2" stroke-width="2.5" stroke-dasharray="6 6" marker-end="url(#arrowBlue)"/>
+  <path d="M560 638V632" stroke="#06B6D4" stroke-width="2.5" stroke-dasharray="6 6" marker-end="url(#arrowCyan)"/>
 
-  <path d="M550 408H700V250C780 190 860 150 990 126" stroke="#C2410C" stroke-width="3.5" stroke-dasharray="8 6" marker-end="url(#arrowOrange)"/>
+  <path d="M630 462H694V250C780 190 860 150 990 126" stroke="#C2410C" stroke-width="3.5" stroke-dasharray="8 6" marker-end="url(#arrowOrange)"/>
 
-  <path d="M670 552H690C780 620 900 620 990 290" stroke="#C2410C" stroke-width="3.5" stroke-dasharray="8 6" marker-end="url(#arrowOrange)"/>
+  <path d="M670 616H706V636H900C940 636 972 432 990 294" stroke="#C2410C" stroke-width="3.5" stroke-dasharray="8 6" marker-end="url(#arrowOrange)"/>
 
-  <path d="M680 426H700V618H340V559H320" stroke="#6B7280" stroke-width="3" marker-end="url(#arrowGray)"/>
+  <path d="M470 496H404V696H320" stroke="#0F766E" stroke-width="3.5" marker-end="url(#arrowTeal)"/>
+
+  <path d="M320 471H352V528H438" stroke="#7C3AED" stroke-width="3.5" marker-start="url(#arrowViolet)" marker-end="url(#arrowViolet)"/>
+  <path d="M682 528H720V575H752" stroke="#7C3AED" stroke-width="3.5" marker-start="url(#arrowViolet)" marker-end="url(#arrowViolet)"/>
+  <path d="M240 502V520" stroke="#7C3AED" stroke-width="3.5" marker-end="url(#arrowViolet)"/>
   </g>
 </svg>

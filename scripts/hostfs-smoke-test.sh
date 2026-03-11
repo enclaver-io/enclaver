@@ -44,13 +44,9 @@ api:
 storage:
   mounts:
     - name: "appdata"
-      type: "hostfs"
       mount_path: "/mnt/appdata"
-      mode: "rw"
       required: true
-      create: true
-      loopback_image:
-        size_mb: 64
+      size_mb: 64
 EOF
 
 echo "[1/4] building app image ${APP_IMAGE_TAG}"

@@ -3,7 +3,7 @@ use crate::constants::{
     HTTP_EGRESS_VSOCK_PORT, MANIFEST_FILE_NAME, RELEASE_BUNDLE_DIR, STATUS_PORT,
 };
 use crate::hostfs::CONTAINER_HOSTFS_ROOT;
-use crate::manifest::{Defaults, HostFsMountMode, Manifest, load_manifest};
+use crate::manifest::{Defaults, Manifest, load_manifest};
 use crate::utils;
 use anyhow::{Result, anyhow};
 use futures_util::stream::StreamExt;
@@ -292,8 +292,7 @@ impl Enclave {
                 continue;
             }
 
-            let read_only = matches!(mount.mode, HostFsMountMode::Ro);
-            let proxy = HostFsProxy::bind(&mount.name, root, read_only, port)?;
+            let proxy = HostFsProxy::bind(&mount.name, root, false, port)?;
 
             info!(
                 "starting hostfs proxy for mount '{}' on vsock port {}",
