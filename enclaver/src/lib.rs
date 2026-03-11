@@ -4,6 +4,9 @@ extern crate core;
 
 pub mod build;
 
+pub mod fs_protocol;
+pub mod hostfs_client;
+pub mod hostfs_service;
 pub mod images;
 
 pub mod constants;
@@ -13,6 +16,7 @@ pub mod nitro_cli_container;
 
 pub mod manifest;
 
+pub mod hostfs;
 pub mod http_client;
 pub mod keypair;
 pub mod policy;

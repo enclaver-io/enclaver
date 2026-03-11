@@ -14,6 +14,8 @@ pub const STATUS_PORT: u32 = 17000;
 pub const APP_LOG_PORT: u32 = 17001;
 pub const HTTP_EGRESS_VSOCK_PORT: u32 = 17002;
 pub const CLOCK_SYNC_PORT: u32 = 17003;
+pub const HOSTFS_VSOCK_PORT_BASE: u32 = 17100;
+pub const HOSTFS_VSOCK_PORT_LIMIT: u32 = 17199;
 
 // Default TCP Port that the egress proxy listens on inside the enclave, if not
 // specified in the manifest.

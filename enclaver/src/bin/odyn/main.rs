@@ -7,6 +7,7 @@ pub mod config;
 pub mod console;
 pub mod egress;
 pub mod enclave;
+pub mod fs_mount;
 pub mod helios_rpc;
 pub mod ingress;
 pub mod launcher;
@@ -27,6 +28,7 @@ use clock_sync::ClockSyncService;
 use config::Configuration;
 use console::{AppLog, AppStatus};
 use egress::EgressService;
+use fs_mount::HostFsMountService;
 use helios_rpc::HeliosRpcService;
 use ingress::IngressService;
 
@@ -62,6 +64,8 @@ async fn launch(args: &CliArgs) -> Result<launcher::ExitStatus> {
         enclave::bootstrap(nsm.clone()).await?;
         info!("Enclave initialized");
     }
+
+    let hostfs_mounts = HostFsMountService::start(&config).await?;
 
     let egress = EgressService::start(&config).await?;
 
@@ -108,6 +112,7 @@ async fn launch(args: &CliArgs) -> Result<launcher::ExitStatus> {
     helios_rpc.stop().await;
     ingress.stop().await;
     egress.stop().await;
+    drop(hostfs_mounts);
 
     Ok(exit_status)
 }

@@ -1,8 +1,9 @@
 use crate::constants::{
-    APP_LOG_PORT, CLOCK_SYNC_PORT, EIF_FILE_NAME, HTTP_EGRESS_VSOCK_PORT, MANIFEST_FILE_NAME,
-    RELEASE_BUNDLE_DIR, STATUS_PORT,
+    APP_LOG_PORT, CLOCK_SYNC_PORT, EIF_FILE_NAME, HOSTFS_VSOCK_PORT_BASE, HOSTFS_VSOCK_PORT_LIMIT,
+    HTTP_EGRESS_VSOCK_PORT, MANIFEST_FILE_NAME, RELEASE_BUNDLE_DIR, STATUS_PORT,
 };
-use crate::manifest::{Defaults, Manifest, load_manifest};
+use crate::hostfs::CONTAINER_HOSTFS_ROOT;
+use crate::manifest::{Defaults, HostFsMountMode, Manifest, load_manifest};
 use crate::utils;
 use anyhow::{Result, anyhow};
 use futures_util::stream::StreamExt;
@@ -19,6 +20,7 @@ use tokio_vsock::VsockStream;
 
 use crate::nitro_cli::{EnclaveInfo, NitroCLI, RunEnclaveArgs};
 use crate::proxy::egress_http::HostHttpProxy;
+use crate::proxy::fs_host::HostFsProxy;
 use crate::proxy::ingress::HostProxy;
 
 const LOG_VSOCK_RETRY_INTERVAL: Duration = Duration::from_millis(250);
@@ -153,6 +155,8 @@ impl Enclave {
         // where something inside the enclave attempts egress before the proxy is ready.
         self.start_egress_proxy().await?;
 
+        self.start_hostfs_proxies()?;
+
         // Start clock sync time server before the enclave so it's ready when odyn boots.
         self.start_clock_sync_server()?;
 
@@ -247,6 +251,61 @@ impl Enclave {
         self.tasks.push(utils::spawn!("egress proxy", async move {
             proxy.serve().await;
         })?);
+
+        Ok(())
+    }
+
+    fn start_hostfs_proxies(&mut self) -> Result<()> {
+        let Some(mounts) = self.manifest.hostfs_mounts() else {
+            info!("no hostfs mounts defined, no hostfs proxies will be started");
+            return Ok(());
+        };
+
+        for (index, mount) in mounts.iter().enumerate() {
+            let port = HOSTFS_VSOCK_PORT_BASE
+                .checked_add(index as u32)
+                .ok_or_else(|| anyhow!("hostfs port allocation overflowed"))?;
+            if port > HOSTFS_VSOCK_PORT_LIMIT {
+                return Err(anyhow!(
+                    "hostfs mount '{}' exceeds the configured vsock port range {}-{}",
+                    mount.name,
+                    HOSTFS_VSOCK_PORT_BASE,
+                    HOSTFS_VSOCK_PORT_LIMIT
+                ));
+            }
+
+            let root = PathBuf::from(CONTAINER_HOSTFS_ROOT).join(&mount.name);
+            if !root.exists() {
+                if mount.required {
+                    return Err(anyhow!(
+                        "required hostfs mount '{}' is missing its runtime bind at {}",
+                        mount.name,
+                        root.display()
+                    ));
+                }
+
+                info!(
+                    "optional hostfs mount '{}' is not bound at {}, skipping proxy startup",
+                    mount.name,
+                    root.display()
+                );
+                continue;
+            }
+
+            let read_only = matches!(mount.mode, HostFsMountMode::Ro);
+            let proxy = HostFsProxy::bind(&mount.name, root, read_only, port)?;
+
+            info!(
+                "starting hostfs proxy for mount '{}' on vsock port {}",
+                mount.name, port
+            );
+            self.tasks.push(utils::spawn!(
+                &format!("hostfs proxy ({})", mount.name),
+                async move {
+                    proxy.serve().await;
+                }
+            )?);
+        }
 
         Ok(())
     }

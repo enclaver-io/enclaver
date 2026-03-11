@@ -52,6 +52,7 @@ Runs a pre-packaged Enclaver container image. This command simplifies the `docke
 | `-d`, `--debug-mode` | Enable debug mode for the enclave supervisor. |
 | `--cpu-count <INT>` | **(New)** Number of vCPUs to assign to the enclave. Overrides the `defaults` section in `enclaver.yaml`. |
 | `--memory-mb <INT>` | **(New)** Enclave memory in MiB. Overrides the `defaults` section in `enclaver.yaml`. |
+| `--mount <NAME=HOST_STATE_DIR>` | Prepare a loopback-image-backed persistent store for a manifest-declared `storage.mounts[]` entry and expose it inside the enclave at that mount's `mount_path`. Requires manifest lookup via `-f` or the default `enclaver.yaml`. |
 
 #### Parameter Priority (CPU/RAM)
 
@@ -80,6 +81,11 @@ sudo enclaver run my-service:latest --cpu-count 4 --memory-mb 8192
 sudo enclaver run my-service:latest -p 8080:80 -p 9000:9000
 ```
 
+**Host-backed persistent backing store:**
+```bash
+sudo enclaver run -f enclaver.yaml --mount appdata=/var/lib/my-service/appdata
+```
+
 ---
 
 ## Notes
@@ -87,3 +93,4 @@ sudo enclaver run my-service:latest -p 8080:80 -p 9000:9000
 - **Privileges**: Running enclaves requires `sudo` or root permissions to access `/dev/nitro_enclaves`.
 - **Docker Dependency**: `enclaver run` requires a running Docker daemon.
 - **Port Model**: For full details on `ingress` vs `--publish` and the host/container/enclave mapping layers, see [Port Handling](port_handling.md).
+- **Host-backed mounts**: `--mount` provisions a dedicated loopback image under the supplied host state directory, binds it into the Sleeve container, and `odyn` mounts it inside the enclave before the application starts.

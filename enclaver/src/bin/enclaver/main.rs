@@ -1,8 +1,14 @@
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
 use enclaver::{
-    build::EnclaveArtifactBuilder, build::ResolvedSources, constants::MANIFEST_FILE_NAME,
-    images::ImageRef, manifest::load_manifest, nitro_cli::EIFMeasurements, run_container::Sleeve,
+    build::EnclaveArtifactBuilder,
+    build::ResolvedSources,
+    constants::MANIFEST_FILE_NAME,
+    hostfs::{parse_runtime_mount_binding, resolve_loopback_mounts},
+    images::ImageRef,
+    manifest::load_manifest,
+    nitro_cli::EIFMeasurements,
+    run_container::Sleeve,
 };
 use log::{debug, error};
 
@@ -76,6 +82,10 @@ enum Commands {
         #[clap(long)]
         /// Enclave memory in MiB
         memory_mb: Option<i32>,
+
+        #[clap(long = "mount")]
+        /// Host-backed mount in the form NAME=HOST_STATE_DIR.
+        mounts: Vec<String>,
     },
 }
 
@@ -130,10 +140,19 @@ async fn run(args: Cli) -> Result<()> {
             debug_mode,
             cpu_count,
             memory_mb,
+            mounts,
         } => {
-            let image_name = match (manifest_file, image_name) {
+            let (image_name, manifest) = match (manifest_file, image_name) {
                 // If an image was specified, use it
-                (None, Some(image_name)) => Ok(image_name),
+                (None, Some(image_name)) => {
+                    if !mounts.is_empty() {
+                        Err(anyhow!(
+                            "--mount requires loading a manifest via --file or the default enclaver.yaml"
+                        ))
+                    } else {
+                        Ok((image_name, None))
+                    }
+                }
 
                 // If no image was specified, either use the specified manifest file or the default
                 // to try to look up the target image name.
@@ -141,7 +160,7 @@ async fn run(args: Cli) -> Result<()> {
                     let manifest_file =
                         manifest_file.unwrap_or_else(|| MANIFEST_FILE_NAME.to_string());
                     let manifest = load_manifest(manifest_file).await?;
-                    Ok(manifest.target)
+                    Ok((manifest.target.clone(), Some(manifest)))
                 }
 
                 // Specifying both is an error
@@ -150,12 +169,32 @@ async fn run(args: Cli) -> Result<()> {
                 )),
             }?;
 
+            let hostfs_mounts = if mounts.is_empty() {
+                Vec::new()
+            } else {
+                let manifest = manifest.as_ref().ok_or_else(|| {
+                    anyhow!("--mount requires loading a manifest via --file or the default enclaver.yaml")
+                })?;
+                let runtime_bindings = mounts
+                    .iter()
+                    .map(|spec| parse_runtime_mount_binding(spec))
+                    .collect::<Result<Vec<_>>>()?;
+                resolve_loopback_mounts(manifest, &runtime_bindings)?
+            };
+
             let mut runner = Sleeve::new()?;
 
             let shutdown_signal = enclaver::utils::register_shutdown_signal_handler().await?;
 
             tokio::select! {
-                res = runner.run_enclaver_image(&image_name, port_forwards, debug_mode, cpu_count, memory_mb) => {
+                res = runner.run_enclaver_image(
+                    &image_name,
+                    port_forwards,
+                    debug_mode,
+                    cpu_count,
+                    memory_mb,
+                    hostfs_mounts,
+                ) => {
                     debug!("enclave exited");
                     match res {
                         Ok(_) => debug!("enclave exited successfully"),

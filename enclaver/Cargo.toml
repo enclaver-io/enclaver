@@ -83,6 +83,8 @@ hkdf = "0.12"
 reqwest = { version = "0.12.23", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
 ethabi = "18.0.0"
 zeroize = "1.8"
+fuser = { version = "0.17.0", default-features = false, optional = true }
+fuse_mt = { version = "0.6.3", default-features = false, optional = true }
 
 # Helios light client for trustless Ethereum RPC (optional, only for odyn)
 helios = { git = "https://github.com/sparsity-xyz/helios", rev = "6c306c9b049773d6317521157dbb540895f32e7f", optional = true }
@@ -92,7 +94,7 @@ aws-credential-types = { version = "1.2.6", features = ["hardcoded-credentials"]
 
 [features]
 run_enclave = ["proxy"]
-odyn = ["vsock", "proxy", "dep:helios"]
+odyn = ["vsock", "proxy", "dep:helios", "dep:fuser", "dep:fuse_mt"]
 proxy = ["vsock"]
 vsock = ["dep:tokio-vsock", "dep:rtnetlink"]
 tracing = ["dep:console-subscriber", "tokio/tracing"]

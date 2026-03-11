@@ -162,6 +162,23 @@ storage:
       accept_plaintext: true # [ODYN] Allow reading plaintext objects when present.
                              # Note: mode=kms requires kms_integration.enabled=true.
 
+  # Host-backed mounts using a dedicated loopback image per mount.
+  # Runtime behavior:
+  # - `enclaver run --mount <name>=<host_state_dir>` creates or reuses a fixed-size
+  #   loopback image under that host state directory.
+  # - The mounted filesystem is bind-mounted into the Sleeve container.
+  # - `enclaver-run` serves it over a hostfs vsock proxy.
+  # - `odyn` mounts it inside the enclave before the application starts.
+  mounts:
+    - name: "appdata"        # [BUILD] Stable runtime mount identifier.
+      type: "hostfs"         # [BUILD] Only "hostfs" is supported.
+      mount_path: "/mnt/appdata" # [ODYN] Path mounted inside the enclave before app launch.
+      mode: "rw"             # [BUILD] ro | rw
+      required: true         # [BUILD] Fail runtime binding resolution when omitted.
+      create: true           # [BUILD] Create the host state directory if missing.
+      loopback_image:
+        size_mb: 10240       # [BUILD] Loopback image size in MiB.
+
 # Optional: automatic clock synchronization between host and enclave
 # Nitro Enclaves do not automatically synchronize their system clock with the host.
 # Over time, the enclave clock drifts (~7 seconds per week). This can cause failures

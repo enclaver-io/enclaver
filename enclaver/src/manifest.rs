@@ -34,6 +34,12 @@ impl Manifest {
     pub fn effective_clock_sync(&self) -> ClockSync {
         self.clock_sync.clone().unwrap_or_default()
     }
+
+    pub fn hostfs_mounts(&self) -> Option<&[HostFsMountConfig]> {
+        self.storage
+            .as_ref()
+            .and_then(|storage| storage.mounts.as_deref())
+    }
 }
 
 const KMS_REGISTRY_HELIOS_PORT: u16 = 18545;
@@ -98,6 +104,134 @@ pub struct VsockPorts {
 #[serde(deny_unknown_fields)]
 pub struct Storage {
     pub s3: Option<S3StorageConfig>,
+    pub mounts: Option<Vec<HostFsMountConfig>>,
+}
+
+impl Storage {
+    fn validate(&self) -> Result<()> {
+        let Some(mounts) = self.mounts.as_ref() else {
+            return Ok(());
+        };
+
+        let mut used_names = HashSet::new();
+        let mut used_paths = HashSet::new();
+        for (index, mount) in mounts.iter().enumerate() {
+            let context = format!("storage.mounts[{index}]");
+            mount.validate(&context)?;
+
+            let mount_name = mount.name.trim().to_ascii_lowercase();
+            if !used_names.insert(mount_name) {
+                bail!("duplicate storage.mounts name: {}", mount.name.trim());
+            }
+
+            if !used_paths.insert(mount.mount_path.clone()) {
+                bail!(
+                    "duplicate storage.mounts mount_path: {}",
+                    mount.mount_path.display()
+                );
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HostFsMountType {
+    Hostfs,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HostFsMountMode {
+    Ro,
+    Rw,
+}
+
+fn default_hostfs_mount_mode() -> HostFsMountMode {
+    HostFsMountMode::Rw
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostFsLoopbackImageConfig {
+    pub size_mb: u64,
+}
+
+impl HostFsLoopbackImageConfig {
+    fn validate(&self, context: &str) -> Result<()> {
+        if self.size_mb == 0 {
+            bail!("{context}.size_mb must be greater than 0");
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostFsMountConfig {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub mount_type: HostFsMountType,
+    pub mount_path: PathBuf,
+    #[serde(default = "default_hostfs_mount_mode")]
+    pub mode: HostFsMountMode,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub create: bool,
+    pub loopback_image: HostFsLoopbackImageConfig,
+}
+
+impl HostFsMountConfig {
+    fn validate(&self, context: &str) -> Result<()> {
+        if self.name.trim().is_empty() {
+            bail!("{context}.name is required");
+        }
+        if !self
+            .name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        {
+            bail!("{context}.name may contain only ASCII letters, digits, '.', '-', and '_'");
+        }
+        if !self.mount_path.is_absolute() {
+            bail!("{context}.mount_path must be absolute");
+        }
+        if self.mount_path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        }) {
+            bail!("{context}.mount_path must not contain '.' or '..' path components");
+        }
+        for forbidden in [
+            Path::new("/etc"),
+            Path::new("/bin"),
+            Path::new("/usr"),
+            Path::new("/lib"),
+            Path::new("/lib64"),
+            Path::new("/sbin"),
+            Path::new("/proc"),
+            Path::new("/sys"),
+            Path::new("/dev"),
+        ] {
+            if self.mount_path == forbidden || self.mount_path.starts_with(forbidden) {
+                bail!(
+                    "{context}.mount_path '{}' targets a reserved system path",
+                    self.mount_path.display()
+                );
+            }
+        }
+
+        self.loopback_image
+            .validate(&format!("{context}.loopback_image"))?;
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -423,6 +557,10 @@ impl HeliosRpc {
 fn parse_manifest(buf: &[u8]) -> Result<Manifest> {
     let manifest: Manifest = serde_yaml::from_slice(buf)?;
 
+    if let Some(storage) = manifest.storage.as_ref() {
+        storage.validate()?;
+    }
+
     if let Some(kms_integration) = manifest.kms_integration.as_ref() {
         kms_integration.validate()?;
     }
@@ -508,7 +646,9 @@ pub async fn load_manifest<P: AsRef<Path>>(path: P) -> Result<Manifest> {
 
 #[cfg(test)]
 mod tests {
-    use crate::manifest::parse_manifest;
+    use std::path::PathBuf;
+
+    use crate::manifest::{HostFsMountMode, parse_manifest};
 
     #[test]
     fn test_parse_manifest_with_unknown_fields() {
@@ -531,6 +671,82 @@ sources:
         assert_eq!(manifest.name, "test");
         assert_eq!(manifest.target, "target-image:latest");
         assert_eq!(manifest.sources.app, "app-image:latest");
+    }
+
+    #[test]
+    fn test_parse_manifest_with_hostfs_mount() {
+        let raw_manifest = br#"
+version: v1
+name: "test-hostfs"
+target: "target-image:latest"
+sources:
+  app: "app-image:latest"
+storage:
+  mounts:
+    - name: appdata
+      type: hostfs
+      mount_path: /mnt/appdata
+      mode: rw
+      required: true
+      create: true
+      loopback_image:
+        size_mb: 128
+"#;
+
+        let manifest = parse_manifest(raw_manifest).unwrap();
+        let mounts = manifest
+            .hostfs_mounts()
+            .expect("hostfs mounts should be present");
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].name, "appdata");
+        assert_eq!(mounts[0].mount_path, PathBuf::from("/mnt/appdata"));
+        assert!(matches!(mounts[0].mode, HostFsMountMode::Rw));
+        assert_eq!(mounts[0].loopback_image.size_mb, 128);
+    }
+
+    #[test]
+    fn test_parse_manifest_rejects_hostfs_mount_on_reserved_path() {
+        let raw_manifest = br#"
+version: v1
+name: "test-hostfs"
+target: "target-image:latest"
+sources:
+  app: "app-image:latest"
+storage:
+  mounts:
+    - name: appdata
+      type: hostfs
+      mount_path: /etc/appdata
+      loopback_image:
+        size_mb: 128
+"#;
+
+        assert!(parse_manifest(raw_manifest).is_err());
+    }
+
+    #[test]
+    fn test_parse_manifest_rejects_duplicate_hostfs_mount_names() {
+        let raw_manifest = br#"
+version: v1
+name: "test-hostfs"
+target: "target-image:latest"
+sources:
+  app: "app-image:latest"
+storage:
+  mounts:
+    - name: appdata
+      type: hostfs
+      mount_path: /mnt/appdata
+      loopback_image:
+        size_mb: 128
+    - name: appdata
+      type: hostfs
+      mount_path: /mnt/cache
+      loopback_image:
+        size_mb: 64
+"#;
+
+        assert!(parse_manifest(raw_manifest).is_err());
     }
 
     #[test]
