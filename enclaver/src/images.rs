@@ -1,7 +1,7 @@
 use crate::utils::StringablePathExt;
 use anyhow::{Context, Result, anyhow, bail};
 use bollard::Docker;
-use bollard::models::{BuildInfo, CreateImageInfo, ImageId};
+use bollard::models::{BuildInfo, CreateImageInfo, ErrorDetail, ImageId};
 use bollard::query_parameters::{BuildImageOptions, CreateImageOptions, TagImageOptions};
 use futures_util::stream::{StreamExt, TryStreamExt};
 use log::{debug, trace};
@@ -182,7 +182,11 @@ impl ImageManager {
                     break;
                 }
                 BuildInfo {
-                    error: Some(msg), ..
+                    error_detail:
+                        Some(ErrorDetail {
+                            message: Some(msg), ..
+                        }),
+                    ..
                 } => bail!("build error appending layer: {}", msg),
                 _ => {}
             }

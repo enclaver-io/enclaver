@@ -13,7 +13,7 @@ use std::time::Duration;
 use tokio::fs::File;
 use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::sync::CancellationToken;
-use tokio_vsock::VsockStream;
+use tokio_vsock::{VsockAddr, VsockStream};
 
 use crate::nitro_cli::{EnclaveInfo, NitroCLI, RunEnclaveArgs};
 use crate::proxy::egress_http::HostHttpProxy;
@@ -221,7 +221,7 @@ impl Enclave {
             .push(utils::spawn!("odyn log stream", async move {
                 info!("waiting for enclave to boot to stream logs");
                 let conn = loop {
-                    match VsockStream::connect(cid, APP_LOG_PORT).await {
+                    match VsockStream::connect(VsockAddr::new(cid, APP_LOG_PORT)).await {
                         Ok(conn) => break conn,
 
                         // TODO: improve the polling frequency / backoff / timeout
@@ -244,7 +244,7 @@ impl Enclave {
         let mut failed_attempts = 0;
 
         loop {
-            let conn = match VsockStream::connect(cid, STATUS_PORT).await {
+            let conn = match VsockStream::connect(VsockAddr::new(cid, STATUS_PORT)).await {
                 Ok(conn) => conn,
 
                 Err(_) => {

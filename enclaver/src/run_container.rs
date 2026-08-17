@@ -7,7 +7,6 @@ use bollard::query_parameters::{
     StopContainerOptions, WaitContainerOptions,
 };
 use futures_util::stream::{StreamExt, TryStreamExt};
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 
@@ -43,7 +42,7 @@ impl Sleeve {
 
         let port_re = regex::Regex::new(r"(\d+):(\d+)")?;
 
-        let mut exposed_ports: HashMap<String, HashMap<(), ()>> = HashMap::new();
+        let mut exposed_ports: Vec<String> = Vec::new();
         let mut port_bindings = PortMap::new();
 
         for spec in port_forwards {
@@ -54,7 +53,7 @@ impl Sleeve {
             })?;
             let host_port = captures.get(1).unwrap().as_str();
             let container_port = captures.get(2).unwrap().as_str();
-            exposed_ports.insert(format!("{container_port}/tcp"), HashMap::new());
+            exposed_ports.push(format!("{container_port}/tcp"));
 
             port_bindings.insert(
                 format!("{container_port}/tcp"),

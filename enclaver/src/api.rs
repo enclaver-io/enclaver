@@ -2,6 +2,7 @@ use crate::http_util::{self, HttpHandler};
 use crate::nsm::{AttestationParams, AttestationProvider};
 use anyhow::Result;
 use async_trait::async_trait;
+use base64::prelude::{BASE64_STANDARD, Engine as _};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper::header::CONTENT_TYPE;
@@ -79,9 +80,12 @@ struct AttestationRequest {
 impl AttestationRequest {
     fn into_params(self) -> Result<AttestationParams> {
         Ok(AttestationParams {
-            nonce: self.nonce.map(base64::decode).transpose()?,
+            nonce: self.nonce.map(|s| BASE64_STANDARD.decode(s)).transpose()?,
             public_key: self.public_key.map(|s| pem_decode(&s)).transpose()?,
-            user_data: self.user_data.map(base64::decode).transpose()?,
+            user_data: self
+                .user_data
+                .map(|s| BASE64_STANDARD.decode(s))
+                .transpose()?,
         })
     }
 }
@@ -114,8 +118,8 @@ async fn test_attestation_handler() {
     assert!(resp.status() == StatusCode::OK);
 
     let body = json::object!(
-        nonce: base64::encode("the nonce"),
-        user_data: base64::encode("my data"),
+        nonce: BASE64_STANDARD.encode("the nonce"),
+        user_data: BASE64_STANDARD.encode("my data"),
     );
 
     let req = Request::builder()

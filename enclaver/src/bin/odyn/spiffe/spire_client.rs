@@ -117,10 +117,10 @@ impl SpireAgentClient {
         // Process the streaming response
         while let Some(response) = stream.next().await {
             let response = response?;
-            if let Some(AttestAgentResponseStep::Result(result)) = response.step {
-                if let Some(svid) = result.svid {
-                    return Ok(svid);
-                }
+            if let Some(AttestAgentResponseStep::Result(result)) = response.step
+                && let Some(svid) = result.svid
+            {
+                return Ok(svid);
             }
         }
 
@@ -153,10 +153,10 @@ impl SpireAgentClient {
 
         let mut client = SvidClient::new(self.channel.clone());
         let mut response = client.batch_new_x509svid(req).await?.into_inner();
-        if let Some(result) = response.results.pop() {
-            if let Some(svid) = result.svid {
-                return Ok(svid.clone());
-            }
+        if let Some(result) = response.results.pop()
+            && let Some(svid) = result.svid
+        {
+            return Ok(svid.clone());
         }
 
         bail!("No result from batch new x509 svid");

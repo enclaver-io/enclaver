@@ -8,7 +8,7 @@ use bollard::query_parameters::{
 };
 use bollard::{
     Docker,
-    models::{Mount, MountTypeEnum},
+    models::{Mount, MountType},
 };
 use futures::{Stream, TryStreamExt, future};
 use log::debug;
@@ -49,13 +49,13 @@ impl NitroCLIContainer {
 
         let mut mounts = vec![
             Mount {
-                typ: Some(MountTypeEnum::BIND),
+                typ: Some(MountType::BIND),
                 source: Some(String::from("/var/run/docker.sock")),
                 target: Some(String::from("/var/run/docker.sock")),
                 ..Default::default()
             },
             Mount {
-                typ: Some(MountTypeEnum::BIND),
+                typ: Some(MountType::BIND),
                 source: Some(build_dir_path.into()),
                 target: Some(String::from("/build")),
                 ..Default::default()
@@ -69,14 +69,14 @@ impl NitroCLIContainer {
             cmd.push("/var/run/key");
 
             mounts.push(Mount {
-                typ: Some(MountTypeEnum::BIND),
+                typ: Some(MountType::BIND),
                 source: Some(sign.key.to_string_lossy().to_string()),
                 target: Some(String::from("/var/run/key")),
                 ..Default::default()
             });
 
             mounts.push(Mount {
-                typ: Some(MountTypeEnum::BIND),
+                typ: Some(MountType::BIND),
                 source: Some(sign.certificate.to_string_lossy().to_string()),
                 target: Some(String::from("/var/run/certificate")),
                 ..Default::default()

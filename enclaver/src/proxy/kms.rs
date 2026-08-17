@@ -9,6 +9,7 @@ use aws_credential_types::provider::ProvideCredentials;
 use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings};
 use aws_sigv4::sign::v4::SigningParams;
 use aws_smithy_runtime_api::client::identity::Identity;
+use base64::prelude::{BASE64_STANDARD, Engine as _};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper::header::{HeaderName, HeaderValue};
@@ -125,13 +126,14 @@ impl KmsRequestIncoming {
     }
 
     fn is_attesting_action(&self) -> bool {
-        if self.head.method == Method::POST && self.head.uri.path() == "/" {
-            if let Some(target) = self.target() {
-                let action = target.to_str().unwrap();
-                return ATTESTING_ACTIONS
-                    .iter()
-                    .any(|a| a.eq_ignore_ascii_case(action));
-            }
+        if self.head.method == Method::POST
+            && self.head.uri.path() == "/"
+            && let Some(target) = self.target()
+        {
+            let action = target.to_str().unwrap();
+            return ATTESTING_ACTIONS
+                .iter()
+                .any(|a| a.eq_ignore_ascii_case(action));
         }
 
         false
@@ -299,7 +301,7 @@ impl KmsProxyHandler {
         body_obj.insert(
             "Recipient",
             object! {
-                "AttestationDocument": json::JsonValue::String(base64::encode(&attestation_doc)),
+                "AttestationDocument": json::JsonValue::String(BASE64_STANDARD.encode(&attestation_doc)),
                 "KeyEncryptionAlgorithm": "RSAES_OAEP_SHA_256",
             },
         )?;
@@ -351,7 +353,7 @@ impl KmsProxyHandler {
                 .as_str()
                 .ok_or(anyhow!("CiphertextForRecipient is not a string"))?;
 
-            let ciphertext = base64::decode(b64ciphertext)?;
+            let ciphertext = BASE64_STANDARD.decode(b64ciphertext)?;
             let plaintext = self.decrypt_cms(&ciphertext)?;
 
             let field_name = match method {
@@ -360,7 +362,7 @@ impl KmsProxyHandler {
                 _ => "Plaintext",
             };
 
-            body_obj[field_name] = json::JsonValue::String(base64::encode(plaintext));
+            body_obj[field_name] = json::JsonValue::String(BASE64_STANDARD.encode(plaintext));
             Ok(json_response(head, JsonValue::Object(body_obj)))
         } else {
             Err(anyhow!("The response body is not a JSON object"))
@@ -469,8 +471,8 @@ mod tests {
     use super::*;
     use crate::nsm::StaticAttestationProvider;
     use assert2::assert;
-    use rsa::pkcs8::DecodePrivateKey;
     use rsa::RsaPrivateKey;
+    use rsa::pkcs8::DecodePrivateKey;
 
     // Attestation document is passed through verbatim so can test with just random bytes
     const ATTESTATION_DOC: &[u8] = &[
@@ -527,7 +529,7 @@ mod tests {
 
             // make sure the attestation document has been attached
             let att_doc = body["Recipient"]["AttestationDocument"].as_str().unwrap();
-            assert!(att_doc == base64::encode(ATTESTATION_DOC));
+            assert!(att_doc == BASE64_STANDARD.encode(ATTESTATION_DOC));
 
             let resp = kms_response(object! {
                 "EncryptionAlgorithm": "SYMMETRIC_DEFAULT",
@@ -573,7 +575,9 @@ mod tests {
     }
 
     fn new_test_handler() -> KmsProxyHandler {
-        let key_der = base64::decode(crate::proxy::pkcs7::tests::PRIVATE_KEY).unwrap();
+        let key_der = BASE64_STANDARD
+            .decode(crate::proxy::pkcs7::tests::PRIVATE_KEY)
+            .unwrap();
         let priv_key = RsaPrivateKey::from_pkcs8_der(&key_der).unwrap();
 
         let config = KmsProxyConfig {
@@ -643,7 +647,7 @@ mod tests {
         let req = kms_request(
             "TrentService.Decrypt",
             object! {
-               "CiphertextBlob": base64::encode("~~~ ENCRYPTED Hello, World ~~~"),
+               "CiphertextBlob": BASE64_STANDARD.encode("~~~ ENCRYPTED Hello, World ~~~"),
             },
         );
 
@@ -654,7 +658,7 @@ mod tests {
 
         if head.status == hyper::StatusCode::OK {
             let body = body_as_json(body).await.unwrap();
-            assert!(body["Plaintext"].as_str().unwrap() == base64::encode("Hello, World"));
+            assert!(body["Plaintext"].as_str().unwrap() == BASE64_STANDARD.encode("Hello, World"));
             assert!(body["KeyId"].as_str().unwrap() == KEY_ID);
         } else {
             let msg = std::str::from_utf8(&body).unwrap();
