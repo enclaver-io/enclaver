@@ -9,7 +9,7 @@ use rustls::ServerConfig;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
-use tokio_vsock::VsockStream;
+use tokio_vsock::{VsockAddr, VsockStream};
 
 use crate::vsock::TlsServerStream;
 
@@ -109,7 +109,7 @@ impl HostProxy {
 
     async fn service_conn(mut tcp: TcpStream, target_cid: u32, target_port: u32) {
         debug!("Connecting to CID={target_cid} port={target_port}");
-        match VsockStream::connect(target_cid, target_port).await {
+        match VsockStream::connect(VsockAddr::new(target_cid, target_port)).await {
             Ok(mut vsock) => {
                 debug!("Connected to {target_port}:{target_cid}, proxying data");
                 _ = tokio::io::copy_bidirectional(&mut vsock, &mut tcp).await;
@@ -125,7 +125,7 @@ impl HostProxy {
 mod tests {
     use anyhow::Result;
     use assert2::assert;
-    use rand::RngCore;
+    use rand::Rng;
     use std::collections::hash_map::DefaultHasher;
     use std::hash::Hasher;
     use std::net::{Ipv4Addr, SocketAddrV4};
@@ -164,7 +164,7 @@ mod tests {
 
     fn random_bytes(count: usize) -> Vec<u8> {
         let mut v = vec![0u8; count];
-        rand::thread_rng().fill_bytes(&mut v);
+        rand::rng().fill_bytes(&mut v);
         v
     }
 

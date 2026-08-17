@@ -113,21 +113,20 @@ impl SpiffeCertificateVerifier {
                 rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding)
             })?;
 
-        if let Some(extensions) = cert.tbs_certificate.extensions {
-            if let Some(san) = extensions
+        if let Some(extensions) = cert.tbs_certificate.extensions
+            && let Some(san) = extensions
                 .iter()
                 .find(|e| e.extn_id == x509_cert::ext::pkix::SubjectAltName::OID)
-            {
-                let san: x509_cert::ext::pkix::SubjectAltName =
-                    x509_cert::der::Decode::from_der(san.extn_value.as_bytes()).map_err(|_| {
-                        rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding)
-                    })?;
+        {
+            let san: x509_cert::ext::pkix::SubjectAltName =
+                x509_cert::der::Decode::from_der(san.extn_value.as_bytes()).map_err(|_| {
+                    rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding)
+                })?;
 
-                if let Some(san_uri) = find_san_uri(&san) {
-                    if san_uri == self.spiffe_id {
-                        return Ok(());
-                    }
-                }
+            if let Some(san_uri) = find_san_uri(&san)
+                && san_uri == self.spiffe_id
+            {
+                return Ok(());
             }
         }
 

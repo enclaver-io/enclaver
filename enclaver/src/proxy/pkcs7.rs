@@ -5,11 +5,11 @@ use asn1_rs::{
     Any, Class, FromBer, Integer, OctetString, Oid, OptTaggedParser, SetOf, Tag, Tagged,
 };
 use asn1_rs::{BerSequence, oid};
-use cbc::cipher::crypto_common::KeyIvInit;
-use cbc::cipher::{BlockDecryptMut, block_padding};
+use cbc::cipher::{BlockModeDecrypt, KeyIvInit, block_padding};
 use rsa::traits::PaddingScheme;
 use rsa::{RsaPrivateKey, oaep::Oaep};
-use sha2::Sha256;
+// rsa 0.9 is built against digest 0.10, so its Sha256 is the one Oaep accepts.
+use rsa::sha2::Sha256;
 
 type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
 
@@ -384,10 +384,16 @@ impl EncryptedContentInfo<'_> {
             .unwrap();
 
         let ciphertext = self.combined_content()?;
-        let dec = Aes256CbcDec::new(datakey.into(), iv.as_ref().into());
-        Ok(dec
-            .decrypt_padded_vec_mut::<block_padding::Pkcs7>(&ciphertext)
-            .unwrap())
+        let dec = Aes256CbcDec::new(
+            datakey
+                .try_into()
+                .map_err(|_| anyhow!("unexpected AES-256 key length: {}", datakey.len()))?,
+            iv.as_ref()
+                .try_into()
+                .map_err(|_| anyhow!("unexpected AES-256-CBC IV length"))?,
+        );
+        dec.decrypt_padded_vec::<block_padding::Pkcs7>(&ciphertext)
+            .map_err(|_| anyhow!("failed to decrypt PKCS#7 content"))
     }
 
     fn combined_content(&self) -> Result<Vec<u8>> {
@@ -428,8 +434,9 @@ pub(crate) struct Attribute<'a> {
 pub(crate) mod tests {
     use super::ContentInfo;
     use assert2::assert;
-    use rsa::pkcs8::DecodePrivateKey;
+    use base64::prelude::{BASE64_STANDARD, Engine as _};
     use rsa::RsaPrivateKey;
+    use rsa::pkcs8::DecodePrivateKey;
 
     pub(crate) const INPUT: &str = "\
 MIAGCSqGSIb3DQEHA6CAMIACAQIxggFrMIIBZwIBAoAg+wnprylA3c8NK79jWMmDr0b8X9ztv\
@@ -472,12 +479,12 @@ UBYkWlVgulDg28KBqahr9r04";
 
     #[test]
     fn test_content_info() {
-        let ber = base64::decode(INPUT).unwrap();
+        let ber = BASE64_STANDARD.decode(INPUT).unwrap();
 
         let ci = ContentInfo::parse_ber(&ber).unwrap();
         ci.validate().unwrap();
 
-        let key_der = base64::decode(PRIVATE_KEY).unwrap();
+        let key_der = BASE64_STANDARD.decode(PRIVATE_KEY).unwrap();
         let priv_key = RsaPrivateKey::from_pkcs8_der(&key_der).unwrap();
 
         let plaintext = ci.decrypt_content(&priv_key).unwrap();

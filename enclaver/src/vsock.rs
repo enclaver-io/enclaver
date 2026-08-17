@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, ServerConfig};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
-use tokio_vsock::{VsockListener, VsockStream};
+use tokio_vsock::{VsockAddr, VsockListener, VsockStream};
 
 pub const VMADDR_CID_ANY: u32 = 0xFFFFFFFF;
 pub const VMADDR_CID_LOCAL: u32 = 1;
@@ -17,7 +17,7 @@ pub type TlsClientStream = tokio_rustls::client::TlsStream<VsockStream>;
 // Listen on a vsock with the given port.
 // Returns a Stream of connected sockets.
 pub fn serve(port: u32) -> Result<impl Stream<Item = VsockStream> + Unpin> {
-    let listener = VsockListener::bind(VMADDR_CID_ANY, port)?;
+    let listener = VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, port))?;
 
     info!("Listening on vsock port {port}");
     let stream = listener.incoming().filter_map(move |result| {
@@ -44,7 +44,7 @@ pub fn tls_serve(
     tls_config: Arc<ServerConfig>,
 ) -> Result<impl Stream<Item = TlsServerStream>> {
     let acceptor = TlsAcceptor::from(tls_config);
-    let listener = VsockListener::bind(VMADDR_CID_ANY, port)?;
+    let listener = VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, port))?;
 
     info!("Listening on TLS vsock port {}", port);
     let stream = listener.incoming().filter_map(move |result| {
@@ -79,7 +79,7 @@ pub async fn tls_connect(
     name: ServerName<'static>,
     tls_config: Arc<ClientConfig>,
 ) -> Result<TlsClientStream> {
-    let stream = VsockStream::connect(cid, port).await?;
+    let stream = VsockStream::connect(VsockAddr::new(cid, port)).await?;
     let connector = TlsConnector::from(tls_config);
     let tls_stream = connector.connect(name, stream).await?;
     Ok(tls_stream)

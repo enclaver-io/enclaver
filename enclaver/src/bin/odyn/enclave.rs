@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use log::info;
-use rtnetlink::LinkHandle;
+use rtnetlink::{LinkHandle, LinkUnspec};
 
 use enclaver::nsm::Nsm;
 
@@ -25,7 +25,10 @@ async fn lo_up() -> Result<()> {
     let conn_task = tokio::spawn(conn);
 
     // Assume that lo interface is one and only
-    let result = LinkHandle::new(handle).set(1).up().execute().await;
+    let result = LinkHandle::new(handle)
+        .set(LinkUnspec::new_with_index(1).up().build())
+        .execute()
+        .await;
 
     // cancel the socket reading
     conn_task.abort();

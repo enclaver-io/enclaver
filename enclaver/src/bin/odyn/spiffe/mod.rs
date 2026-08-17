@@ -2,6 +2,7 @@ mod channel;
 mod spire_client;
 
 use anyhow::{Result, bail};
+use base64::prelude::{BASE64_STANDARD, Engine as _};
 use hyper::Uri;
 use log::info;
 use rustls::pki_types::CertificateDer;
@@ -66,7 +67,7 @@ fn write_certificate_chain_to_pem(
         file.write_all(b"-----BEGIN CERTIFICATE-----\n")?;
 
         // Base64 encode the DER certificate and write it
-        let encoded = base64::encode(cert_der.as_ref());
+        let encoded = BASE64_STANDARD.encode(cert_der.as_ref());
         file.write_all(encoded.as_bytes())?;
         file.write_all(b"\n")?;
 

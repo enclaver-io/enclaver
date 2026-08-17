@@ -14,7 +14,9 @@ pub struct KeyPair {
 
 impl KeyPair {
     pub fn generate() -> Result<Self> {
-        let mut rng = rand::thread_rng();
+        // rsa 0.9 is built against rand_core 0.6, which the `rand` crate we
+        // depend on directly has long since moved past; use the RNG it exports.
+        let mut rng = rsa::rand_core::OsRng;
         let private = RsaPrivateKey::new(&mut rng, RSA_KEY_LEN)?;
         let public = RsaPublicKey::from(&private);
 

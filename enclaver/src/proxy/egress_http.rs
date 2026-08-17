@@ -19,7 +19,7 @@ use log::{debug, error};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio_vsock::VsockStream;
+use tokio_vsock::{VsockAddr, VsockStream};
 
 use crate::policy::EgressPolicy;
 
@@ -371,7 +371,8 @@ fn is_empty(pq: Option<&PathAndQuery>) -> bool {
 // connects to the host via vsock and then asks it to
 // connect to the remote address
 async fn remote_connect(egress_port: u32, host: &str, port: u16) -> anyhow::Result<VsockStream> {
-    let mut vsock = VsockStream::connect(crate::vsock::VMADDR_CID_HOST, egress_port).await?;
+    let mut vsock =
+        VsockStream::connect(VsockAddr::new(crate::vsock::VMADDR_CID_HOST, egress_port)).await?;
     debug!(
         "Connected to vsock {}:{}, sending connect request",
         crate::vsock::VMADDR_CID_HOST,
@@ -399,7 +400,7 @@ mod tests {
     use hyper::service::service_fn;
     use hyper::{Request, Response};
     use hyper_util::rt::TokioIo;
-    use rand::RngCore;
+    use rand::Rng;
     use std::convert::Infallible;
     use std::net::{Ipv4Addr, SocketAddr};
     use std::sync::Arc;
@@ -517,7 +518,7 @@ mod tests {
 
     fn random_bytes(count: usize) -> Vec<u8> {
         let mut v = vec![0u8; count];
-        rand::thread_rng().fill_bytes(&mut v);
+        rand::rng().fill_bytes(&mut v);
         v
     }
 

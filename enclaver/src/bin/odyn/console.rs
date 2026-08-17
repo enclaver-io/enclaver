@@ -2,7 +2,7 @@ use anyhow::Result;
 use circbuf::CircBuf;
 use futures::Stream;
 use ignore_result::Ignore;
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, BorrowedFd};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::watch::{Receiver, Sender};
@@ -138,8 +138,11 @@ fn new_app_log() -> Result<(LogWriter, LogServicer, LogReader)> {
 
 impl LogWriter {
     fn redirect_stdio(&self) -> Result<()> {
-        nix::unistd::dup2(self.w_pipe.as_raw_fd(), std::io::stdout().as_raw_fd())?;
-        nix::unistd::dup2(self.w_pipe.as_raw_fd(), std::io::stderr().as_raw_fd())?;
+        // tokio-pipe only exposes a raw fd; it stays open for as long as `self`
+        // does, so borrowing it for the duration of the dup2 calls is sound.
+        let w_pipe = unsafe { BorrowedFd::borrow_raw(self.w_pipe.as_raw_fd()) };
+        nix::unistd::dup2_stdout(w_pipe)?;
+        nix::unistd::dup2_stderr(w_pipe)?;
 
         Ok(())
     }
@@ -393,7 +396,7 @@ mod tests {
     use json::{JsonValue, object};
     use nix::sys::signal::Signal;
     use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader, Lines};
-    use tokio_vsock::VsockStream;
+    use tokio_vsock::{VsockAddr, VsockStream};
 
     use super::{ByteLog, LogCursor};
     use crate::launcher::ExitStatus;
@@ -465,7 +468,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_app_log() {
-        use rand::RngCore;
+        use rand::Rng;
         use std::time::Duration;
 
         let (mut w, mut s, r) = super::new_app_log().unwrap();
@@ -475,7 +478,7 @@ mod tests {
         });
 
         let mut expected = vec![0u8; super::APP_LOG_CAPACITY * 3];
-        rand::thread_rng().fill_bytes(&mut expected);
+        rand::rng().fill_bytes(&mut expected);
 
         // write all in small chunks
         for chunk in expected.chunks(53) {
@@ -513,7 +516,11 @@ mod tests {
     }
 
     async fn app_status_lines() -> Result<Lines<impl AsyncBufRead + Unpin>> {
-        let sock = VsockStream::connect(enclaver::vsock::VMADDR_CID_HOST, STATUS_PORT).await?;
+        let sock = VsockStream::connect(VsockAddr::new(
+            enclaver::vsock::VMADDR_CID_HOST,
+            STATUS_PORT,
+        ))
+        .await?;
         // bug in VsockStream::connect: it can return Ok even if connect failed
         _ = sock.peer_addr()?;
         Ok(BufReader::new(sock).lines())
