@@ -5,7 +5,7 @@ use crate::images::{FileBuilder, FileSource, ImageManager, ImageRef, LayerBuilde
 use crate::manifest::{Manifest, load_manifest};
 use crate::nitro_cli::{EIFInfo, KnownIssue};
 use crate::nitro_cli_container::NitroCLIContainer;
-pub use crate::nitro_cli_container::SigningInfo;
+pub use crate::nitro_cli_container::{SigningInfo, SigningKey};
 use anyhow::{Result, anyhow, bail};
 use bollard::Docker;
 use bollard::models::ImageConfig;
@@ -100,7 +100,11 @@ impl EnclaveArtifactBuilder {
             if let Some(parent_path) = PathBuf::from(manifest_path).parent() {
                 Some(SigningInfo {
                     certificate: canonicalize(parent_path.join(&signature.certificate)).await?,
-                    key: canonicalize(parent_path.join(&signature.key)).await?,
+                    key: if SigningKey::is_kms_key_arn(&signature.key) {
+                        SigningKey::Kms(signature.key.clone())
+                    } else {
+                        SigningKey::File(canonicalize(parent_path.join(&signature.key)).await?)
+                    },
                 })
             } else {
                 bail!("Failed to get parent path of manifest");

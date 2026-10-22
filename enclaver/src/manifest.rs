@@ -38,7 +38,7 @@ pub struct Sources {
 #[serde(deny_unknown_fields)]
 pub struct Signature {
     pub certificate: PathBuf,
-    pub key: PathBuf,
+    pub key: String,
 }
 
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]

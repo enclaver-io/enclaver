@@ -12,11 +12,34 @@ use bollard::{
 };
 use futures::{Stream, TryStreamExt, future};
 use log::debug;
+use regex::Regex;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+
+static KMS_KEY_ARN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^arn:aws(?:[\-a-z]+)?:kms:[a-z0-9-]+:\d{12}:key[:/][a-zA-Z0-9-]+$")
+        .expect("KMS key ARN regex must be valid")
+});
+
+const AWS_CREDENTIAL_ENV_VARS: &[&str] = &[
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+];
+
+pub enum SigningKey {
+    File(PathBuf),
+    Kms(String),
+}
+
+impl SigningKey {
+    pub fn is_kms_key_arn(key: &str) -> bool {
+        KMS_KEY_ARN_REGEX.is_match(key)
+    }
+}
 
 pub struct SigningInfo {
-    pub key: PathBuf,
+    pub key: SigningKey,
     pub certificate: PathBuf,
 }
 
@@ -62,18 +85,34 @@ impl NitroCLIContainer {
             },
         ];
 
-        if let Some(sign) = sign {
+        let mut env = Vec::new();
+
+        if let Some(sign) = &sign {
             cmd.push("--signing-certificate");
             cmd.push("/var/run/certificate");
             cmd.push("--private-key");
-            cmd.push("/var/run/key");
 
-            mounts.push(Mount {
-                typ: Some(MountType::BIND),
-                source: Some(sign.key.to_string_lossy().to_string()),
-                target: Some(String::from("/var/run/key")),
-                ..Default::default()
-            });
+            match &sign.key {
+                SigningKey::File(path) => {
+                    cmd.push("/var/run/key");
+
+                    mounts.push(Mount {
+                        typ: Some(MountType::BIND),
+                        source: Some(path.to_string_lossy().to_string()),
+                        target: Some(String::from("/var/run/key")),
+                        ..Default::default()
+                    });
+                }
+                SigningKey::Kms(arn) => {
+                    cmd.push(arn);
+
+                    env.extend(AWS_CREDENTIAL_ENV_VARS.iter().filter_map(|name| {
+                        std::env::var(name)
+                            .ok()
+                            .map(|value| format!("{name}={value}"))
+                    }));
+                }
+            }
 
             mounts.push(Mount {
                 typ: Some(MountType::BIND),
@@ -90,6 +129,7 @@ impl NitroCLIContainer {
                 ContainerCreateBody {
                     image: Some(self.image.to_string()),
                     cmd: Some(cmd.iter().map(|s| s.to_string()).collect()),
+                    env: (!env.is_empty()).then_some(env),
                     attach_stderr: Some(true),
                     attach_stdout: Some(true),
                     host_config: Some(HostConfig {
@@ -169,5 +209,25 @@ impl NitroCLIContainer {
             .remove_container(container_id, None::<RemoveContainerOptions>)
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_kms_key_arn() {
+        assert!(SigningKey::is_kms_key_arn(
+            "arn:aws:kms:eu-central-1:123456789012:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+        ));
+        assert!(SigningKey::is_kms_key_arn(
+            "arn:aws-us-gov:kms:us-gov-west-1:123456789012:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+        ));
+        assert!(!SigningKey::is_kms_key_arn(
+            "arn:aws:kms:eu-central-1:123456789012:alias/eif-signing"
+        ));
+        assert!(!SigningKey::is_kms_key_arn("keys/signing-key.pem"));
+        assert!(!SigningKey::is_kms_key_arn("/etc/enclaver/arn:aws:kms"));
     }
 }
