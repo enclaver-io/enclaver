@@ -116,7 +116,7 @@ impl SpiffeCertificateVerifier {
                 rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding)
             })?;
 
-        if let Some(extensions) = cert.tbs_certificate.extensions
+        if let Some(extensions) = cert.tbs_certificate().extensions()
             && let Some(san) = extensions
                 .iter()
                 .find(|e| e.extn_id == x509_cert::ext::pkix::SubjectAltName::OID)
