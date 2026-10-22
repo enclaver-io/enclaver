@@ -223,7 +223,7 @@ impl SpireAgentProtocol for SpireAgentClient {
 fn create_csr(keypair: &KeyPair) -> Result<Vec<u8>> {
     let subj = x509_cert::name::Name::default();
     let signing_key = keypair.signing_key();
-    let builder = x509_cert::builder::RequestBuilder::new(subj, &signing_key)?;
-    let cert_req = builder.build()?;
+    let builder = x509_cert::builder::RequestBuilder::new(subj)?;
+    let cert_req = builder.build::<_, rsa::pkcs1v15::Signature>(&signing_key)?;
     Ok(x509_cert::der::Encode::to_der(&cert_req)?)
 }
