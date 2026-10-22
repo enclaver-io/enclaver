@@ -382,7 +382,7 @@ mod tests {
         let agent_client = Arc::new(MockSpireAgentProtocol {});
 
         let roots = TrustBundles::new();
-        roots.x509.add(CertificateDer::from(expected_cert.clone()));
+        roots.x509.extend(vec![CertificateDer::from(expected_cert.clone())]);
         roots
             .jwt
             .add_der("key-1".to_string(), PUBLIC_KEY_DER)

@@ -76,7 +76,7 @@ impl<'a> ContentInfo<'a> {
             .encrypted_key
             .as_ref();
 
-        let padding = Oaep::new::<Sha256>();
+        let padding = Oaep::<Sha256>::new();
 
         Ok(priv_key.decrypt(padding, ciphertext)?)
     }
