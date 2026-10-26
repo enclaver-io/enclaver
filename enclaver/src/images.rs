@@ -1,8 +1,10 @@
 use crate::utils::StringablePathExt;
 use anyhow::{Context, Result, anyhow, bail};
 use bollard::Docker;
+use bollard::auth::DockerCredentials;
 use bollard::models::{BuildInfo, CreateImageInfo, ErrorDetail, ImageId};
 use bollard::query_parameters::{BuildImageOptions, CreateImageOptions, TagImageOptions};
+use docker_credential::DockerCredential;
 use futures_util::stream::{StreamExt, TryStreamExt};
 use log::{debug, trace};
 use std::fmt;
@@ -35,6 +37,38 @@ impl fmt::Display for ImageRef {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.id)
     }
+}
+
+/// The key the Docker CLI stores an image's registry credentials under.
+fn registry_server(image_name: &str) -> &str {
+    match image_name.split_once('/') {
+        Some((host, _)) if host.contains(['.', ':']) || host == "localhost" => host,
+        _ => "https://index.docker.io/v1/",
+    }
+}
+
+/// Credentials stored by `docker login` for the image's registry, if any.
+fn registry_credentials(image_name: &str) -> Option<DockerCredentials> {
+    let server = registry_server(image_name);
+    let credentials = match docker_credential::get_credential(server) {
+        Ok(DockerCredential::UsernamePassword(username, password)) => DockerCredentials {
+            username: Some(username),
+            password: Some(password),
+            ..Default::default()
+        },
+        Ok(DockerCredential::IdentityToken(identitytoken)) => DockerCredentials {
+            identitytoken: Some(identitytoken),
+            ..Default::default()
+        },
+        Err(e) => {
+            debug!("no credentials for {server}: {e}");
+            return None;
+        }
+    };
+    Some(DockerCredentials {
+        serveraddress: Some(server.to_string()),
+        ..credentials
+    })
 }
 
 /// An interface for manipulating Docker images.
@@ -117,7 +151,7 @@ impl ImageManager {
                 ..Default::default()
             }),
             None,
-            None,
+            registry_credentials(image_name),
         );
 
         while let Some(item) = fetch_stream.next().await {
@@ -350,5 +384,24 @@ impl LayerBuilder {
         tb.append_dir_all(".", tempdir).await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_registry_server() {
+        assert_eq!(
+            registry_server("public.ecr.aws/a/odyn:latest"),
+            "public.ecr.aws"
+        );
+        assert_eq!(registry_server("localhost:5000/app"), "localhost:5000");
+        assert_eq!(
+            registry_server("library/alpine"),
+            "https://index.docker.io/v1/"
+        );
+        assert_eq!(registry_server("alpine"), "https://index.docker.io/v1/");
     }
 }
