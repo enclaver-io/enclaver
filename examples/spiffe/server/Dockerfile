@@ -3,7 +3,7 @@
 #
 #   docker build -f server/Dockerfile -t spiffe-server-app:latest .
 
-FROM golang:1.25-alpine AS build
+FROM golang:1.26-alpine AS build
 
 WORKDIR /src
 
