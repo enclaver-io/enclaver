@@ -1,26 +1,26 @@
 use anyhow::Result;
 use rsa::pkcs1::EncodeRsaPrivateKey;
 use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
-use rsa::{RsaPrivateKey, RsaPublicKey};
+use rsa::{PrivateKey, PublicKey};
 use rustls::pki_types::{PrivatePkcs1KeyDer, PrivatePkcs8KeyDer};
 const RSA_KEY_LEN: usize = 2048;
 
 #[derive(Clone)]
 pub struct KeyPair {
-    pub private: RsaPrivateKey,
-    pub public: RsaPublicKey,
+    pub private: PrivateKey,
+    pub public: PublicKey,
 }
 
 impl KeyPair {
     pub fn generate() -> Result<Self> {
         let mut rng = rand::rng();
-        let private = RsaPrivateKey::new(&mut rng, RSA_KEY_LEN)?;
-        let public = RsaPublicKey::from(&private);
+        let private = PrivateKey::new(&mut rng, RSA_KEY_LEN)?;
+        let public = PublicKey::from(&private);
 
         Ok(KeyPair { private, public })
     }
 
-    pub fn from_private(private: RsaPrivateKey) -> Self {
+    pub fn from_private(private: PrivateKey) -> Self {
         let public = private.to_public_key();
 
         Self { private, public }
