@@ -471,7 +471,7 @@ mod tests {
     use super::*;
     use crate::nsm::StaticAttestationProvider;
     use assert2::assert;
-    use rsa::RsaPrivateKey;
+    use rsa::PrivateKey;
     use rsa::pkcs8::DecodePrivateKey;
 
     // Attestation document is passed through verbatim so can test with just random bytes
@@ -578,7 +578,7 @@ mod tests {
         let key_der = BASE64_STANDARD
             .decode(crate::proxy::pkcs7::tests::PRIVATE_KEY)
             .unwrap();
-        let priv_key = RsaPrivateKey::from_pkcs8_der(&key_der).unwrap();
+        let priv_key = PrivateKey::from_pkcs8_der(&key_der).unwrap();
 
         let config = KmsProxyConfig {
             client: Box::new(Mock),

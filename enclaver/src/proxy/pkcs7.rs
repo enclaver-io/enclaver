@@ -7,7 +7,7 @@ use asn1_rs::{
 use asn1_rs::{BerSequence, oid};
 use cbc::cipher::{BlockModeDecrypt, KeyIvInit, block_padding};
 use rsa::traits::PaddingScheme;
-use rsa::{RsaPrivateKey, oaep::Oaep};
+use rsa::{PrivateKey, oaep::Oaep};
 // rsa 0.9 is built against digest 0.10, so its Sha256 is the one Oaep accepts.
 use rsa::sha2::Sha256;
 
@@ -59,14 +59,14 @@ impl<'a> ContentInfo<'a> {
         self.content.validate()
     }
 
-    pub fn decrypt_content(&self, priv_key: &RsaPrivateKey) -> Result<Vec<u8>> {
+    pub fn decrypt_content(&self, priv_key: &PrivateKey) -> Result<Vec<u8>> {
         let datakey = self.decrypt_key(priv_key)?;
         self.content
             .encrypted_content_info
             .decrypt_content(&datakey)
     }
 
-    fn decrypt_key(&self, priv_key: &RsaPrivateKey) -> Result<Vec<u8>> {
+    fn decrypt_key(&self, priv_key: &PrivateKey) -> Result<Vec<u8>> {
         let ciphertext = self
             .content
             .recipient_infos
@@ -435,7 +435,7 @@ pub(crate) mod tests {
     use super::ContentInfo;
     use assert2::assert;
     use base64::prelude::{BASE64_STANDARD, Engine as _};
-    use rsa::RsaPrivateKey;
+    use rsa::PrivateKey;
     use rsa::pkcs8::DecodePrivateKey;
 
     pub(crate) const INPUT: &str = "\
@@ -485,7 +485,7 @@ UBYkWlVgulDg28KBqahr9r04";
         ci.validate().unwrap();
 
         let key_der = BASE64_STANDARD.decode(PRIVATE_KEY).unwrap();
-        let priv_key = RsaPrivateKey::from_pkcs8_der(&key_der).unwrap();
+        let priv_key = PrivateKey::from_pkcs8_der(&key_der).unwrap();
 
         let plaintext = ci.decrypt_content(&priv_key).unwrap();
         let msg = std::str::from_utf8(&plaintext).unwrap();
